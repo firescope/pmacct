@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -80,7 +80,9 @@ void usage_daemon(char *prog_name)
   printf("  -A  \tAppend output (applies to -o)\n");
   printf("  -E  \tCSV format serparator (applies to -O csv, DEFAULT: ',')\n");
   printf("\n");
-  printf("  See QUICKSTART or visit http://wiki.pmacct.net/ for examples.\n");
+  printf("For examples, see:\n");
+  printf("  https://github.com/pmacct/pmacct/blob/master/QUICKSTART or\n");
+  printf("  https://github.com/pmacct/pmacct/wiki\n");
   printf("\n");
   printf("For suggestions, critics, bugs, contact me: %s.\n", MANTAINER);
 }
@@ -437,6 +439,10 @@ int main(int argc,char **argv, char **envp)
         if (list->cfg.what_to_count_2 & (COUNT_MPLS_LABEL_TOP|COUNT_MPLS_LABEL_BOTTOM|
                         COUNT_MPLS_STACK_DEPTH))
           list->cfg.data_type |= PIPE_TYPE_MPLS;
+
+	if (list->cfg.what_to_count_2 & (COUNT_TUNNEL_SRC_HOST|COUNT_TUNNEL_DST_HOST|
+			COUNT_TUNNEL_IP_PROTO|COUNT_TUNNEL_IP_TOS))
+	  list->cfg.data_type |= PIPE_TYPE_TUN;
 
         if (list->cfg.what_to_count_2 & (COUNT_LABEL))
           list->cfg.data_type |= PIPE_TYPE_VLEN;
@@ -1145,7 +1151,7 @@ SFv2v4_read_sampleType:
       readv2v4FlowSample(spp, pptrsv, req);
       break;
     case SFLCOUNTERS_SAMPLE:
-      readv2v4CountersSample(spp);
+      readv2v4CountersSample(spp, pptrsv);
       break;
     default:
       SF_notify_malf_packet(LOG_INFO, "INFO: Discarding unknown v2/v4 sample", (struct sockaddr *) pptrsv->v4.f_agent);
@@ -1196,13 +1202,13 @@ SFv5_read_sampleType:
       readv5FlowSample(spp, FALSE, pptrsv, req, TRUE);
       break;
     case SFLCOUNTERS_SAMPLE:
-      readv5CountersSample(spp, FALSE, pptrsv, req);
+      readv5CountersSample(spp, FALSE, pptrsv);
       break;
     case SFLFLOW_SAMPLE_EXPANDED:
       readv5FlowSample(spp, TRUE, pptrsv, req, TRUE);
       break;
     case SFLCOUNTERS_SAMPLE_EXPANDED:
-      readv5CountersSample(spp, TRUE, pptrsv, req);
+      readv5CountersSample(spp, TRUE, pptrsv);
       break;
     case SFLACL_BROCADE_SAMPLE:
       getData32(spp); /* trash: sample length */
@@ -1213,7 +1219,7 @@ SFv5_read_sampleType:
     default:
       SF_notify_malf_packet(LOG_INFO, "INFO: Discarding unknown v5 sample", (struct sockaddr *) pptrsv->v4.f_agent);
       xflow_tot_bad_datagrams++;
-      return; /* unexpected sampleType; aborting packet */ 
+      return; /* unexpected sampleType; aborting packet */
     }
     if ((u_char *)spp->datap > spp->endp) return; 
   }
@@ -1352,6 +1358,7 @@ void compute_once()
   PlbgpSz = sizeof(struct pkt_legacy_bgp_primitives);
   PnatSz = sizeof(struct pkt_nat_primitives);
   PmplsSz = sizeof(struct pkt_mpls_primitives);
+  PtunSz = sizeof(struct pkt_tunnel_primitives);
   PvhdrSz = sizeof(struct pkt_vlen_hdr_primitives);
   PmLabelTSz = sizeof(pm_label_t);
   PtLabelTSz = sizeof(pt_label_t);
@@ -1960,7 +1967,7 @@ void sfv245_check_counter_log_init(struct packet_ptrs *pptrs)
   }
 }
 
-int sf_cnt_log_msg(struct bgp_peer *peer, SFSample *sample, u_int32_t len, char *event_type, int output, u_int32_t tag)
+int sf_cnt_log_msg(struct bgp_peer *peer, SFSample *sample, int version, u_int32_t len, char *event_type, int output, u_int32_t tag)
 {
   struct bgp_misc_structs *bms = bgp_select_misc_db(FUNC_TYPE_SFLOW_COUNTER);
   int ret = 0, amqp_ret = 0, kafka_ret = 0, etype = BGP_LOGDUMP_ET_NONE;
@@ -1986,55 +1993,74 @@ int sf_cnt_log_msg(struct bgp_peer *peer, SFSample *sample, u_int32_t len, char 
   if (output == PRINT_OUTPUT_JSON) {
 #ifdef WITH_JANSSON
     char ip_address[INET6_ADDRSTRLEN];
-    json_t *obj = json_object(), *kv;
+    json_t *obj = json_object();
 
     /* no need for seq and timestamp for "dump" event_type */
     if (etype == BGP_LOGDUMP_ET_LOG) {
-      kv = json_pack("{sI}", "seq", (json_int_t)bms->log_seq);
-      json_object_update_missing(obj, kv);
-      json_decref(kv);
+      json_object_set_new_nocheck(obj, "seq", json_integer((json_int_t)bms->log_seq));
       bgp_peer_log_seq_increment(&bms->log_seq);
 
-      kv = json_pack("{ss}", "timestamp", bms->log_tstamp_str);
-      json_object_update_missing(obj, kv);
-      json_decref(kv);
+      json_object_set_new_nocheck(obj, "timestamp", json_string(bms->log_tstamp_str));
     }
 
     addr_to_str(ip_address, &peer->addr);
-    kv = json_pack("{ss}", "peer_ip_src", ip_address);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+    json_object_set_new_nocheck(obj, "peer_ip_src", json_string(ip_address));
 
-    kv = json_pack("{ss}", "event_type", event_type);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+    json_object_set_new_nocheck(obj, "event_type", json_string(event_type));
 
-    kv = json_pack("{sI}", "source_id_index", (json_int_t)sample->ds_index);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+    json_object_set_new_nocheck(obj, "source_id_index", json_integer((json_int_t)sample->ds_index));
 
-    kv = json_pack("{sI}", "sflow_seq", (json_int_t)sample->sequenceNo);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+    json_object_set_new_nocheck(obj, "sflow_seq", json_integer((json_int_t)sample->sequenceNo));
 
-    kv = json_pack("{sI}", "sflow_cnt_seq", (json_int_t)sample->cntSequenceNo);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+    json_object_set_new_nocheck(obj, "sflow_cnt_seq", json_integer((json_int_t)sample->cntSequenceNo));
 
-    switch (tag) {
-    case SFLCOUNTERS_GENERIC:
-      readCounters_generic(peer, sample, "log", config.sfacctd_counter_output, obj);
-      break;
-    case SFLCOUNTERS_ETHERNET:
-      readCounters_ethernet(peer, sample, "log", config.sfacctd_counter_output, obj);
-      break;
-    case SFLCOUNTERS_VLAN:
-      readCounters_vlan(peer, sample, "log", config.sfacctd_counter_output, obj);
-      break;
-    default:
-      skipBytes(sample, len);
-      break;
+    if (version == 5) {
+      switch (tag) {
+      case SFLCOUNTERS_GENERIC:
+        readCounters_generic(peer, sample, "log", config.sfacctd_counter_output, obj);
+        break;
+      case SFLCOUNTERS_ETHERNET:
+        readCounters_ethernet(peer, sample, "log", config.sfacctd_counter_output, obj);
+        break;
+      case SFLCOUNTERS_VLAN:
+        readCounters_vlan(peer, sample, "log", config.sfacctd_counter_output, obj);
+        break;
+      default:
+        skipBytes(sample, len);
+        break;
+      }
     }
+    else if (version < 5) {
+      switch (tag) {
+      case INMCOUNTERSVERSION_GENERIC:
+      case INMCOUNTERSVERSION_ETHERNET:
+        readCounters_generic(peer, sample, "log", config.sfacctd_counter_output, obj);
+        break;
+      case INMCOUNTERSVERSION_VLAN:
+	/* nothing here */
+	break;
+      default:
+        skipBytes(sample, len);
+	break;
+      }
+
+      /* now see if there are any specific counter blocks to add */
+      switch (tag) {
+      case INMCOUNTERSVERSION_GENERIC:
+	/* nothing more */
+	break;
+      case INMCOUNTERSVERSION_ETHERNET:
+	readCounters_ethernet(peer, sample, "log", config.sfacctd_counter_output, obj);
+	break;
+      case INMCOUNTERSVERSION_VLAN:
+	readCounters_vlan(peer, sample, "log", config.sfacctd_counter_output, obj);
+	break;
+      default:
+	/* nothing more; already skipped */
+	break;
+      }
+    }
+    else skipBytes(sample, len);
 
     if (config.sfacctd_counter_file && etype == BGP_LOGDUMP_ET_LOG)
       write_and_free_json(peer->log->fd, obj);
@@ -2091,85 +2117,45 @@ int readCounters_generic(struct bgp_peer *peer, SFSample *sample, char *event_ty
 
   if (!peer || !sample || !vobj) return ret;
 
-  kv = json_pack("{ss}", "sf_cnt_type", msg_type);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "sf_cnt_type", json_string(msg_type));
 
-  kv = json_pack("{sI}", "ifIndex", (json_int_t)sample->ifCounters.ifIndex);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifIndex", json_integer((json_int_t)sample->ifCounters.ifIndex));
 
-  kv = json_pack("{sI}", "ifType", (json_int_t)sample->ifCounters.ifType);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifType", json_integer((json_int_t)sample->ifCounters.ifType));
 
-  kv = json_pack("{sI}", "ifSpeed", (json_int_t)sample->ifCounters.ifSpeed);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifSpeed", json_integer((json_int_t)sample->ifCounters.ifSpeed));
 
-  kv = json_pack("{sI}", "ifDirection", (json_int_t)sample->ifCounters.ifDirection);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifDirection", json_integer((json_int_t)sample->ifCounters.ifDirection));
 
-  kv = json_pack("{sI}", "ifStatus", (json_int_t)sample->ifCounters.ifStatus);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifStatus", json_integer((json_int_t)sample->ifCounters.ifStatus));
 
-  kv = json_pack("{sI}", "ifInOctets", (json_int_t)sample->ifCounters.ifInOctets);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifInOctets", json_integer((json_int_t)sample->ifCounters.ifInOctets));
 
-  kv = json_pack("{sI}", "ifInUcastPkts", (json_int_t)sample->ifCounters.ifInUcastPkts);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifInUcastPkts", json_integer((json_int_t)sample->ifCounters.ifInUcastPkts));
 
-  kv = json_pack("{sI}", "ifInMulticastPkts", (json_int_t)sample->ifCounters.ifInMulticastPkts);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifInMulticastPkts", json_integer((json_int_t)sample->ifCounters.ifInMulticastPkts));
 
-  kv = json_pack("{sI}", "ifInBroadcastPkts", (json_int_t)sample->ifCounters.ifInBroadcastPkts);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifInBroadcastPkts", json_integer((json_int_t)sample->ifCounters.ifInBroadcastPkts));
 
-  kv = json_pack("{sI}", "ifInDiscards", (json_int_t)sample->ifCounters.ifInDiscards);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifInDiscards", json_integer((json_int_t)sample->ifCounters.ifInDiscards));
 
-  kv = json_pack("{sI}", "ifInErrors", (json_int_t)sample->ifCounters.ifInErrors);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifInErrors", json_integer((json_int_t)sample->ifCounters.ifInErrors));
 
-  kv = json_pack("{sI}", "ifInUnknownProtos", (json_int_t)sample->ifCounters.ifInUnknownProtos);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifInUnknownProtos", json_integer((json_int_t)sample->ifCounters.ifInUnknownProtos));
 
-  kv = json_pack("{sI}", "ifOutOctets", (json_int_t)sample->ifCounters.ifOutOctets);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifOutOctets", json_integer((json_int_t)sample->ifCounters.ifOutOctets));
 
-  kv = json_pack("{sI}", "ifOutUcastPkts", (json_int_t)sample->ifCounters.ifOutUcastPkts);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifOutUcastPkts", json_integer((json_int_t)sample->ifCounters.ifOutUcastPkts));
 
-  kv = json_pack("{sI}", "ifOutMulticastPkts", (json_int_t)sample->ifCounters.ifOutMulticastPkts);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifOutMulticastPkts", json_integer((json_int_t)sample->ifCounters.ifOutMulticastPkts));
 
-  kv = json_pack("{sI}", "ifOutBroadcastPkts", (json_int_t)sample->ifCounters.ifOutBroadcastPkts);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifOutBroadcastPkts", json_integer((json_int_t)sample->ifCounters.ifOutBroadcastPkts));
 
-  kv = json_pack("{sI}", "ifOutDiscards", (json_int_t)sample->ifCounters.ifOutDiscards);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifOutDiscards", json_integer((json_int_t)sample->ifCounters.ifOutDiscards));
 
-  kv = json_pack("{sI}", "ifOutErrors", (json_int_t)sample->ifCounters.ifOutErrors);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifOutErrors", json_integer((json_int_t)sample->ifCounters.ifOutErrors));
 
-  kv = json_pack("{sI}", "ifPromiscuousMode", (json_int_t)sample->ifCounters.ifPromiscuousMode);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ifPromiscuousMode", json_integer((json_int_t)sample->ifCounters.ifPromiscuousMode));
 #endif
 
   return ret;
@@ -2204,61 +2190,33 @@ int readCounters_ethernet(struct bgp_peer *peer, SFSample *sample, char *event_t
 
   if (!peer || !sample || !vobj) return ret;
 
-  kv = json_pack("{ss}", "sf_cnt_type", msg_type);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "sf_cnt_type", json_string(msg_type));
 
-  kv = json_pack("{sI}", "dot3StatsAlignmentErrors", (json_int_t)m32_1);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "dot3StatsAlignmentErrors", json_integer((json_int_t)m32_1));
 
-  kv = json_pack("{sI}", "dot3StatsFCSErrors", (json_int_t)m32_2);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "dot3StatsFCSErrors", json_integer((json_int_t)m32_2));
 
-  kv = json_pack("{sI}", "dot3StatsSingleCollisionFrames", (json_int_t)m32_3);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "dot3StatsSingleCollisionFrames", json_integer((json_int_t)m32_3));
 
-  kv = json_pack("{sI}", "dot3StatsMultipleCollisionFrames", (json_int_t)m32_4);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "dot3StatsMultipleCollisionFrames", json_integer((json_int_t)m32_4));
 
-  kv = json_pack("{sI}", "dot3StatsSQETestErrors", (json_int_t)m32_5);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "dot3StatsSQETestErrors", json_integer((json_int_t)m32_5));
 
-  kv = json_pack("{sI}", "dot3StatsDeferredTransmissions", (json_int_t)m32_6);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "dot3StatsDeferredTransmissions", json_integer((json_int_t)m32_6));
 
-  kv = json_pack("{sI}", "dot3StatsLateCollisions", (json_int_t)m32_7);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "dot3StatsLateCollisions", json_integer((json_int_t)m32_7));
 
-  kv = json_pack("{sI}", "dot3StatsExcessiveCollisions", (json_int_t)m32_8);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "dot3StatsExcessiveCollisions", json_integer((json_int_t)m32_8));
 
-  kv = json_pack("{sI}", "dot3StatsInternalMacTransmitErrors", (json_int_t)m32_9);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "dot3StatsInternalMacTransmitErrors", json_integer((json_int_t)m32_9));
 
-  kv = json_pack("{sI}", "dot3StatsCarrierSenseErrors", (json_int_t)m32_10);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "dot3StatsCarrierSenseErrors", json_integer((json_int_t)m32_10));
 
-  kv = json_pack("{sI}", "dot3StatsFrameTooLongs", (json_int_t)m32_11);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "dot3StatsFrameTooLongs", json_integer((json_int_t)m32_11));
 
-  kv = json_pack("{sI}", "dot3StatsInternalMacReceiveErrors", (json_int_t)m32_12);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "dot3StatsInternalMacReceiveErrors", json_integer((json_int_t)m32_12));
 
-  kv = json_pack("{sI}", "dot3StatsSymbolErrors", (json_int_t)m32_13);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "dot3StatsSymbolErrors", json_integer((json_int_t)m32_13));
 #endif
 
   return ret;
@@ -2270,7 +2228,7 @@ int readCounters_vlan(struct bgp_peer *peer, SFSample *sample, char *event_type,
   int ret = 0;
 #ifdef WITH_JANSSON
   char ip_address[INET6_ADDRSTRLEN];
-  json_t *obj = (json_t *) vobj, *kv;
+  json_t *obj = (json_t *) vobj;
 
   u_int64_t m64_1;
   u_int32_t m32_1, m32_2, m32_3, m32_4;
@@ -2285,33 +2243,19 @@ int readCounters_vlan(struct bgp_peer *peer, SFSample *sample, char *event_type,
 
   if (!peer || !sample || !vobj) return ret;
 
-  kv = json_pack("{ss}", "sf_cnt_type", msg_type);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "sf_cnt_type", json_string(msg_type));
 
-  kv = json_pack("{sI}", "octets", (json_int_t)m64_1);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "octets", json_integer((json_int_t)m64_1));
 
-  kv = json_pack("{sI}", "ucastPkts", (json_int_t)m32_1);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "ucastPkts", json_integer((json_int_t)m32_1));
 
-  kv = json_pack("{sI}", "multicastPkts", (json_int_t)m32_2);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "multicastPkts", json_integer((json_int_t)m32_2));
 
-  kv = json_pack("{sI}", "broadcastPkts", (json_int_t)m32_3);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "broadcastPkts", json_integer((json_int_t)m32_3));
 
-  kv = json_pack("{sI}", "discards", (json_int_t)m32_4);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "discards", json_integer((json_int_t)m32_4));
 
-  kv = json_pack("{sI}", "vlan", (json_int_t)sample->in_vlan);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "vlan", json_integer((json_int_t)sample->in_vlan));
 #endif
 
   return ret;
@@ -2353,7 +2297,7 @@ int sfacctd_counter_init_kafka_host()
 {
   int ret;
 
-  p_kafka_init_host(&sfacctd_counter_kafka_host);
+  p_kafka_init_host(&sfacctd_counter_kafka_host, config.sfacctd_counter_kafka_config_file);
   ret = p_kafka_connect_to_produce(&sfacctd_counter_kafka_host);
 
   if (!config.sfacctd_counter_kafka_broker_host) config.sfacctd_counter_kafka_broker_host = default_kafka_broker_host;
@@ -2364,7 +2308,6 @@ int sfacctd_counter_init_kafka_host()
   p_kafka_set_topic(&sfacctd_counter_kafka_host, config.sfacctd_counter_kafka_topic);
   p_kafka_set_partition(&sfacctd_counter_kafka_host, config.sfacctd_counter_kafka_partition);
   p_kafka_set_key(&sfacctd_counter_kafka_host, config.sfacctd_counter_kafka_partition_key, config.sfacctd_counter_kafka_partition_keylen);
-  p_kafka_set_fallback(&sfacctd_counter_kafka_host, config.sfacctd_counter_kafka_fallback);
   p_kafka_set_content_type(&sfacctd_counter_kafka_host, PM_KAFKA_CNT_TYPE_STR);
   P_broker_timers_set_retry_interval(&sfacctd_counter_kafka_host.btimers, config.sfacctd_counter_kafka_retry);
 

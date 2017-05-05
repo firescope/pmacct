@@ -1,7 +1,7 @@
 dnl Process this file with autoconf to produce a configure script.
 dnl configuration file for pmacct 
 
-AC_INIT([pmacct], [1.6.2-git], [paolo@pmacct.net])
+AC_INIT([pmacct], [1.7.0-git], [paolo@pmacct.net])
 AM_INIT_AUTOMAKE([foreign])
 AC_CONFIG_MACRO_DIR([m4])
 LT_INIT
@@ -9,7 +9,6 @@ AC_PREFIX_DEFAULT([/usr/local])
 m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES(yes)])
 
 COMPILE_ARGS="${ac_configure_args}"
-AC_DEFINE_UNQUOTED(COMPILE_ARGS, "$COMPILE_ARGS")
 
 dnl Checks for programs.
 AC_PROG_CC
@@ -283,12 +282,13 @@ AC_ARG_ENABLE(l2,
 	[
         	AC_MSG_RESULT(yes)
 		AC_DEFINE(HAVE_L2, 1) 
+		COMPILE_ARGS="${COMPILE_ARGS} '--enable-l2'"
 	]
 )
 
 AC_MSG_CHECKING([whether to enable IPv6 code])
 AC_ARG_ENABLE(ipv6,
-        [  --enable-ipv6                    Enable IPv6 code (default: no)],
+        [  --enable-ipv6                    Enable IPv6 code (default: yes)],
 	[ 
 		if test x$enableval = x"yes" ; then
         		AC_MSG_RESULT(yes)
@@ -310,8 +310,20 @@ AC_ARG_ENABLE(ipv6,
 		fi
 	],
 	[
-        	AC_MSG_RESULT(no)
-		ipv6support="no"
+        	AC_MSG_RESULT(yes)
+        		AC_CHECK_FUNCS(inet_pton)
+        		if test x"$ac_cv_func_inet_pton" = x"no"; then
+        			AC_MSG_ERROR(ERROR: missing inet_pton(); disable IPv6 hooks !)
+        		fi
+
+			AC_CHECK_FUNCS(inet_ntop)
+			if test x"$ac_cv_func_inet_ntop" = x"no"; then
+          			AC_MSG_ERROR(ERROR: missing inet_ntop(); disable IPv6 hooks !)
+        		fi
+
+			AC_DEFINE(ENABLE_IPV6, 1)
+		ipv6support="yes"
+		COMPILE_ARGS="${COMPILE_ARGS} '--enable-ipv6'"
 	]
 )
 
@@ -396,6 +408,7 @@ if test x"$PCAPLIB" != x""; then
       LIBS="${LIBS} -lpfring -lpcap"
       AC_MSG_RESULT(yes)
       PFRING_LIB_FOUND=1
+      AC_DEFINE(PFRING_LIB_FOUND, 1)
     else
       AC_MSG_RESULT(no)
     fi
@@ -416,6 +429,7 @@ if test x"$PCAPLIBFOUND" = x""; then
       LIBS="${LIBS} -lpfring -lpcap"
       AC_MSG_RESULT(yes)
       PFRING_LIB_FOUND=1
+      AC_DEFINE(PFRING_LIB_FOUND, 1)
     else
       AC_MSG_RESULT(no)
     fi
@@ -645,6 +659,7 @@ AC_ARG_ENABLE(mongodb,
 )
 dnl finish: mongodb handling
 
+dnl start: sqlite3 handling
 AC_MSG_CHECKING(whether to enable SQLite3 support)
 AC_ARG_ENABLE(sqlite3,
   [  --enable-sqlite3                 Enable SQLite3 support (default: no)],
@@ -761,7 +776,7 @@ AC_ARG_ENABLE(geoip,
     AC_MSG_RESULT(yes)
     dnl reasonably old Maxmind GeoIP v1 already support pkg-config
     PKG_CHECK_MODULES([GEOIP], [geoip >= 1.0.0])
-    PLUGINS="${PLUGINS} geoip"
+    SUPPORTS="${SUPPORTS} geoip"
     USING_MMGEOIP="yes"
     PMACCT_CFLAGS="$PMACCT_CFLAGS $GEOIP_CFLAGS"
     AC_DEFINE(WITH_GEOIP, 1)
@@ -817,7 +832,7 @@ AC_ARG_ENABLE(geoipv2,
                 CFLAGS="$_save_CFLAGS"
 	fi
     ])
-    PLUGINS="${PLUGINS} geoipv2"
+    SUPPORTS="${SUPPORTS} geoipv2"
     USING_MMGEOIPV2="yes"
     PMACCT_CFLAGS="$PMACCT_CFLAGS $GEOIPV2_CFLAGS"
     AC_DEFINE(WITH_GEOIPV2, 1)
@@ -841,7 +856,7 @@ AC_ARG_ENABLE(jansson,
     AC_MSG_RESULT(yes)
     dnl reasonably old Jansson already support pkg-config
     PKG_CHECK_MODULES([JANSSON], [jansson >= 2.2])
-    PLUGINS="${PLUGINS} jansson"
+    SUPPORTS="${SUPPORTS} jansson"
     USING_JANSSON="yes"
     PMACCT_CFLAGS="$PMACCT_CFLAGS $JANSSON_CFLAGS"
     AC_DEFINE(WITH_JANSSON, 1)
@@ -869,6 +884,7 @@ AC_ARG_ENABLE(avro,
   yes)
     AC_MSG_RESULT(yes)
     PKG_CHECK_MODULES([AVRO], [avro-c >= 1.8])
+    SUPPORTS="${SUPPORTS} avro"
     USING_AVRO="yes"
     PMACCT_CFLAGS="$PMACCT_CFLAGS $AVRO_CFLAGS"
     AC_DEFINE(WITH_AVRO, 1)
@@ -886,6 +902,33 @@ AC_ARG_ENABLE(avro,
   ]
 )
 dnl finish: Avro handling
+
+dnl start: nDPI handling
+AC_MSG_CHECKING(whether to enable nDPI support)
+AC_ARG_ENABLE(ndpi,
+  [  --enable-ndpi                    Enable nDPI support (default: no)],
+  [ case "$enableval" in
+  yes)
+    AC_MSG_RESULT(yes)
+    PKG_CHECK_MODULES([NDPI], [libndpi])
+    SUPPORTS="${SUPPORTS} ndpi"
+    USING_NDPI="yes"
+    PMACCT_CFLAGS="$PMACCT_CFLAGS $NDPI_CFLAGS"
+    AC_DEFINE(WITH_NDPI, 1)
+    _save_LIBS="$LIBS"
+    LIBS="$LIBS $NDPI_LIBS"
+    AC_CHECK_LIB(ndpi, ndpi_init_detection_module, [], [])
+    LIBS="$_save_LIBS"
+    ;;
+  no)
+    AC_MSG_RESULT(no)
+    ;;
+  esac ],
+  [
+    AC_MSG_RESULT(no)
+  ]
+)
+dnl finish: nDPI handling
 
 if test x"$USING_DLOPEN" = x"yes"; then
 	AC_DEFINE(HAVE_DLOPEN, 1)
@@ -932,6 +975,7 @@ AC_ARG_ENABLE(64bit,
 	[
           AC_MSG_RESULT(yes)
 	  AC_DEFINE(HAVE_64BIT_COUNTERS, 1)
+	  COMPILE_ARGS="${COMPILE_ARGS} '--enable-64bit'"
 	]
 )
 
@@ -971,6 +1015,7 @@ AC_ARG_ENABLE(threads,
 
           LIBS="${LIBS} -lpthread"
           USING_THREADPOOL=yes
+	  COMPILE_ARGS="${COMPILE_ARGS} '--enable-threads'"
 	]
 )
 
@@ -990,6 +1035,86 @@ AC_ARG_ENABLE(nflog,
   esac ],
 AC_MSG_RESULT(no))
 
+AC_MSG_CHECKING(whether to link IPv4/IPv6 traffic accounting accounting binaries)
+AC_ARG_ENABLE(traffic-bins,
+	[  --enable-traffic-bins               Link IPv4/IPv6 traffic accounting binaries (default: yes)],
+	[
+	  if test x$enableval = x"yes" ; then
+	    AC_MSG_RESULT(yes)
+	    AC_DEFINE(HAVE_TRAFFIC_BINS, 1)
+	    USING_TRAFFIC_BINS="yes"
+	  else
+	    AC_MSG_RESULT(no)
+	  fi
+	],
+	[
+	  AC_MSG_RESULT(yes)
+	  AC_DEFINE(HAVE_TRAFFIC_BINS, 1)
+	  USING_TRAFFIC_BINS="yes"
+	  COMPILE_ARGS="${COMPILE_ARGS} '--enable-traffic-bins'"
+	]
+)
+
+AC_MSG_CHECKING(whether to link BGP daemon binaries)
+AC_ARG_ENABLE(bgp-bins,
+        [  --enable-bgp-bins                Link BGP daemon binaries (default: yes)],
+        [
+          if test x$enableval = x"yes" ; then
+            AC_MSG_RESULT(yes)
+            AC_DEFINE(HAVE_BGP_BINS, 1)
+	    USING_BGP_BINS="yes"
+          else
+            AC_MSG_RESULT(no)
+          fi
+        ],
+        [
+          AC_MSG_RESULT(yes)
+          AC_DEFINE(HAVE_BGP_BINS, 1)
+	  USING_BGP_BINS="yes"
+          COMPILE_ARGS="${COMPILE_ARGS} '--enable-bgp-bins'"
+        ]
+)
+
+AC_MSG_CHECKING(whether to link BMP daemon binaries)
+AC_ARG_ENABLE(bmp-bins,
+        [  --enable-bmp-bins                Link BMP daemon binaries (default: yes)],
+        [
+          if test x$enableval = x"yes" ; then
+            AC_MSG_RESULT(yes)
+            AC_DEFINE(HAVE_BMP_BINS, 1)
+	    USING_BMP_BINS="yes"
+          else
+            AC_MSG_RESULT(no)
+          fi
+        ],
+        [
+          AC_MSG_RESULT(yes)
+          AC_DEFINE(HAVE_BMP_BINS, 1)
+	  USING_BMP_BINS="yes"
+          COMPILE_ARGS="${COMPILE_ARGS} '--enable-bmp-bins'"
+        ]
+)
+
+AC_MSG_CHECKING(whether to link Streaming Telemetry daemon binaries)
+AC_ARG_ENABLE(st-bins,
+        [  --enable-st-bins                 Link Streaming Telemetry daemon binaries (default: yes)],
+        [
+          if test x$enableval = x"yes" ; then
+            AC_MSG_RESULT(yes)
+            AC_DEFINE(HAVE_ST_BINS, 1)
+	    USING_ST_BINS="yes"
+          else
+            AC_MSG_RESULT(no)
+          fi
+        ],
+        [
+          AC_MSG_RESULT(yes)
+          AC_DEFINE(HAVE_ST_BINS, 1)
+	  USING_ST_BINS="yes"
+          COMPILE_ARGS="${COMPILE_ARGS} '--enable-st-bins'"
+        ]
+)
+
 dnl Checks for library functions.
 AC_TYPE_SIGNAL
 
@@ -997,6 +1122,7 @@ AC_CHECK_FUNCS([strlcpy vsnprintf setproctitle mallopt tdestroy])
 
 dnl final checks
 dnl trivial solution to portability issue 
+AC_DEFINE_UNQUOTED(COMPILE_ARGS, "$COMPILE_ARGS")
 CFLAGS="${CFLAGS} ${INCLUDES}"
 INCLUDES=""
 
@@ -1008,6 +1134,7 @@ CFLAGS ....... : ${CFLAGS}
 LIBS ......... : ${LIBS}
 LDFLAGS ...... : ${LDFLAGS}
 PLUGINS ...... : ${PLUGINS}
+SUPPORTS ..... : ${SUPPORTS}
 
 Now type 'make' to compile the source code.
 
@@ -1033,8 +1160,13 @@ AM_CONDITIONAL([WITH_RABBITMQ], [test x"$USING_RABBITMQ" = x"yes"])
 AM_CONDITIONAL([WITH_KAFKA], [test x"$USING_KAFKA" = x"yes"])
 AM_CONDITIONAL([USING_SQL], [test x"$USING_SQL" = x"yes"])
 AM_CONDITIONAL([USING_THREADPOOL], [test x"$USING_THREADPOOL" = x"yes"])
-AM_CONDITIONAL([WITH_NFLOG], [test x"$USING_NFLOG" = x"yes"])
 AM_CONDITIONAL([WITH_AVRO], [test x"$USING_AVRO" = x"yes"])
+AM_CONDITIONAL([WITH_NDPI], [test x"$USING_NDPI" = x"yes"])
+AM_CONDITIONAL([WITH_NFLOG], [test x"$USING_NFLOG" = x"yes"])
+AM_CONDITIONAL([USING_TRAFFIC_BINS], [test x"$USING_TRAFFIC_BINS" = x"yes"])
+AM_CONDITIONAL([USING_BGP_BINS], [test x"$USING_BGP_BINS" = x"yes"])
+AM_CONDITIONAL([USING_BMP_BINS], [test x"$USING_BMP_BINS" = x"yes"])
+AM_CONDITIONAL([USING_ST_BINS], [test x"$USING_ST_BINS" = x"yes"])
 AC_OUTPUT([ Makefile \
 	    src/Makefile src/nfprobe_plugin/Makefile \
 	    src/sfprobe_plugin/Makefile src/bgp/Makefile \

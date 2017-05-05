@@ -52,8 +52,9 @@ VALUES:		[ src_mac, dst_mac, vlan, cos, etype, src_host, dst_host, src_net, dst_
 		 src_med, mpls_vpn_rd, mpls_label_top, mpls_label_bottom, mpls_stack_depth,
 		 sampling_rate, src_host_country, dst_host_country, src_host_pocode,
 		 dst_host_pocode, pkt_len_distrib, nat_event, fw_event, post_nat_src_host,
-		 post_nat_dst_host, post_nat_src_port, post_nat_dst_port, timestamp_start,
-		 timestamp_end, timestamp_arrival, export_proto_seqno, export_proto_version ]
+		 post_nat_dst_host, post_nat_src_port, post_nat_dst_port, tunnel_src_host,
+		 tunnel_dst_host, tunnel_proto, tunnel_tos, timestamp_start, timestamp_end,
+		 timestamp_arrival, export_proto_seqno, export_proto_version ]
 FOREWORDS:	Individual IP packets are uniquely identified by their header field values (a
 		rather large set of primitives!). Same applies to uni-directional IP flows, as
 		they have at least enough information to discriminate where packets are coming
@@ -163,7 +164,7 @@ DESC:		Specifies the maximum number of bytes to capture for each packet. This di
 		resources. The right value need to be traded-off. In case classification is enabled, 
 		values under 200 bytes are often meaningless. 500-750 bytes are enough even for text
 		based protocols. Default snaplen values are ok if classification is disabled.
-DEFAULT:	68 bytes; 128 bytes if compiled with --enable-ipv6
+DEFAULT:	128 bytes; 64 bytes if compiled with --disable-ipv6
 
 KEY:		plugins (-P)
 VALUES:		[ memory | print | mysql | pgsql | sqlite3 | mongodb | nfprobe | sfprobe | tee |
@@ -413,7 +414,9 @@ DESC:		Enables syslog logging, using the specified facility.
 DEFAULT:	none (logging to stderr)
 
 KEY:		logfile 
-DESC:           Enables logging to a file (bypassing syslog); expected value is a pathname
+DESC:           Enables logging to a file (bypassing syslog); expected value is a pathname. The target
+		file can be re-opened by sending a SIGHUP to the daemon so that, for example, logs can
+		be rotated. 
 DEFAULT:	none (logging to stderr)
 
 KEY:		[ amqp_host | plugin_pipe_amqp_host ]
@@ -636,6 +639,22 @@ DESC:           Name of the Kafka topic to attach to published data. Dynamic nam
 
 DEFAULT:        'pmacct.acct'
 
+KEY:		kafka_config_file
+DESC:		Full pathname to a file containing directives to configure librdkafka. All knobs
+		whose values are string, integer, boolean, CSV are supported. Pointer values, ie.
+		for setting callbacks, are currently not supported through this infrastructure.
+		The syntax of the file is CSV and expected in the format: <type, key, value> where
+		'type' is one of 'global' or 'topic' and 'key' and 'value' are set according to
+		librdkafka doc https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md
+		Both 'key' and 'value' are passed onto librdkafka without any validation being
+		performed; the 'value' field can also contain commas no problem as it is also not
+		parsed. Examples are:
+
+		topic, compression.codec, snappy
+		global, socket.keepalive.enable, true
+
+DEFAULT:	none
+
 KEY:            plugin_pipe_kafka_topic
 DESC:           Name of the Kafka topic to use to send data to a plugin. Currently each plugin must
 		bind to a different routing key in order to avoid duplications. Dynamic names are
@@ -684,11 +703,6 @@ DESC:           Defines the Kafka broker topic partition key. A string of printa
 		expected as value.
 DEFAULT:	none
 
-KEY:		[ kafka_fallback | plugin_pipe_kafka_fallback ]
-DESC:		Defines the Kafka version to fallback to in order to preserve backward compatibility
-		as in https://github.com/edenhill/librdkafka/wiki/Broker-version-compatibility .
-DEFAULT:	none
-
 KEY:            [ bgp_daemon_msglog_kafka_broker_host | bgp_table_dump_kafka_broker_host |
                   bmp_daemon_msglog_kafka_broker_host | bmp_dump_kafka_broker_host |
 		  sfacctd_counter_kafka_broker_host | telemetry_daemon_msglog_kafka_broker_host |
@@ -733,17 +747,17 @@ KEY:            [ bgp_daemon_msglog_kafka_partition_key |
 DESC:           See kafka_partition_key
 DEFAULT:        See kafka_partition_key
 
-KEY:		[ bgp_daemon_msglog_kafka_fallback | bgp_table_dump_kafka_fallback |
-		  bmp_daemon_msglog_kafka_fallback | bmp_dump_kafka_fallback |
-		  sfacctd_counter_kafka_fallback | telemetry_daemon_msglog_kafka_fallback | 
-		  telemetry_dump_kafka_fallback ] [GLOBAL]
-DESC:           See kafka_fallback
-DEFAULT:        See kafka_fallback
-
 KEY:            [ bgp_daemon_msglog_kafka_retry | bmp_daemon_msglog_kafka_retry |
 		  sfacctd_counter_kafka_retry | telemetry_daemon_msglog_kafka_retry ] [GLOBAL]
 DESC:           See plugin_pipe_kafka_retry
 DEFAULT:        See plugin_pipe_kafka_retry
+
+KEY:            [ bgp_daemon_msglog_kafka_config_file | bgp_table_dump_kafka_config_file |
+                  bmp_daemon_msglog_kafka_config_file | bmp_dump_kafka_config_file |
+                  sfacctd_counter_kafka_config_file | telemetry_daemon_msglog_kafka_config_file |
+                  telemetry_dump_kafka_config_file ] [GLOBAL]
+DESC:           See kafka_config_file
+DEFAULT:        See kafka_config_file
 
 KEY:		pidfile (-F) [GLOBAL]
 DESC:		Writes PID of Core process to the specified file. PIDs of the active plugins are written
@@ -1188,8 +1202,9 @@ DESC:		In SQL plugin, sql_multi_values enables the use of multi-values INSERT st
 		applies only to MySQL and SQLite 3.x plugins. Inserting many rows at the same time is much
 		faster (many times faster in some cases) than using separate single-row INSERT statements.
 		It's adviceable to check the size of this pmacct buffer against the size of the corresponding
-		MySQL buffer (max_allowed_packet). In AMQP plugin, amqp_multi_values enables similar feature:
-		the value is intended as the amount of elements to pack in each JSON array.
+		MySQL buffer (max_allowed_packet). In AMQP and Kafka plugins, [amqp|kafka]_multi_values allow
+		the same with JSON serialization (for Avro see avro_buffer_size); in this case data is encoded
+		in JSON objects newline-separated (preferred to JSON arrays for performance).  
 DEFAULT:        0
 
 KEY:		[ sql_trigger_exec | print_trigger_exec | mongo_trigger_exec ]
@@ -1369,7 +1384,11 @@ KEY:		[ print_markers | amqp_markers | kafka_markers ]
 VALUES:		[ true | false ]
 DESC:		Enables the use of start/end markers each time data is purged to the backend. Both start
 		and end markers return additional information, ie. writer PID, number of entries purged,
-		elapsed time, etc.
+		elapsed time, etc. When plugin output is in JSON or Avro plugin outputs, markers are
+		encoded in JSON format and event_type is set to purge_init and purge_close respectively. 
+		In the case of Kafka topics with multiple partitions, the purge_close message can arrive
+		out of order so other mechanisms should be used to correlate messages as being part of
+		the same batch (ie. writer_id).  
 DEFAULT:	false
 
 KEY:		print_output
@@ -1432,10 +1451,12 @@ DESC:		When the Avro format is used to encode the messages sent to a message bro
 
 KEY:		[ amqp_avro_schema_routing_key | kafka_avro_schema_topic ]
 DESC:		AMQP routing key or Kafka topic on which the generated Avro schema is sent over at regular
-		time intervals by AMQP and Kafka plugins. The schema can then be used by the receiving end
-		to decode the messages. All other parameters to connect to the broker, ie. host, port, etc.
-		are shared with the main plugin routing key or topic. The regular time intervals are set
-		via amqp_avro_schema_refresh_time and kafka_avro_schema_refresh_time.  
+		time intervals by AMQP and Kafka plugins (it can potentially be the same as kafka_topic or
+		amqp_routing_key). The schema can then be used by the receiving end to decode the messages.
+		All other parameters to connect to the broker, ie. host, port, etc. are shared with the main
+		plugin routing key or topic. The time intervals are set via amqp_avro_schema_refresh_time
+		and kafka_avro_schema_refresh_time. Schemas are carried as part of the 'schema' field in
+		an envelope JSON message with 'event_type' set to purge_schema. 
 DEFAULT:	none
 		 
 
@@ -1513,6 +1534,16 @@ DESC:		If nfacctd_time_new is set to false (default) and historical accounting (
 NOTES:          If NetFlow sampling is enabled, it is recommended to have counters renormalization enabled
                 (nfacctd_renormalize set to true).
 DEFAULT:        false
+
+KEY:		nfacctd_templates_file [NFACCTD_ONLY]
+DESC:		Full pathname to a file containing serialized templates data from previous nfacctd use.
+                Templates are loaded from this file when nfacctd is (re)started in order to reduce the amount
+                of dropped packets due to unknown templates. Be aware that this file will be written to with
+                possible new templates and updated versions of provided ones. Hence, you can specify an
+                empty file and incoming templates will be cached into it. This file will be created if it does
+                not exist. Only JSON format is currently supported and requires compiling against Jansson library
+                (--enable-jansson when configuring for compiling).
+DEFAULT:        none
 
 KEY:            [ nfacctd_stitching | sfacctd_stitching | pmacctd_stitching | uacctd_stitching ]
 VALUES:         [ true | false ]
@@ -2401,7 +2432,8 @@ DESC:		Sets the number of packets to queue inside the kernel before sending them
 DEFAULT:	1
 
 KEY:		tunnel_0 [GLOBAL, NO_NFACCTD, NO_SFACCTD]
-DESC:		Defines tunnel inspection, disabled by default. The daemon will then account on tunnelled
+DESC:		Defines tunnel inspection in pmacctd and uacctd, disabled by default (note: this feature
+		is currently unrelated to tunnel_* primitives). The daemon will then account on tunnelled
 		data rather than on the envelope. The implementation approach is stateless, ie. control
 		messages are not handled. Up to 4 tunnel layers are supported (ie. <tun proto>, <options>;
 		<tun proto>, <options>; ...). Up to 8 tunnel stacks will be supported (ie. configuration

@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -175,9 +175,9 @@ struct configuration {
   int kafka_partition;
   char *kafka_partition_key;
   int kafka_partition_keylen;
-  char *kafka_fallback;
   char *kafka_avro_schema_topic;
   int kafka_avro_schema_refresh_time;
+  char *kafka_config_file;
   int print_cache_entries;
   int print_markers;
   int print_output;
@@ -191,6 +191,7 @@ struct configuration {
   char *nfacctd_allow_file;
   int nfacctd_time;
   int nfacctd_pro_rating;
+  char *nfacctd_templates_file;
   int nfacctd_account_options;
   int nfacctd_stitching;
   u_int32_t nfacctd_as;
@@ -218,7 +219,7 @@ struct configuration {
   int sfacctd_counter_kafka_partition_keylen;
   int sfacctd_counter_kafka_broker_port;
   int sfacctd_counter_kafka_retry;
-  char *sfacctd_counter_kafka_fallback;
+  char *sfacctd_counter_kafka_config_file;
   int nfacctd_disable_checks;
   int telemetry_daemon;
   int telemetry_sock;
@@ -268,7 +269,7 @@ struct configuration {
   char *telemetry_msglog_kafka_partition_key;
   int telemetry_msglog_kafka_partition_keylen;
   int telemetry_msglog_kafka_retry;
-  char *telemetry_msglog_kafka_fallback;
+  char *telemetry_msglog_kafka_config_file;
   char *telemetry_dump_kafka_broker_host;
   int telemetry_dump_kafka_broker_port;
   char *telemetry_dump_kafka_topic;
@@ -276,7 +277,7 @@ struct configuration {
   int telemetry_dump_kafka_partition;
   char *telemetry_dump_kafka_partition_key;
   int telemetry_dump_kafka_partition_keylen;
-  char *telemetry_dump_kafka_fallback;
+  char *telemetry_dump_kafka_config_file;
   int nfacctd_bgp;
   int nfacctd_bgp_msglog_output;
   char *nfacctd_bgp_msglog_file;
@@ -300,7 +301,7 @@ struct configuration {
   int nfacctd_bgp_msglog_kafka_partition_keylen;
   int nfacctd_bgp_msglog_kafka_broker_port;
   int nfacctd_bgp_msglog_kafka_retry;
-  char *nfacctd_bgp_msglog_kafka_fallback;
+  char *nfacctd_bgp_msglog_kafka_config_file;
   char *nfacctd_bgp_id;
   char *nfacctd_bgp_ip;
   as_t nfacctd_bgp_as;
@@ -363,7 +364,7 @@ struct configuration {
   char *bgp_table_dump_kafka_partition_key;
   int bgp_table_dump_kafka_partition_keylen;
   int bgp_table_dump_kafka_broker_port;
-  char *bgp_table_dump_kafka_fallback;
+  char *bgp_table_dump_kafka_config_file;
   int bmp_sock;
   int nfacctd_bmp;
   char *nfacctd_bmp_ip;
@@ -396,7 +397,7 @@ struct configuration {
   int nfacctd_bmp_msglog_kafka_partition_keylen;
   int nfacctd_bmp_msglog_kafka_broker_port;
   int nfacctd_bmp_msglog_kafka_retry;
-  char *nfacctd_bmp_msglog_kafka_fallback;
+  char *nfacctd_bmp_msglog_kafka_config_file;
   int bmp_table_peer_buckets;
   int bmp_table_per_peer_buckets;
   int bmp_table_attr_hash_buckets;
@@ -423,7 +424,7 @@ struct configuration {
   char *bmp_dump_kafka_partition_key;
   int bmp_dump_kafka_partition_keylen;
   int bmp_dump_kafka_broker_port;
-  char *bmp_dump_kafka_fallback;
+  char *bmp_dump_kafka_config_file;
   int nfacctd_isis;
   char *nfacctd_isis_ip;
   char *nfacctd_isis_net;
@@ -540,6 +541,7 @@ EXT void evaluate_configuration(char *, int);
 EXT int parse_configuration_file(char *);
 EXT int parse_plugin_names(char *, int, int);
 EXT void parse_core_process_name(char *, int, int);
+EXT void compose_default_plugin_name(char *, int, char *);
 EXT int create_plugin(char *, char *, char *);
 EXT int delete_plugin_by_id(int);
 EXT struct plugins_list_entry *search_plugin_by_pipe(int);

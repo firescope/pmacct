@@ -1,5 +1,6 @@
 language: C
 compiler: gcc
+dist: trusty
 sudo: required
 
 install:
@@ -14,7 +15,7 @@ install:
 
 script:
   - ./autogen.sh
-  - ./configure --enable-ipv6 --enable-mysql --enable-pgsql --enable-sqlite3 --enable-kafka --enable-geoipv2 --enable-jansson --enable-rabbitmq --enable-nflog
+  - ./configure --enable-mysql --enable-pgsql --enable-sqlite3 --enable-kafka --enable-geoipv2 --enable-jansson --enable-rabbitmq --enable-nflog
   - make
   - sudo make install
   - make distcheck
@@ -28,7 +29,7 @@ addons:
       - libmysqlclient-dev
       - libjansson-dev
       - libnetfilter-log-dev
-      - mysql-client
+      - mysql-client-5.6
       - libtool
       - autoconf
       - automake

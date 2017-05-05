@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -36,6 +36,7 @@ struct acc *search_accounting_structure(struct primitives_ptrs *prim_ptrs)
   struct pkt_legacy_bgp_primitives *plbgp = prim_ptrs->plbgp;
   struct pkt_nat_primitives *pnat = prim_ptrs->pnat;
   struct pkt_mpls_primitives *pmpls = prim_ptrs->pmpls;
+  struct pkt_tunnel_primitives *ptun = prim_ptrs->ptun;
   char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
   struct acc *elem_acc;
@@ -45,6 +46,7 @@ struct acc *search_accounting_structure(struct primitives_ptrs *prim_ptrs)
   unsigned int plb_size = sizeof(struct pkt_legacy_bgp_primitives);
   unsigned int pn_size = sizeof(struct pkt_nat_primitives);
   unsigned int pm_size = sizeof(struct pkt_mpls_primitives);
+  unsigned int pt_size = sizeof(struct pkt_tunnel_primitives);
   unsigned int pc_size = config.cpptrs.len;
 
   hash = cache_crc32((unsigned char *)addr, pp_size);
@@ -52,6 +54,7 @@ struct acc *search_accounting_structure(struct primitives_ptrs *prim_ptrs)
   if (plbgp) hash ^= cache_crc32((unsigned char *)plbgp, plb_size);
   if (pnat) hash ^= cache_crc32((unsigned char *)pnat, pn_size);
   if (pmpls) hash ^= cache_crc32((unsigned char *)pmpls, pm_size);
+  if (ptun) hash ^= cache_crc32((unsigned char *)ptun, pt_size);
   if (pcust && pc_size) hash ^= cache_crc32((unsigned char *)pcust, pc_size);
   // if (pvlen) hash ^= cache_crc32((unsigned char *)pvlen, (PvhdrSz + pvlen->tot_len));
   pos = hash % config.buckets;
@@ -79,10 +82,11 @@ int compare_accounting_structure(struct acc *elem, struct primitives_ptrs *prim_
   struct pkt_legacy_bgp_primitives *plbgp = prim_ptrs->plbgp;
   struct pkt_nat_primitives *pnat = prim_ptrs->pnat;
   struct pkt_mpls_primitives *pmpls = prim_ptrs->pmpls;
+  struct pkt_tunnel_primitives *ptun = prim_ptrs->ptun;
   char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
-  int res_data = TRUE, res_bgp = TRUE, res_nat = TRUE, res_mpls = TRUE, res_cust = TRUE; 
-  int res_vlen = TRUE, res_lbgp = TRUE;
+  int res_data = TRUE, res_bgp = TRUE, res_nat = TRUE, res_mpls = TRUE, res_tun = TRUE;
+  int res_cust = TRUE, res_vlen = TRUE, res_lbgp = TRUE;
 
   res_data = memcmp(&elem->primitives, data, sizeof(struct pkt_primitives));
 
@@ -105,6 +109,9 @@ int compare_accounting_structure(struct acc *elem, struct primitives_ptrs *prim_
   if (pmpls && elem->pmpls) res_mpls = memcmp(elem->pmpls, pmpls, sizeof(struct pkt_mpls_primitives));
   else res_mpls = FALSE;
 
+  if (ptun && elem->ptun) res_tun = memcmp(elem->ptun, ptun, sizeof(struct pkt_tunnel_primitives));
+  else res_tun = FALSE;
+
   if (pcust && elem->pcust) res_cust = memcmp(elem->pcust, pcust, config.cpptrs.len);
   else res_cust = FALSE;
 
@@ -122,6 +129,7 @@ void insert_accounting_structure(struct primitives_ptrs *prim_ptrs)
   struct pkt_legacy_bgp_primitives *plbgp = prim_ptrs->plbgp;
   struct pkt_nat_primitives *pnat = prim_ptrs->pnat;
   struct pkt_mpls_primitives *pmpls = prim_ptrs->pmpls;
+  struct pkt_tunnel_primitives *ptun = prim_ptrs->ptun;
   char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
   struct acc *elem_acc;
@@ -133,6 +141,7 @@ void insert_accounting_structure(struct primitives_ptrs *prim_ptrs)
   unsigned int plb_size = sizeof(struct pkt_legacy_bgp_primitives);
   unsigned int pn_size = sizeof(struct pkt_nat_primitives);
   unsigned int pm_size = sizeof(struct pkt_mpls_primitives);
+  unsigned int pt_size = sizeof(struct pkt_tunnel_primitives);
   unsigned int pc_size = config.cpptrs.len;
   unsigned int clb_size = sizeof(struct cache_legacy_bgp_primitives);
 
@@ -170,6 +179,7 @@ void insert_accounting_structure(struct primitives_ptrs *prim_ptrs)
   if (plbgp) hash ^= cache_crc32((unsigned char *)plbgp, plb_size);
   if (pnat) hash ^= cache_crc32((unsigned char *)pnat, pn_size);
   if (pmpls) hash ^= cache_crc32((unsigned char *)pmpls, pm_size);
+  if (ptun) hash ^= cache_crc32((unsigned char *)ptun, pt_size);
   if (pcust && pc_size) hash ^= cache_crc32((unsigned char *)pcust, pc_size);
   // if (pvlen) hash ^= cache_crc32((unsigned char *)pvlen, (PvhdrSz + pvlen->tot_len));
   pos = hash % config.buckets;
@@ -216,7 +226,7 @@ void insert_accounting_structure(struct primitives_ptrs *prim_ptrs)
 	  elem_acc->bytes_counter += data->cst.ba;
           elem_acc->flow_counter += data->cst.fa;
 	}
-        lru_elem_ptr[config.buckets] = elem_acc;
+        lru_elem_ptr[pos] = elem_acc;
         return;
       }
     }
@@ -283,6 +293,21 @@ void insert_accounting_structure(struct primitives_ptrs *prim_ptrs)
 	elem_acc->pmpls = NULL;
       }
 
+      if (ptun) {
+	if (!elem_acc->ptun) {
+	  elem_acc->ptun = (struct pkt_tunnel_primitives *) malloc(pt_size);
+	  if (!elem_acc->ptun) {
+            Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (insert_accounting_structure). Exiting ..\n", config.name, config.type);
+            exit_plugin(1);
+	  }
+	}
+	memcpy(elem_acc->ptun, ptun, pt_size);
+      }
+      else {
+	if (elem_acc->ptun) free(elem_acc->ptun);
+	elem_acc->ptun = NULL;
+      }
+
       if (pcust) {
 	if (!elem_acc->pcust) {
 	  elem_acc->pcust = (char *) malloc(pc_size);
@@ -325,7 +350,7 @@ void insert_accounting_structure(struct primitives_ptrs *prim_ptrs)
         elem_acc->bytes_counter += data->cst.ba;
         elem_acc->flow_counter += data->cst.fa;
       }
-      lru_elem_ptr[config.buckets] = elem_acc;
+      lru_elem_ptr[pos] = elem_acc;
       return;
     }
 
@@ -407,6 +432,16 @@ void insert_accounting_structure(struct primitives_ptrs *prim_ptrs)
       }
       else elem_acc->pmpls = NULL;
 
+      if (ptun) {
+        elem_acc->ptun = (struct pkt_tunnel_primitives *) malloc(pt_size);
+	if (!elem_acc->ptun) {
+          Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (insert_accounting_structure). Exiting ..\n", config.name, config.type);
+          exit_plugin(1);
+	}
+        memcpy(elem_acc->ptun, ptun, pt_size);
+      }
+      else elem_acc->ptun = NULL;
+
       if (pcust) {
         elem_acc->pcust = (char *) malloc(pc_size);
 	if (!elem_acc->pcust) {
@@ -445,7 +480,7 @@ void insert_accounting_structure(struct primitives_ptrs *prim_ptrs)
         elem_acc->flow_counter += data->cst.fa;
       }
       elem_acc->next = NULL;
-      lru_elem_ptr[config.buckets] = elem_acc;
+      lru_elem_ptr[pos] = elem_acc;
       return;
     }
   }

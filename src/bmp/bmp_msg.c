@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -287,8 +287,10 @@ void bmp_process_msg_peer_up(char **bmp_packet, u_int32_t *len, struct bmp_peer 
     return;
   }
 
-  bmp_peer_hdr_get_family(bph, &bdata.family);
+  bmp_peer_hdr_get_v_flag(bph, &bdata.family);
   bmp_peer_hdr_get_peer_ip(bph, &bdata.peer_ip, bdata.family);
+  bmp_peer_hdr_get_l_flag(bph, &bdata.is_post);
+  bmp_peer_hdr_get_a_flag(bph, &bdata.is_2b_asn);
   bmp_peer_hdr_get_bgp_id(bph, &bdata.bgp_id);
   bmp_peer_hdr_get_tstamp(bph, &bdata.tstamp);
   bmp_peer_hdr_get_peer_asn(bph, &bdata.peer_asn);
@@ -301,19 +303,32 @@ void bmp_process_msg_peer_up(char **bmp_packet, u_int32_t *len, struct bmp_peer 
     {
       struct bmp_log_peer_up blpu;
       struct bgp_peer bgp_peer_loc, bgp_peer_rem, *bmpp_bgp_peer;
+      struct bgp_msg_extra_data_bmp bmed_bmp;
+      struct bgp_msg_data bmd;
       int bgp_open_len;
       void *ret, *alloc_key;
 
       memset(&bgp_peer_loc, 0, sizeof(bgp_peer_loc));
       memset(&bgp_peer_rem, 0, sizeof(bgp_peer_rem));
+      memset(&bmd, 0, sizeof(bmd));
+      memset(&bmed_bmp, 0, sizeof(bmed_bmp));
       bmp_peer_up_hdr_get_loc_port(bpuh, &blpu.loc_port);
       bmp_peer_up_hdr_get_rem_port(bpuh, &blpu.rem_port);
       bmp_peer_up_hdr_get_local_ip(bpuh, &blpu.local_ip, bdata.family);
 
-      bgp_open_len = bgp_parse_open_msg(&bgp_peer_loc, (*bmp_packet), FALSE, FALSE);
+      bmd.peer = &bgp_peer_loc;
+      bmd.extra.id = BGP_MSG_EXTRA_DATA_BMP;
+      bmd.extra.len = sizeof(bmed_bmp);
+      bmd.extra.data = &bmed_bmp;
+      bgp_msg_data_set_data_bmp(&bmed_bmp, &bdata);
+
+      /* XXX: checks, ie. marker, message length, etc., bypassed */
+      bgp_open_len = bgp_parse_open_msg(&bmd, (*bmp_packet), FALSE, FALSE);
       bmp_get_and_check_length(bmp_packet, len, bgp_open_len);
       memcpy(&bgp_peer_loc.addr, &blpu.local_ip, sizeof(struct host_addr));
-      bgp_open_len = bgp_parse_open_msg(&bgp_peer_rem, (*bmp_packet), FALSE, FALSE);
+
+      bmd.peer = &bgp_peer_rem;
+      bgp_open_len = bgp_parse_open_msg(&bmd, (*bmp_packet), FALSE, FALSE);
       bmp_get_and_check_length(bmp_packet, len, bgp_open_len);
       memcpy(&bgp_peer_rem.addr, &bdata.peer_ip, sizeof(struct host_addr));
 
@@ -368,8 +383,9 @@ void bmp_process_msg_peer_down(char **bmp_packet, u_int32_t *len, struct bmp_pee
     return;
   }
 
-  bmp_peer_hdr_get_family(bph, &bdata.family);
+  bmp_peer_hdr_get_v_flag(bph, &bdata.family);
   bmp_peer_hdr_get_peer_ip(bph, &bdata.peer_ip, bdata.family);
+  bmp_peer_hdr_get_l_flag(bph, &bdata.is_post);
   bmp_peer_hdr_get_bgp_id(bph, &bdata.bgp_id);
   bmp_peer_hdr_get_tstamp(bph, &bdata.tstamp);
   bmp_peer_hdr_get_peer_asn(bph, &bdata.peer_asn);
@@ -449,8 +465,10 @@ void bmp_process_msg_route_monitor(char **bmp_packet, u_int32_t *len, struct bmp
     return;
   }
 
-  bmp_peer_hdr_get_family(bph, &bdata.family);
+  bmp_peer_hdr_get_v_flag(bph, &bdata.family);
   bmp_peer_hdr_get_peer_ip(bph, &bdata.peer_ip, bdata.family);
+  bmp_peer_hdr_get_l_flag(bph, &bdata.is_post);
+  bmp_peer_hdr_get_a_flag(bph, &bdata.is_2b_asn);
   bmp_peer_hdr_get_bgp_id(bph, &bdata.bgp_id);
   bmp_peer_hdr_get_tstamp(bph, &bdata.tstamp);
   bmp_peer_hdr_get_peer_asn(bph, &bdata.peer_asn);
@@ -467,11 +485,21 @@ void bmp_process_msg_route_monitor(char **bmp_packet, u_int32_t *len, struct bmp
 
     if (ret) {
       char peer_str[] = "peer_ip", *saved_peer_str = bms->peer_str;
+      struct bgp_msg_extra_data_bmp bmed_bmp;
+      struct bgp_msg_data bmd;
 
       bmpp_bgp_peer = (*(struct bgp_peer **) ret);
+      memset(&bmd, 0, sizeof(bmd));
+      memset(&bmed_bmp, 0, sizeof(bmed_bmp));
 
       bms->peer_str = peer_str;
-      bgp_update_len = bgp_parse_update_msg(bmpp_bgp_peer, (*bmp_packet)); 
+      bmd.peer = bmpp_bgp_peer;
+      bmd.extra.id = BGP_MSG_EXTRA_DATA_BMP;
+      bmd.extra.len = sizeof(bmed_bmp);
+      bmd.extra.data = &bmed_bmp;
+      bgp_msg_data_set_data_bmp(&bmed_bmp, &bdata);
+      /* XXX: checks, ie. marker, message length, etc., bypassed */
+      bgp_update_len = bgp_parse_update_msg(&bmd, (*bmp_packet)); 
       bms->peer_str = saved_peer_str;
 
       bmp_get_and_check_length(bmp_packet, len, bgp_update_len);
@@ -526,9 +554,10 @@ void bmp_process_msg_stats(char **bmp_packet, u_int32_t *len, struct bmp_peer *b
     return;
   }
 
-  bmp_peer_hdr_get_family(bph, &bdata.family);
+  bmp_peer_hdr_get_v_flag(bph, &bdata.family);
   bmp_peer_hdr_get_peer_ip(bph, &bdata.peer_ip, bdata.family);
   bmp_peer_hdr_get_bgp_id(bph, &bdata.bgp_id);
+  bmp_peer_hdr_get_l_flag(bph, &bdata.is_post);
   bmp_peer_hdr_get_tstamp(bph, &bdata.tstamp);
   bmp_peer_hdr_get_peer_asn(bph, &bdata.peer_asn);
   bmp_peer_hdr_get_peer_type(bph, &bdata.peer_type);
@@ -638,12 +667,12 @@ void bmp_term_hdr_get_reason_type(char **bmp_packet, u_int32_t *pkt_size, u_int1
   }
 }
 
-void bmp_peer_hdr_get_family(struct bmp_peer_hdr *bph, u_int8_t *family)
+void bmp_peer_hdr_get_v_flag(struct bmp_peer_hdr *bph, u_int8_t *family)
 {
   u_int8_t version;
 
   if (bph && family) {
-    version = (bph->flags >> 7);
+    version = (bph->flags & 0x80);
     (*family) = FALSE;
 
     if (version == 0) (*family) = AF_INET;
@@ -651,6 +680,16 @@ void bmp_peer_hdr_get_family(struct bmp_peer_hdr *bph, u_int8_t *family)
     else if (version == 1) (*family) = AF_INET6;
 #endif
   }
+}
+
+void bmp_peer_hdr_get_l_flag(struct bmp_peer_hdr *bph, u_int8_t *is_post)
+{
+  if (bph && is_post) (*is_post) = (bph->flags & 0x40);
+}
+
+void bmp_peer_hdr_get_a_flag(struct bmp_peer_hdr *bph, u_int8_t *is_2b_asn)
+{
+  if (bph && is_2b_asn) (*is_2b_asn) = (bph->flags & 0x20);
 }
 
 void bmp_peer_hdr_get_peer_ip(struct bmp_peer_hdr *bph, struct host_addr *a, u_int8_t family)

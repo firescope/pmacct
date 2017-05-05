@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -79,7 +79,9 @@ void usage_daemon(char *prog_name)
   printf("  -A  \tAppend output (applies to -o)\n");
   printf("  -E  \tCSV format serparator (applies to -O csv, DEFAULT: ',')\n");
   printf("\n");
-  printf("  See QUICKSTART or visit http://wiki.pmacct.net/ for examples.\n");
+  printf("For examples, see:\n");
+  printf("  https://github.com/pmacct/pmacct/blob/master/QUICKSTART or\n");
+  printf("  https://github.com/pmacct/pmacct/wiki\n");
   printf("\n");
   printf("For suggestions, critics, bugs, contact me: %s.\n", MANTAINER);
 }
@@ -435,6 +437,10 @@ int main(int argc,char **argv, char **envp)
 			COUNT_MPLS_STACK_DEPTH))
 	  list->cfg.data_type |= PIPE_TYPE_MPLS;
 
+	if (list->cfg.what_to_count_2 & (COUNT_TUNNEL_SRC_HOST|COUNT_TUNNEL_DST_HOST|
+			COUNT_TUNNEL_IP_PROTO|COUNT_TUNNEL_IP_TOS))
+	  list->cfg.data_type |= PIPE_TYPE_TUN;
+
 	if (list->cfg.what_to_count_2 & (COUNT_LABEL))
 	  list->cfg.data_type |= PIPE_TYPE_VLEN;
 
@@ -777,6 +783,10 @@ int main(int argc,char **argv, char **envp)
   /* initializing template cache */ 
   memset(&tpl_cache, 0, sizeof(tpl_cache));
   tpl_cache.num = TEMPLATE_CACHE_ENTRIES;
+
+  if (config.nfacctd_templates_file) {
+    load_templates_from_file(config.nfacctd_templates_file);
+  }
 
   /* arranging static pointers to dummy packet; to speed up things into the
      main loop we mantain two packet_ptrs structures when IPv6 is enabled:
@@ -1377,7 +1387,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
     pkt += NfDataHdrV9Sz;
     flowoff += NfDataHdrV9Sz;
 
-    tpl = find_template(data_hdr->flow_id, pptrs, fid, SourceId);
+    tpl = find_template(data_hdr->flow_id, (struct host_addr *) pptrs->f_agent, fid, SourceId);
     if (!tpl) {
       sa_to_addr((struct sockaddr *)pptrs->f_agent, &debug_a, &debug_agent_port);
       addr_to_str(debug_agent_addr, &debug_a);
@@ -1535,7 +1545,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
       while (flowoff+tpl->len <= flowsetlen) {
         /* Let's bake offsets and lengths if we have variable-length fields */
         if (tpl->vlen) {
-	  resolve_vlen_template(pkt, tpl);
+	  resolve_vlen_template(pkt, flowsetlen, tpl);
 
 	  /* with the record resolved, let's check against flowset length again */ 
 	  if (flowoff+tpl->len > flowsetlen) break;
@@ -2191,6 +2201,7 @@ void compute_once()
   PlbgpSz = sizeof(struct pkt_legacy_bgp_primitives);
   PnatSz = sizeof(struct pkt_nat_primitives);
   PmplsSz = sizeof(struct pkt_mpls_primitives);
+  PtunSz = sizeof(struct pkt_tunnel_primitives);
   PvhdrSz = sizeof(struct pkt_vlen_hdr_primitives);
   PmLabelTSz = sizeof(pm_label_t);
   PtLabelTSz = sizeof(pt_label_t);

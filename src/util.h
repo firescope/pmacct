@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -24,7 +24,13 @@
 #define SUB 1
 
 #ifdef WITH_AVRO
-#include <avro.h>
+#define check_i(call) \
+  do { \
+    if ((call) != 0) { \
+      Log(LOG_ERR, "Error: %s\n", avro_strerror()); \
+      exit_plugin(1); \
+    } \
+} while (0)
 #endif
 
 /* prototypes */
@@ -42,6 +48,7 @@ EXT char *extract_plugin_name(char **);
 EXT void trim_spaces(char *);
 EXT void trim_all_spaces(char *);
 EXT void strip_quotes(char *);
+EXT void string_add_newline(char *);
 EXT int isblankline(char *);
 EXT int iscomment(char *);
 EXT int check_not_valid_char(char *, char *, int);
@@ -106,26 +113,15 @@ EXT char *write_sep(char *, int *);
 EXT void version_daemon(char *);
 EXT void set_truefalse_nonzero(int *);
 
-EXT void *compose_json(u_int64_t, u_int64_t, u_int8_t, struct pkt_primitives *,
-		      struct pkt_bgp_primitives *, struct pkt_nat_primitives *,
-		      struct pkt_mpls_primitives *, char *, struct pkt_vlen_hdr_primitives *,
-		      pm_counter_t, pm_counter_t, pm_counter_t, u_int32_t, struct timeval *,
-		      struct pkt_stitching *);
 EXT char *compose_json_str(void *);
 EXT void write_and_free_json(FILE *, void *);
-EXT void *compose_purge_init_json(char *, pid_t);
-EXT void *compose_purge_close_json(char *, pid_t, int, int, int);
 EXT int write_and_free_json_amqp(void *, void *);
 EXT int write_and_free_json_kafka(void *, void *);
 EXT void add_writer_name_and_pid_json(void *, char *, pid_t);
 
 #ifdef WITH_AVRO
-EXT avro_schema_t build_avro_schema(u_int64_t wtc, u_int64_t wtc_2);
-EXT avro_value_t compose_avro(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struct pkt_primitives *pbase,
-  struct pkt_bgp_primitives *pbgp, struct pkt_nat_primitives *pnat, struct pkt_mpls_primitives *pmpls,
-  char *pcust, struct pkt_vlen_hdr_primitives *pvlen, pm_counter_t bytes_counter,
-  pm_counter_t packet_counter, pm_counter_t flow_counter, u_int32_t tcp_flags, struct timeval *basetime,
-  struct pkt_stitching *stitch, avro_value_iface_t *iface);
+EXT void write_avro_schema_to_file(char *, avro_schema_t);
+EXT char *compose_avro_purge_schema(avro_schema_t, char *);
 #endif
 
 EXT void compose_timestamp(char *, int, struct timeval *, int, int);
@@ -141,6 +137,7 @@ EXT void primptrs_set_bgp(u_char *, struct extra_primitives *, struct primitives
 EXT void primptrs_set_lbgp(u_char *, struct extra_primitives *, struct primitives_ptrs *);
 EXT void primptrs_set_nat(u_char *, struct extra_primitives *, struct primitives_ptrs *);
 EXT void primptrs_set_mpls(u_char *, struct extra_primitives *, struct primitives_ptrs *);
+EXT void primptrs_set_tun(u_char *, struct extra_primitives *, struct primitives_ptrs *);
 EXT void primptrs_set_custom(u_char *, struct extra_primitives *, struct primitives_ptrs *);
 EXT void primptrs_set_extras(u_char *, struct extra_primitives *, struct primitives_ptrs *);
 EXT void primptrs_set_vlen_hdr(u_char *, struct extra_primitives *, struct primitives_ptrs *);
@@ -186,4 +183,5 @@ EXT void pm_scandir_free(struct dirent ***, int);
 EXT int pm_alphasort(const void *, const void *);
 
 EXT void replace_string(char *, int, char *, char *);
+EXT int delete_line_from_file(int, char *);
 #undef EXT

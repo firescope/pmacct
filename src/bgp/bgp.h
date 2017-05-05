@@ -85,6 +85,9 @@
 #define BGP_DAEMON_ONLINE	1
 #define BGP_DAEMON_OFFLINE	2
 
+#define BGP_MSG_EXTRA_DATA_NONE	0
+#define BGP_MSG_EXTRA_DATA_BMP	1
+
 /* structures */
 struct bgp_dump_event {
   struct timeval tstamp;
@@ -136,11 +139,16 @@ struct bgp_misc_structs {
   void (*bgp_peer_log_msg_extras)(struct bgp_peer *, int, void *);
   void (*bgp_peer_logdump_initclose_extras)(struct bgp_peer *, int, void *);
 
+  void (*bgp_peer_logdump_extra_data)(struct bgp_msg_extra_data *, int, void *);
+  int (*bgp_extra_data_process)(struct bgp_msg_extra_data *, struct bgp_info *);
+  int (*bgp_extra_data_cmp)(struct bgp_msg_extra_data *, struct bgp_msg_extra_data *);
+  void (*bgp_extra_data_free)(struct bgp_msg_extra_data *);
+
   int table_peer_buckets;
   int table_per_peer_buckets;
   int table_attr_hash_buckets;
   int table_per_peer_hash;
-  u_int32_t (*route_info_modulo)(struct bgp_peer *, path_id_t *);
+  u_int32_t (*route_info_modulo)(struct bgp_peer *, path_id_t *, int);
   struct bgp_peer *(*bgp_lookup_find_peer)(struct sockaddr *, struct xflow_status_entry *, u_int16_t, int);
   int (*bgp_lookup_node_match_cmp)(struct bgp_info *, struct node_match_cmp_term2 *);
 
@@ -189,6 +197,11 @@ struct bgp_peer {
      bmp_peer.bgp_peers[n].bmp_se:	backpointer to parent struct bmp_peer
   */
   void *bmp_se;
+};
+
+struct bgp_msg_data {
+  struct bgp_peer *peer;
+  struct bgp_msg_extra_data extra;
 };
 
 /* these includes require definition of bgp_rt_structs and bgp_peer */
@@ -271,7 +284,7 @@ EXT char *lrg_comm_patterns[MAX_BGP_COMM_PATTERNS];
 EXT char *std_comm_patterns_to_asn[MAX_BGP_COMM_PATTERNS];
 EXT struct bgp_comm_range peer_src_as_ifrange; 
 EXT struct bgp_comm_range peer_src_as_asrange; 
-EXT u_int32_t (*bgp_route_info_modulo)(struct bgp_peer *, path_id_t *);
+EXT u_int32_t (*bgp_route_info_modulo)(struct bgp_peer *, path_id_t *, int);
 
 EXT struct bgp_rt_structs inter_domain_routing_dbs[FUNC_TYPE_MAX], *bgp_routing_db;
 EXT struct bgp_misc_structs inter_domain_misc_dbs[FUNC_TYPE_MAX], *bgp_misc_db;

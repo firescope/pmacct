@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -207,6 +207,34 @@ void decodeIPLayer4(SFSample *sample, u_char *ptr, u_int32_t ipProtocol) {
 }
 
 /*_________________---------------------------__________________
+  _________________     decodeIPV4_inner      __________________
+  -----------------___________________________------------------
+*/
+
+void decodeIPV4_inner(SFSample *sample, u_char *ptr)
+{
+  if (sample->got_inner_IPV4) {
+    u_char *end = sample->header + sample->headerLen;
+    u_int16_t caplen = end - ptr;
+    struct SF_iphdr ip;
+
+    if (caplen < IP4HdrSz) return;
+    memcpy(&ip, ptr, sizeof(ip));
+
+    sample->dcd_inner_srcIP.s_addr = ip.saddr;
+    sample->dcd_inner_dstIP.s_addr = ip.daddr;
+    sample->dcd_inner_ipProtocol = ip.protocol;
+    sample->dcd_inner_ipTos = ip.tos;
+
+    sample->ip_inner_fragmentOffset = ntohs(ip.frag_off) & 0x1FFF;
+    if (sample->ip_inner_fragmentOffset == 0) {
+      ptr += (ip.version_and_headerLen & 0x0f) * 4;
+      decodeIPLayer4(sample, ptr, ip.protocol);
+    }
+  }
+}
+
+/*_________________---------------------------__________________
   _________________     decodeIPV4            __________________
   -----------------___________________________------------------
 */
@@ -237,7 +265,12 @@ void decodeIPV4(SFSample *sample)
       /* advance the pointer to the next protocol layer */
       /* ip headerLen is expressed as a number of quads */
       ptr += (ip.version_and_headerLen & 0x0f) * 4;
-      decodeIPLayer4(sample, ptr, ip.protocol);
+
+      if (ip.protocol == 4 /* ipencap */ || ip.protocol == 94 /* ipip */) {
+	sample->got_inner_IPV4 = TRUE;
+	decodeIPV4_inner(sample, ptr);
+      }
+      else decodeIPLayer4(sample, ptr, ip.protocol);
     }
   }
 }
@@ -314,7 +347,12 @@ void decodeIPV6(SFSample *sample)
     // now that we have eliminated the extension headers, nextHeader should have what we want to
     // remember as the ip protocol...
     sample->dcd_ipProtocol = nextHeader;
-    decodeIPLayer4(sample, ptr, sample->dcd_ipProtocol);
+
+    if (sample->dcd_ipProtocol == 4 /* ipencap */ || sample->dcd_ipProtocol == 94 /* ipip */) {
+      sample->got_inner_IPV4 = TRUE;
+      decodeIPV4_inner(sample, ptr); 
+    }
+    else decodeIPLayer4(sample, ptr, sample->dcd_ipProtocol);
   }
 }
 #endif
@@ -353,8 +391,20 @@ u_int64_t getData64(SFSample *sample)
 void skipBytes(SFSample *sample, int skip)
 {
   int quads = (skip + 3) / 4;
+
   sample->datap += quads;
   // if((u_char *)sample->datap > sample->endp) return 0; 
+}
+
+int skipBytesAndCheck(SFSample *sample, int skip)
+{
+  int quads = (skip + 3) / 4;
+
+  if ((u_char *)(sample->datap + quads) <= sample->endp) {
+    sample->datap += quads;
+    return quads;
+  }
+  else return ERR;
 }
 
 u_int32_t getString(SFSample *sample, char *buf, int bufLen)
@@ -1085,9 +1135,7 @@ void readv5FlowSample(SFSample *sample, int expanded, struct packet_ptrs_vector 
       case SFLFLOW_EX_CLASS:	    readExtendedClass(sample); break;
       case SFLFLOW_EX_TAG:	    readExtendedTag(sample); break;
       default:
-	// lengthCheck() here for extra security before skipBytes()
-	if (lengthCheck(sample, start, length) == ERR) return;
-	skipBytes(sample, length);
+	if (skipBytesAndCheck(sample, length) == ERR) return;
 	break;
       }
 
@@ -1108,7 +1156,7 @@ void readv5FlowSample(SFSample *sample, int expanded, struct packet_ptrs_vector 
   if (finalize) finalizeSample(sample, pptrsv, req);
 }
 
-void readv5CountersSample(SFSample *sample, int expanded, struct packet_ptrs_vector *pptrsv, struct plugin_requests *req)
+void readv5CountersSample(SFSample *sample, int expanded, struct packet_ptrs_vector *pptrsv)
 {
   struct sfv5_modules_db_field *db_field = NULL;
   struct xflow_status_entry *xse = NULL;
@@ -1154,7 +1202,7 @@ void readv5CountersSample(SFSample *sample, int expanded, struct packet_ptrs_vec
     }
     else Log(LOG_WARNING, "WARN ( %s/core ): readv5CountersSample(): no IEs available in SFv5 modules DB.\n", config.name);
 
-    if (sfacctd_counter_backend_methods) sf_cnt_log_msg(peer, sample, length, "log", config.sfacctd_counter_output, tag);
+    if (sfacctd_counter_backend_methods) sf_cnt_log_msg(peer, sample, sample->datagramVersion, length, "log", config.sfacctd_counter_output, tag);
     else skipBytes(sample, length);
   }
 
@@ -1166,9 +1214,27 @@ void readv5CountersSample(SFSample *sample, int expanded, struct packet_ptrs_vec
    about the length of current sample. This is because we still need
    to parse the very first part of the sample
 */ 
-void readv2v4CountersSample(SFSample *sample)
+void readv2v4CountersSample(SFSample *sample, struct packet_ptrs_vector *pptrsv)
 {
-  skipBytes(sample, 12);
+  struct xflow_status_entry *xse = NULL;
+  struct bgp_peer *peer = NULL;
+  int have_sample = FALSE;
+  u_int32_t length = 0;
+
+  if (sfacctd_counter_backend_methods) {
+    if (pptrsv) xse = (struct xflow_status_entry *) pptrsv->v4.f_status;
+    if (xse) peer = (struct bgp_peer *) xse->sf_cnt;
+  }
+
+  sample->cntSequenceNo = getData32(sample);
+
+  {
+    uint32_t samplerId = getData32(sample);
+    sample->ds_class = samplerId >> 24;
+    sample->ds_index = samplerId & 0x00ffffff;
+  }
+
+  sample->statsSamplingInterval = getData32(sample);
   sample->counterBlockVersion = getData32(sample);
 
   switch(sample->counterBlockVersion) {
@@ -1177,20 +1243,25 @@ void readv2v4CountersSample(SFSample *sample)
   case INMCOUNTERSVERSION_TOKENRING:
   case INMCOUNTERSVERSION_FDDI:
   case INMCOUNTERSVERSION_VG:
-  case INMCOUNTERSVERSION_WAN: skipBytes(sample, 88); break;
+  case INMCOUNTERSVERSION_WAN: length += 88; break;
   case INMCOUNTERSVERSION_VLAN: break;
   default: return; 
   }
 
   /* now see if there are any specific counter blocks to add */
   switch(sample->counterBlockVersion) {
-  case INMCOUNTERSVERSION_GENERIC: /* nothing more */ break;
-  case INMCOUNTERSVERSION_ETHERNET: skipBytes(sample, 52); break;
-  case INMCOUNTERSVERSION_TOKENRING: skipBytes(sample, 72); break;
+  case INMCOUNTERSVERSION_GENERIC: have_sample = TRUE; break;
+  case INMCOUNTERSVERSION_ETHERNET: have_sample = TRUE; length += 52; break;
+  case INMCOUNTERSVERSION_TOKENRING: length += 72; break;
   case INMCOUNTERSVERSION_FDDI: break;
-  case INMCOUNTERSVERSION_VG: skipBytes(sample, 80); break;
+  case INMCOUNTERSVERSION_VG: length += 80; break;
   case INMCOUNTERSVERSION_WAN: break;
-  case INMCOUNTERSVERSION_VLAN: skipBytes(sample, 28); break;
+  case INMCOUNTERSVERSION_VLAN: have_sample = TRUE; length += 28; break;
   default: return; 
   }
+
+  if (sfacctd_counter_backend_methods && have_sample)
+    sf_cnt_log_msg(peer, sample, sample->datagramVersion, length, "log", config.sfacctd_counter_output, sample->counterBlockVersion);
+  else
+    skipBytes(sample, length);
 }

@@ -27,15 +27,13 @@
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
 #include "plugin_common.h"
+#include "plugin_cmn_json.h"
+#include "plugin_cmn_avro.h"
 #include "print_plugin.h"
 #include "ip_flow.h"
 #include "classifier.h"
 #include "crc32.h"
 #include "bgp/bgp.h"
-
-#ifdef WITH_AVRO
-#include <avro.h>
-#endif
 
 /* Functions */
 void print_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr) 
@@ -92,24 +90,15 @@ void print_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 
   refresh_timeout = config.sql_refresh_time*1000;
 
-#ifdef WITH_AVRO
-  if (config.print_output & PRINT_OUTPUT_AVRO) {
-    Log(LOG_INFO, "INFO ( %s/%s ): AVRO: building schema.\n", config.name, config.type);
-    avro_acct_schema = build_avro_schema(config.what_to_count, config.what_to_count_2);
-
-    if (config.avro_schema_output_file) {
-      FILE *avro_fp = open_output_file(config.avro_schema_output_file, "w", TRUE);
-      avro_writer_t avro_schema_writer = avro_writer_file(avro_fp);
-
-      if (avro_schema_to_json(avro_acct_schema, avro_schema_writer)) {
-        Log(LOG_ERR, "ERROR ( %s/%s ): AVRO: unable to dump schema: %s\n", config.name, config.type, avro_strerror());
-        exit_plugin(1);
-      }
-
-      close_output_file(avro_fp);
-    }
+  if (config.print_output & PRINT_OUTPUT_JSON) {
+    compose_json(config.what_to_count, config.what_to_count_2);
   }
+  else if (config.print_output & PRINT_OUTPUT_AVRO) {
+#ifdef WITH_AVRO
+    avro_acct_schema = build_avro_schema(config.what_to_count, config.what_to_count_2);
+    if (config.avro_schema_output_file) write_avro_schema_to_file(config.avro_schema_output_file, avro_acct_schema);
 #endif
+  }
 
   /* setting function pointers */
   if (config.what_to_count & (COUNT_SUM_HOST|COUNT_SUM_NET))
@@ -378,17 +367,19 @@ void print_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   }
 }
 
-void P_cache_purge(struct chained_cache *queue[], int index)
+void P_cache_purge(struct chained_cache *queue[], int index, int safe_action)
 {
   struct pkt_primitives *data = NULL;
   struct pkt_bgp_primitives *pbgp = NULL;
   struct pkt_nat_primitives *pnat = NULL;
   struct pkt_mpls_primitives *pmpls = NULL;
+  struct pkt_tunnel_primitives *ptun = NULL;
   char *pcust = NULL;
   struct pkt_vlen_hdr_primitives *pvlen = NULL;
   struct pkt_bgp_primitives empty_pbgp;
   struct pkt_nat_primitives empty_pnat;
   struct pkt_mpls_primitives empty_pmpls;
+  struct pkt_tunnel_primitives empty_ptun;
   char *empty_pcust = NULL;
   char src_mac[18], dst_mac[18], src_host[INET6_ADDRSTRLEN], dst_host[INET6_ADDRSTRLEN], ip_address[INET6_ADDRSTRLEN];
   char rd_str[SRVBUFLEN], *sep = config.print_output_separator, *fd_buf;
@@ -420,6 +411,7 @@ void P_cache_purge(struct chained_cache *queue[], int index)
   memset(&empty_pbgp, 0, sizeof(struct pkt_bgp_primitives));
   memset(&empty_pnat, 0, sizeof(struct pkt_nat_primitives));
   memset(&empty_pmpls, 0, sizeof(struct pkt_mpls_primitives));
+  memset(&empty_ptun, 0, sizeof(struct pkt_tunnel_primitives));
   memset(empty_pcust, 0, config.cpptrs.len);
   memset(&prim_ptrs, 0, sizeof(prim_ptrs));
   memset(&dummy_data, 0, sizeof(dummy_data));
@@ -582,6 +574,9 @@ void P_cache_purge(struct chained_cache *queue[], int index)
   
       if (queue[j]->pmpls) pmpls = queue[j]->pmpls;
       else pmpls = &empty_pmpls;
+
+      if (queue[j]->ptun) ptun = queue[j]->ptun;
+      else ptun = &empty_ptun;
   
       if (queue[j]->pcust) pcust = queue[j]->pcust;
       else pcust = empty_pcust;
@@ -799,6 +794,47 @@ void P_cache_purge(struct chained_cache *queue[], int index)
         if (config.what_to_count_2 & COUNT_MPLS_STACK_DEPTH) {
   	fprintf(f, "%-2u                ", pmpls->mpls_stack_depth);
         }
+
+	if (config.what_to_count_2 & COUNT_TUNNEL_SRC_HOST) {
+          addr_to_str(ip_address, &ptun->tunnel_src_ip);
+
+#if defined ENABLE_IPV6
+	  if (strlen(ip_address))
+	    fprintf(f, "%-45s  ", ip_address);
+	  else
+	    fprintf(f, "%-45s  ", empty_ip6);
+#else
+	  if (strlen(ip_address))
+	    fprintf(f, "%-15s  ", ip_address);
+	  else
+	    fprintf(f, "%-15s  ", empty_ip4);
+#endif
+	}
+
+	if (config.what_to_count_2 & COUNT_TUNNEL_DST_HOST) {
+	   addr_to_str(ip_address, &ptun->tunnel_dst_ip);
+
+#if defined ENABLE_IPV6
+	  if (strlen(ip_address))
+	    fprintf(f, "%-45s  ", ip_address);
+	  else
+	    fprintf(f, "%-45s  ", empty_ip6);
+#else
+	  if (strlen(ip_address))
+	    fprintf(f, "%-15s  ", ip_address);
+	  else
+	    fprintf(f, "%-15s  ", empty_ip4);
+#endif
+	}
+
+	if (config.what_to_count_2 & COUNT_TUNNEL_IP_PROTO) {
+	  if (!config.num_protos && (ptun->tunnel_proto < protocols_number))
+	    fprintf(f, "%-10s       ", _protocols[ptun->tunnel_proto].name);
+	  else
+	    fprintf(f, "%-10d       ", ptun->tunnel_proto);
+	}
+
+	if (config.what_to_count_2 & COUNT_TUNNEL_IP_TOS) fprintf(f, "%-3u         ", ptun->tunnel_tos);
   
         if (config.what_to_count_2 & COUNT_TIMESTAMP_START) {
           char buf1[SRVBUFLEN], buf2[SRVBUFLEN];
@@ -1151,6 +1187,24 @@ void P_cache_purge(struct chained_cache *queue[], int index)
         if (config.what_to_count_2 & COUNT_MPLS_LABEL_TOP) fprintf(f, "%s%u", write_sep(sep, &count), pmpls->mpls_label_top);
         if (config.what_to_count_2 & COUNT_MPLS_LABEL_BOTTOM) fprintf(f, "%s%u", write_sep(sep, &count), pmpls->mpls_label_bottom);
         if (config.what_to_count_2 & COUNT_MPLS_STACK_DEPTH) fprintf(f, "%s%u", write_sep(sep, &count), pmpls->mpls_stack_depth);
+
+	if (config.what_to_count_2 & COUNT_TUNNEL_SRC_HOST) {
+	  addr_to_str(src_host, &ptun->tunnel_src_ip);
+	  fprintf(f, "%s%s", write_sep(sep, &count), src_host);
+	}
+	if (config.what_to_count_2 & COUNT_TUNNEL_DST_HOST) {
+	  addr_to_str(dst_host, &ptun->tunnel_dst_ip);
+	  fprintf(f, "%s%s", write_sep(sep, &count), dst_host);
+	}
+
+	if (config.what_to_count_2 & COUNT_TUNNEL_IP_PROTO) {
+	  if (!config.num_protos && (ptun->tunnel_proto < protocols_number))
+	    fprintf(f, "%s%s", write_sep(sep, &count), _protocols[ptun->tunnel_proto].name);
+	  else
+	    fprintf(f, "%s%d", write_sep(sep, &count), ptun->tunnel_proto);
+	}
+
+	if (config.what_to_count_2 & COUNT_TUNNEL_IP_TOS) fprintf(f, "%s%u", write_sep(sep, &count), ptun->tunnel_tos);
   
         if (config.what_to_count_2 & COUNT_TIMESTAMP_START) {
           char buf1[SRVBUFLEN], buf2[SRVBUFLEN];
@@ -1271,21 +1325,20 @@ void P_cache_purge(struct chained_cache *queue[], int index)
         else fprintf(f, "\n");
       }
       else if (f && config.print_output & PRINT_OUTPUT_JSON) {
-        void *json_obj;
-  
-        json_obj = compose_json(config.what_to_count, config.what_to_count_2, queue[j]->flow_type,
-                         &queue[j]->primitives, pbgp, pnat, pmpls, pcust, pvlen, queue[j]->bytes_counter,
-                         queue[j]->packet_counter, queue[j]->flow_counter, queue[j]->tcp_flags, NULL,
-                         queue[j]->stitch);
-  
+#ifdef WITH_JANSSON
+	json_t *json_obj = json_object();
+	int idx;
+
+	for (idx = 0; idx < N_PRIMITIVES && cjhandler[idx]; idx++) cjhandler[idx](json_obj, queue[j]);
         if (json_obj) write_and_free_json(f, json_obj);
+#endif
       }
       else if (f && config.print_output & PRINT_OUTPUT_AVRO) {
 #ifdef WITH_AVRO
         avro_value_iface_t *avro_iface = avro_generic_class_from_schema(avro_acct_schema);
 
         avro_value_t avro_value = compose_avro(config.what_to_count, config.what_to_count_2, queue[j]->flow_type,
-                         &queue[j]->primitives, pbgp, pnat, pmpls, pcust, pvlen, queue[j]->bytes_counter,
+                         &queue[j]->primitives, pbgp, pnat, pmpls, ptun, pcust, pvlen, queue[j]->bytes_counter,
                          queue[j]->packet_counter, queue[j]->flow_counter, queue[j]->tcp_flags, NULL,
                          queue[j]->stitch, avro_iface);
 
@@ -1338,9 +1391,11 @@ void P_cache_purge(struct chained_cache *queue[], int index)
 #endif
 
     if (config.print_latest_file) {
-      memset(tmpbuf, 0, LONGLONGSRVBUFLEN);
-      handle_dynname_internal_strings(tmpbuf, LONGSRVBUFLEN, config.print_latest_file, &prim_ptrs);
-      link_latest_output_file(tmpbuf, current_table);
+      if (!safe_action) {
+        memset(tmpbuf, 0, LONGLONGSRVBUFLEN);
+        handle_dynname_internal_strings(tmpbuf, LONGSRVBUFLEN, config.print_latest_file, &prim_ptrs);
+        link_latest_output_file(tmpbuf, current_table);
+      }
     }
 
 #ifdef WITH_AVRO
@@ -1448,6 +1503,15 @@ void P_write_stats_header_formatted(FILE *f, int is_event)
   if (config.what_to_count_2 & COUNT_MPLS_LABEL_TOP) fprintf(f, "MPLS_LABEL_TOP  ");
   if (config.what_to_count_2 & COUNT_MPLS_LABEL_BOTTOM) fprintf(f, "MPLS_LABEL_BOTTOM  ");
   if (config.what_to_count_2 & COUNT_MPLS_STACK_DEPTH) fprintf(f, "MPLS_STACK_DEPTH  ");
+#if defined ENABLE_IPV6
+  if (config.what_to_count_2 & COUNT_TUNNEL_SRC_HOST) fprintf(f, "TUNNEL_SRC_IP                                  ");
+  if (config.what_to_count_2 & COUNT_TUNNEL_DST_HOST) fprintf(f, "TUNNEL_DST_IP                                  ");
+#else
+  if (config.what_to_count_2 & COUNT_TUNNEL_SRC_HOST) fprintf(f, "TUNNEL_SRC_IP    ");
+  if (config.what_to_count_2 & COUNT_TUNNEL_DST_HOST) fprintf(f, "TUNNEL_DST_IP    ");
+#endif
+  if (config.what_to_count_2 & COUNT_TUNNEL_IP_PROTO) fprintf(f, "TUNNEL_PROTOCOL  ");
+  if (config.what_to_count_2 & COUNT_TUNNEL_IP_TOS) fprintf(f, "TUNNEL_TOS  ");
   if (config.what_to_count_2 & COUNT_TIMESTAMP_START) fprintf(f, "TIMESTAMP_START                ");
   if (config.what_to_count_2 & COUNT_TIMESTAMP_END) fprintf(f, "TIMESTAMP_END                  "); 
   if (config.what_to_count_2 & COUNT_TIMESTAMP_ARRIVAL) fprintf(f, "TIMESTAMP_ARRIVAL              ");
@@ -1566,6 +1630,10 @@ void P_write_stats_header_csv(FILE *f, int is_event)
   if (config.what_to_count_2 & COUNT_MPLS_LABEL_TOP) fprintf(f, "%sMPLS_LABEL_TOP", write_sep(sep, &count));
   if (config.what_to_count_2 & COUNT_MPLS_LABEL_BOTTOM) fprintf(f, "%sMPLS_LABEL_BOTTOM", write_sep(sep, &count));
   if (config.what_to_count_2 & COUNT_MPLS_STACK_DEPTH) fprintf(f, "%sMPLS_STACK_DEPTH", write_sep(sep, &count));
+  if (config.what_to_count_2 & COUNT_TUNNEL_SRC_HOST) fprintf(f, "%sTUNNEL_SRC_IP", write_sep(sep, &count));
+  if (config.what_to_count_2 & COUNT_TUNNEL_DST_HOST) fprintf(f, "%sTUNNEL_DST_IP", write_sep(sep, &count));
+  if (config.what_to_count_2 & COUNT_TUNNEL_IP_PROTO) fprintf(f, "%sTUNNEL_PROTOCOL", write_sep(sep, &count));
+  if (config.what_to_count_2 & COUNT_TUNNEL_IP_TOS) fprintf(f, "%sTUNNEL_TOS", write_sep(sep, &count));
   if (config.what_to_count_2 & COUNT_TIMESTAMP_START) fprintf(f, "%sTIMESTAMP_START", write_sep(sep, &count));
   if (config.what_to_count_2 & COUNT_TIMESTAMP_END) fprintf(f, "%sTIMESTAMP_END", write_sep(sep, &count));
   if (config.what_to_count_2 & COUNT_TIMESTAMP_ARRIVAL) fprintf(f, "%sTIMESTAMP_ARRIVAL", write_sep(sep, &count));

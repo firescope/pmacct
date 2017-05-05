@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -27,6 +27,7 @@ const struct _map_dictionary_line tag_map_dictionary[] = {
   {"out", PT_map_output_handler},
   {"engine_type", PT_map_engine_type_handler},
   {"engine_id", PT_map_engine_id_handler},
+  {"source_id", PT_map_engine_id_handler},
   {"nexthop", PT_map_nexthop_handler},
   {"bgp_nexthop", PT_map_bgp_nexthop_handler},
   {"filter", PT_map_filter_handler},
@@ -109,6 +110,10 @@ const struct _map_dictionary_line tag_map_tee_dictionary[] = {
   {"src_mac", PT_map_src_mac_handler},
   {"dst_mac", PT_map_dst_mac_handler},
   {"vlan", PT_map_vlan_id_handler},
+  {"engine_type", PT_map_engine_type_handler},
+  {"engine_id", PT_map_engine_id_handler},
+  {"source_id", PT_map_engine_id_handler},
+  {"agent_id", PT_map_agent_id_handler},
   {"label", PT_map_entry_label_handler},
   {"jeq", PT_map_jeq_handler},
   {"return", PT_map_return_handler},

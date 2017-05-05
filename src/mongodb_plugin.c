@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -276,17 +276,19 @@ void mongodb_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   }
 }
 
-void MongoDB_cache_purge(struct chained_cache *queue[], int index)
+void MongoDB_cache_purge(struct chained_cache *queue[], int index, int safe_action)
 {
   struct pkt_primitives *data = NULL;
   struct pkt_bgp_primitives *pbgp = NULL;
   struct pkt_nat_primitives *pnat = NULL;
   struct pkt_mpls_primitives *pmpls = NULL;
+  struct pkt_tunnel_primitives *ptun = NULL;
   char *pcust = NULL;
   struct pkt_vlen_hdr_primitives *pvlen = NULL;
   struct pkt_bgp_primitives empty_pbgp;
   struct pkt_nat_primitives empty_pnat;
   struct pkt_mpls_primitives empty_pmpls;
+  struct pkt_tunnel_primitives empty_ptun;
   char *empty_pcust = NULL;
   char src_mac[18], dst_mac[18], src_host[INET6_ADDRSTRLEN], dst_host[INET6_ADDRSTRLEN], ip_address[INET6_ADDRSTRLEN];
   char rd_str[SRVBUFLEN], misc_str[SRVBUFLEN], tmpbuf[LONGLONGSRVBUFLEN], mongo_database[SRVBUFLEN];
@@ -341,6 +343,7 @@ void MongoDB_cache_purge(struct chained_cache *queue[], int index)
   memset(&empty_pbgp, 0, sizeof(struct pkt_bgp_primitives));
   memset(&empty_pnat, 0, sizeof(struct pkt_nat_primitives));
   memset(&empty_pmpls, 0, sizeof(struct pkt_mpls_primitives));
+  memset(&empty_ptun, 0, sizeof(struct pkt_tunnel_primitives));
   memset(empty_pcust, 0, config.cpptrs.len);
   memset(mongo_database, 0, sizeof(mongo_database));
   memset(&prim_ptrs, 0, sizeof(prim_ptrs));
@@ -442,6 +445,9 @@ void MongoDB_cache_purge(struct chained_cache *queue[], int index)
   
       if (queue[j]->pmpls) pmpls = queue[j]->pmpls;
       else pmpls = &empty_pmpls;
+
+      if (queue[j]->ptun) ptun = queue[j]->ptun;
+      else ptun = &empty_ptun;
   
       if (queue[j]->pcust) pcust = queue[j]->pcust;
       else pcust = empty_pcust;
@@ -737,6 +743,24 @@ void MongoDB_cache_purge(struct chained_cache *queue[], int index)
       if (config.what_to_count_2 & COUNT_MPLS_LABEL_TOP) bson_append_int(bson_elem, "mpls_label_top", pmpls->mpls_label_top);
       if (config.what_to_count_2 & COUNT_MPLS_LABEL_BOTTOM) bson_append_int(bson_elem, "mpls_label_bottom", pmpls->mpls_label_bottom);
       if (config.what_to_count_2 & COUNT_MPLS_STACK_DEPTH) bson_append_int(bson_elem, "mpls_stack_depth", pmpls->mpls_stack_depth);
+
+      if (config.what_to_count_2 & COUNT_TUNNEL_SRC_HOST) {
+        addr_to_str(src_host, &ptun->tunnel_src_ip);
+        bson_append_string(bson_elem, "tunnel_ip_src", src_host);
+      }
+      if (config.what_to_count_2 & COUNT_TUNNEL_DST_HOST) {
+        addr_to_str(dst_host, &ptun->tunnel_dst_ip);
+        bson_append_string(bson_elem, "tunnel_ip_dst", dst_host);
+      }
+      if (config.what_to_count_2 & COUNT_TUNNEL_IP_PROTO) {
+        if (!config.num_protos && (ptun->tunnel_proto < protocols_number))
+	  bson_append_string(bson_elem, "tunnel_ip_proto", _protocols[ptun->tunnel_proto].name);
+        else {
+          sprintf(misc_str, "%u", ptun->tunnel_proto);
+          bson_append_string(bson_elem, "tunnel_ip_proto", misc_str);
+        }
+      }
+      if (config.what_to_count_2 & COUNT_TUNNEL_IP_TOS) bson_append_int(bson_elem, "tunnel_tos", ptun->tunnel_tos);
   
       if (config.what_to_count_2 & COUNT_TIMESTAMP_START) {
 	if (config.timestamps_since_epoch) {

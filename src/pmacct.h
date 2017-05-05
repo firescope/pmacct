@@ -89,6 +89,10 @@
 #include <maxminddb.h>
 #endif
 
+#if defined (WITH_NDPI)
+#include <libndpi/ndpi_main.h>
+#endif
+
 #include "pmacct-build.h"
 
 #if !defined ETHER_ADDRSTRLEN
@@ -210,6 +214,14 @@ typedef struct {
   pm_hash_key_t key;
   u_int16_t off;
 } pm_hash_serial_t;
+
+#if (defined WITH_JANSSON)
+#include <jansson.h>
+#endif
+
+#if (defined WITH_AVRO)
+#include <avro.h>
+#endif
 
 #include "pmacct-defines.h"
 #include "network.h"
@@ -354,7 +366,6 @@ size_t strlcpy(char *, const char *, size_t);
 #endif
 
 #if (defined WITH_JANSSON)
-#include <jansson.h>
 #if (!defined HAVE_JSON_OBJECT_UPDATE_MISSING)
 int json_object_update_missing(json_t *, json_t *);
 #endif

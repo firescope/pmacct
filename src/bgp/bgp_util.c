@@ -197,9 +197,17 @@ struct bgp_info_extra *bgp_info_extra_new(struct bgp_info *ri)
   return new;
 }
 
-void bgp_info_extra_free(struct bgp_info_extra **extra)
+void bgp_info_extra_free(struct bgp_peer *peer, struct bgp_info_extra **extra)
 {
+  struct bgp_misc_structs *bms;
+
+  bms = bgp_select_misc_db(peer->type);
+
+  if (!bms) return;
+
   if (extra && *extra) {
+    if ((*extra)->bmed.id && bms->bgp_extra_data_free) (*bms->bgp_extra_data_free)(&(*extra)->bmed);
+
     free(*extra);
     *extra = NULL;
   }
@@ -296,7 +304,7 @@ void bgp_info_free(struct bgp_peer *peer, struct bgp_info *ri)
   if (ri->attr)
     bgp_attr_unintern(peer, ri->attr);
 
-  bgp_info_extra_free(&ri->extra);
+  bgp_info_extra_free(peer, &ri->extra);
 
   ri->peer->lock--;
   free(ri);
@@ -355,21 +363,11 @@ int attrhash_cmp(const void *p1, const void *p2)
       && attr1->med == attr2->med
       && attr1->local_pref == attr2->local_pref
       && attr1->pathlimit.ttl == attr2->pathlimit.ttl
-      && attr1->pathlimit.as == attr2->pathlimit.as) {
-    if (attr1->mp_nexthop.family == attr2->mp_nexthop.family) {
-      if (attr1->mp_nexthop.family == AF_INET
-	  && attr1->mp_nexthop.address.ipv4.s_addr == attr2->mp_nexthop.address.ipv4.s_addr) 
-        return 1;
-#if defined ENABLE_IPV6
-      else if (attr1->mp_nexthop.family == AF_INET6
-	  && !memcmp(&attr1->mp_nexthop.address.ipv6, &attr2->mp_nexthop.address.ipv6, 16))
-        return 1;
-#endif
-      else return 1;
-    }
-  }
+      && attr1->pathlimit.as == attr2->pathlimit.as
+      && !memcmp(&attr1->mp_nexthop, &attr2->mp_nexthop, sizeof(struct host_addr)))
+    return TRUE;
 
-  return SUCCESS;
+  return FALSE;
 }
 
 void attrhash_init(int buckets, struct hash **loc_attrhash)
@@ -512,7 +510,7 @@ int bgp_peer_init(struct bgp_peer *peer, int type)
   return ret;
 }
 
-void bgp_peer_close(struct bgp_peer *peer, int type /* XXX */, int send_notification, char *shutdown_msg)
+void bgp_peer_close(struct bgp_peer *peer, int type, int no_quiet, int send_notification, u_int8_t n_major, u_int8_t n_minor, char *shutdown_msg)
 {
   struct bgp_misc_structs *bms;
   afi_t afi;
@@ -528,11 +526,12 @@ void bgp_peer_close(struct bgp_peer *peer, int type /* XXX */, int send_notifica
     int ret, notification_msglen = (BGP_MIN_NOTIFICATION_MSG_SIZE + BGP_NOTIFY_CEASE_SM_LEN + 1);
     char notification_msg[notification_msglen];
 
-    ret = bgp_write_notification_msg(notification_msg, notification_msglen, shutdown_msg);
+    ret = bgp_write_notification_msg(notification_msg, notification_msglen, n_major, n_minor, shutdown_msg);
     if (ret) send(peer->fd, notification_msg, ret, 0);
   }
 
-  bgp_peer_info_delete(peer);
+  /* be quiet if we are in a signal handler and already set to exit() */
+  if (!no_quiet) bgp_peer_info_delete(peer);
 
   if (bms->msglog_file || bms->msglog_amqp_routing_key || bms->msglog_kafka_topic)
     bgp_peer_log_close(peer, bms->msglog_output, peer->type);
@@ -582,7 +581,7 @@ void bgp_peer_info_delete(struct bgp_peer *peer)
       node = bgp_table_top(peer, table);
 
       while (node) {
-        u_int32_t modulo = bms->route_info_modulo(peer, NULL);
+        u_int32_t modulo = bms->route_info_modulo(peer, NULL, bms->table_per_peer_buckets);
         u_int32_t peer_buckets;
         struct bgp_info *ri;
         struct bgp_info *ri_next;

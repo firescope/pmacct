@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -91,6 +91,11 @@ static const struct _primitives_matrix_struct _primitives_matrix[] = {
   {"post_nat_dst_host", 0, 0, 1, 0, 0, 0, 0, "Destination IPv4/IPv6 address after NAT translation"},
   {"post_nat_src_port", 0, 0, 1, 0, 0, 0, 0, "Source TCP/UDP port after NAT translation"},
   {"post_nat_dst_port", 0, 0, 1, 0, 0, 0, 0, "Destination TCP/UDP port after NAT translation"},
+  {"TUNNEL", 1, 1, 1, 1, 0, 0, 0, ""}, 
+  {"tunnel_src_host", 0, 0, 0, 1, 0, 0, 0, "Tunnel inner Source IPv4/IPv6 address"},
+  {"tunnel_dst_host", 0, 0, 0, 1, 0, 0, 0, "Tunnel inner Destination IPv4/IPv6 address"},
+  {"tunnel_proto", 0, 0, 0, 1, 0, 0, 0, "Tunnel inner IP protocol"},
+  {"tunnel_tos", 0, 0, 0, 1, 0, 0, 0, "Tunnel inner IP ToS"},
   {"MPLS", 1, 1, 1, 1, 0, 0, 0, ""}, 
   {"mpls_label_bottom", 1, 1, 1, 0, 0, 0, 0, "Bottom MPLS label"},
   {"mpls_label_top", 1, 1, 1, 0, 0, 0, 0, "Top MPLS label"},
@@ -120,11 +125,11 @@ static const struct _primitives_matrix_struct _primitives_matrix[] = {
 };
 
 static const struct _protocols_struct _protocols[] = {
-  {"ip", 0},
+  {"0", 0},
   {"icmp", 1},
   {"igmp", 2},
   {"ggp", 3},
-  {"4", 4},
+  {"ipencap", 4},
   {"5", 5},
   {"tcp", 6},
   {"7", 7},
@@ -412,7 +417,6 @@ static const struct _dictionary_line dictionary[] = {
   {"print_output_separator", cfg_key_print_output_separator},
   {"print_latest_file", cfg_key_print_latest_file},
   {"print_num_protos", cfg_key_num_protos},
-  {"print_time_roundoff", cfg_key_sql_history_roundoff},
   {"print_trigger_exec", cfg_key_sql_trigger_exec},
   {"print_history", cfg_key_sql_history},
   {"print_history_offset", cfg_key_sql_history_offset},
@@ -487,9 +491,9 @@ static const struct _dictionary_line dictionary[] = {
   {"kafka_num_protos", cfg_key_num_protos},
   {"kafka_markers", cfg_key_print_markers},
   {"kafka_output", cfg_key_message_broker_output},
-  {"kafka_fallback", cfg_key_kafka_fallback},
   {"kafka_avro_schema_topic", cfg_key_kafka_avro_schema_topic},
   {"kafka_avro_schema_refresh_time", cfg_key_kafka_avro_schema_refresh_time},
+  {"kafka_config_file", cfg_key_kafka_config_file},
   {"nfacctd_proc_name", cfg_key_proc_name},
   {"nfacctd_port", cfg_key_nfacctd_port},
   {"nfacctd_ip", cfg_key_nfacctd_ip},
@@ -503,6 +507,7 @@ static const struct _dictionary_line dictionary[] = {
   {"nfacctd_peer_as", cfg_key_nfprobe_peer_as},
   {"nfacctd_pipe_size", cfg_key_nfacctd_pipe_size},
   {"nfacctd_pro_rating", cfg_key_nfacctd_pro_rating},
+  {"nfacctd_templates_file", cfg_key_nfacctd_templates_file},
   {"nfacctd_account_options", cfg_key_nfacctd_account_options},
   {"nfacctd_stitching", cfg_key_nfacctd_stitching},
   {"nfacctd_ext_sampling_rate", cfg_key_pmacctd_ext_sampling_rate},
@@ -563,7 +568,7 @@ static const struct _dictionary_line dictionary[] = {
   {"telemetry_daemon_msglog_kafka_partition", cfg_key_telemetry_msglog_kafka_partition},
   {"telemetry_daemon_msglog_kafka_partition_key", cfg_key_telemetry_msglog_kafka_partition_key},
   {"telemetry_daemon_msglog_kafka_retry", cfg_key_telemetry_msglog_kafka_retry},
-  {"telemetry_daemon_msglog_kafka_fallback", cfg_key_telemetry_msglog_kafka_fallback},
+  {"telemetry_daemon_msglog_kafka_config_file", cfg_key_telemetry_msglog_kafka_config_file},
   {"telemetry_dump_output", cfg_key_telemetry_dump_output},
   {"telemetry_dump_file", cfg_key_telemetry_dump_file},
   {"telemetry_dump_latest_file", cfg_key_telemetry_dump_latest_file},
@@ -585,7 +590,7 @@ static const struct _dictionary_line dictionary[] = {
   {"telemetry_dump_kafka_topic_rr", cfg_key_telemetry_dump_kafka_topic_rr},
   {"telemetry_dump_kafka_partition", cfg_key_telemetry_dump_kafka_partition},
   {"telemetry_dump_kafka_partition_key", cfg_key_telemetry_dump_kafka_partition_key},
-  {"telemetry_dump_kafka_fallback", cfg_key_telemetry_dump_kafka_fallback},
+  {"telemetry_dump_kafka_config_file", cfg_key_telemetry_dump_kafka_config_file},
   {"pcap_savefile", cfg_key_pcap_savefile},
   {"refresh_maps", cfg_key_maps_refresh}, // legacy
   {"maps_refresh", cfg_key_maps_refresh},
@@ -634,7 +639,7 @@ static const struct _dictionary_line dictionary[] = {
   {"sfacctd_counter_kafka_partition", cfg_key_sfacctd_counter_kafka_partition},
   {"sfacctd_counter_kafka_partition_key", cfg_key_sfacctd_counter_kafka_partition_key},
   {"sfacctd_counter_kafka_retry", cfg_key_sfacctd_counter_kafka_retry},
-  {"sfacctd_counter_kafka_fallback", cfg_key_sfacctd_counter_kafka_fallback},
+  {"sfacctd_counter_kafka_config_file", cfg_key_sfacctd_counter_kafka_config_file},
   {"classifiers", cfg_key_classifiers},
   {"classifier_tentatives", cfg_key_classifier_tentatives},
   {"classifier_table_num", cfg_key_classifier_table_num},
@@ -694,7 +699,7 @@ static const struct _dictionary_line dictionary[] = {
   {"bgp_daemon_msglog_kafka_partition", cfg_key_nfacctd_bgp_msglog_kafka_partition},
   {"bgp_daemon_msglog_kafka_partition_key", cfg_key_nfacctd_bgp_msglog_kafka_partition_key},
   {"bgp_daemon_msglog_kafka_retry", cfg_key_nfacctd_bgp_msglog_kafka_retry},
-  {"bgp_daemon_msglog_kafka_fallback", cfg_key_nfacctd_bgp_msglog_kafka_fallback},
+  {"bgp_daemon_msglog_kafka_config_file", cfg_key_nfacctd_bgp_msglog_kafka_config_file},
   {"bgp_daemon_allow_file", cfg_key_nfacctd_bgp_allow_file},
   {"bgp_daemon_ipprec", cfg_key_nfacctd_bgp_ip_precedence},
   {"bgp_daemon_md5_file", cfg_key_nfacctd_bgp_md5_file},
@@ -748,7 +753,7 @@ static const struct _dictionary_line dictionary[] = {
   {"bgp_table_dump_kafka_topic_rr", cfg_key_nfacctd_bgp_table_dump_kafka_topic_rr},
   {"bgp_table_dump_kafka_partition", cfg_key_nfacctd_bgp_table_dump_kafka_partition},
   {"bgp_table_dump_kafka_partition_key", cfg_key_nfacctd_bgp_table_dump_kafka_partition_key},
-  {"bgp_table_dump_kafka_fallback", cfg_key_nfacctd_bgp_table_dump_kafka_fallback},
+  {"bgp_table_dump_kafka_config_file", cfg_key_nfacctd_bgp_table_dump_kafka_config_file},
   {"bmp_daemon", cfg_key_nfacctd_bmp},
   {"bmp_daemon_ip", cfg_key_nfacctd_bmp_ip},
   {"bmp_daemon_port", cfg_key_nfacctd_bmp_port},
@@ -779,7 +784,7 @@ static const struct _dictionary_line dictionary[] = {
   {"bmp_daemon_msglog_kafka_partition", cfg_key_nfacctd_bmp_msglog_kafka_partition},
   {"bmp_daemon_msglog_kafka_partition_key", cfg_key_nfacctd_bmp_msglog_kafka_partition_key},
   {"bmp_daemon_msglog_kafka_retry", cfg_key_nfacctd_bmp_msglog_kafka_retry},
-  {"bmp_daemon_msglog_kafka_fallback", cfg_key_nfacctd_bmp_msglog_kafka_fallback},
+  {"bmp_daemon_msglog_kafka_config_file", cfg_key_nfacctd_bmp_msglog_kafka_config_file},
   {"bmp_table_peer_buckets", cfg_key_nfacctd_bmp_table_peer_buckets},
   {"bmp_table_per_peer_buckets", cfg_key_nfacctd_bmp_table_per_peer_buckets},
   {"bmp_table_attr_hash_buckets", cfg_key_nfacctd_bmp_table_attr_hash_buckets},
@@ -805,7 +810,7 @@ static const struct _dictionary_line dictionary[] = {
   {"bmp_dump_kafka_topic_rr", cfg_key_nfacctd_bmp_dump_kafka_topic_rr},
   {"bmp_dump_kafka_partition", cfg_key_nfacctd_bmp_dump_kafka_partition},
   {"bmp_dump_kafka_partition_key", cfg_key_nfacctd_bmp_dump_kafka_partition_key},
-  {"bmp_dump_kafka_fallback", cfg_key_nfacctd_bmp_dump_kafka_fallback},
+  {"bmp_dump_kafka_config_file", cfg_key_nfacctd_bmp_dump_kafka_config_file},
   {"flow_to_rd_map", cfg_key_nfacctd_flow_to_rd_map},
   {"isis_daemon", cfg_key_nfacctd_isis},
   {"isis_daemon_ip", cfg_key_nfacctd_isis_ip},
