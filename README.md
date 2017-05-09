@@ -3,6 +3,8 @@
 DOCUMENTATION
 =============
 
+Custom FireScope functionality which adds SSL support, fqdn, and flow collapsing capabilities.
+
 - Online:
   * pmacct wiki: http://wiki.pmacct.net/
   * GitHub: https://github.com/pmacct/pmacct/
