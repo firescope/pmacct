@@ -584,7 +584,7 @@ void publish(u_int64_t wtc, struct flow_entry *flow_entry)
 	        publish_port_entry(wtc, port_bucket_entry, candidate_port, "one-way known port");
 	      } else {
 	        // skip unknown one-way port
-	        publish_port_entry(wtc, port_bucket_entry, candidate_port, NULL);
+	        publish_port_entry(wtc, port_bucket_entry, candidate_port, "one-way unknown port");
 	      }
 	    /*
 	      struct chained_port *src_port = NULL;

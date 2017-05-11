@@ -22,7 +22,8 @@ libdaemons_la_SOURCES = signals.c util.c util.h plugin_hooks.c		\
         regmagic.h regsub.c conntrack.c conntrack.h xflow_status.c	\
         xflow_status.h plugin_common.c plugin_common.h preprocess.c	\
         preprocess-data.h preprocess.h ll.c nl.c jhash.h pmacct-dlt.h	\
-        sflow.h crc32.h 
+        sflow.h crc32.h flow_url_common.c flow_url_common.h             \
+	flow_collapse.c flow_collapse.h
 # Builtin plugins
 libdaemons_la_LIBADD  = nfprobe_plugin/libnfprobe_plugin.la
 libdaemons_la_LIBADD += sfprobe_plugin/libsfprobe_plugin.la
@@ -55,7 +56,7 @@ libdaemons_la_CFLAGS  += @SQLITE3_CFLAGS@
 endif
 if WITH_RABBITMQ
 libdaemons_la_SOURCES += amqp_common.c amqp_common.h amqp_plugin.c amqp_plugin.h
-libdaemons_la_LIBADD  += @RABBITMQ_LIBS@
+libdaemons_la_LIBADD  += @RABBITMQ_LIBS@ -lshmht_0.1
 libdaemons_la_CFLAGS  += @RABBITMQ_CFLAGS@
 endif
 if WITH_KAFKA
