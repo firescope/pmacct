@@ -1146,6 +1146,10 @@ void set_default_preferences(struct configuration *cfg)
   if (!cfg->nfacctd_bgp_src_as_path_type) cfg->nfacctd_bgp_src_as_path_type = BGP_SRC_PRIMITIVES_KEEP;
   if (!cfg->nfacctd_bgp_src_local_pref_type) cfg->nfacctd_bgp_src_local_pref_type = BGP_SRC_PRIMITIVES_KEEP;
   if (!cfg->nfacctd_bgp_src_med_type) cfg->nfacctd_bgp_src_med_type = BGP_SRC_PRIMITIVES_KEEP;
+
+  if (!cfg->fqdn_cache_size) cfg->fqdn_cache_size = DEFAULT_FQDN_CACHE_SIZE;
+  if (!cfg->fqdn_cache_ttl) cfg->fqdn_cache_ttl = DEFAULT_FQDN_CACHE_TTL;
+  if (!cfg->fqdn_cache_ttl_nth_sample) cfg->fqdn_cache_ttl_nth_sample = DEFAULT_FQDN_CACHE_TTL_NTH_SAMPLE;
 }
 
 void set_shadow_status(struct packet_ptrs *pptrs)
@@ -1901,6 +1905,18 @@ void *compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struct pk
 
   if (wtc & COUNT_DST_PORT) {
     kv = json_pack("{sI}", "port_dst", (json_int_t)pbase->dst_port);
+    json_object_update_missing(obj, kv);
+    json_decref(kv);
+  }
+
+  if (wtc_2 & COUNT_SRC_FQDN) {
+    kv = json_pack("{ss}", "host_src", pbase->src_fqdn);
+    json_object_update_missing(obj, kv);
+    json_decref(kv);
+  }
+
+  if (wtc_2 & COUNT_DST_FQDN) {
+    kv = json_pack("{ss}", "host_dst", pbase->dst_fqdn);
     json_object_update_missing(obj, kv);
     json_decref(kv);
   }

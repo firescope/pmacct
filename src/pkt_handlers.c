@@ -36,6 +36,8 @@
 #include "isis/prefix.h"
 #include "isis/table.h"
 
+#include "fqdn_cache.h"
+
 /* functions */
 void evaluate_packet_handlers()
 {
@@ -547,6 +549,20 @@ void evaluate_packet_handlers()
       if (config.acct_type == ACCT_PM) channels_list[index].phandler[primitives] = sampling_rate_handler;
       else if (config.acct_type == ACCT_NF) channels_list[index].phandler[primitives] = NF_sampling_rate_handler;
       else if (config.acct_type == ACCT_SF) channels_list[index].phandler[primitives] = SF_sampling_rate_handler;
+      primitives++;
+    }
+
+    if (channels_list[index].aggregation_2 & COUNT_SRC_FQDN) {
+      if (config.acct_type == ACCT_PM) channels_list[index].phandler[primitives] = src_fqdn_handler;
+      else if (config.acct_type == ACCT_NF) channels_list[index].phandler[primitives] = NF_src_fqdn_handler;
+      else if (config.acct_type == ACCT_SF) channels_list[index].phandler[primitives] = SF_src_fqdn_handler;
+      primitives++;
+    }
+
+    if (channels_list[index].aggregation_2 & COUNT_DST_FQDN) {
+      if (config.acct_type == ACCT_PM) channels_list[index].phandler[primitives] = dst_fqdn_handler;
+      else if (config.acct_type == ACCT_NF) channels_list[index].phandler[primitives] = NF_dst_fqdn_handler;
+      else if (config.acct_type == ACCT_SF) channels_list[index].phandler[primitives] = SF_dst_fqdn_handler;
       primitives++;
     }
 
@@ -4764,4 +4780,77 @@ char *lookup_tpl_ext_db(void *entry, u_int32_t pen, u_int16_t type)
   }
 
   return NULL;
+}
+
+void src_fqdn_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+
+  if (pptrs->l3_proto == ETHERTYPE_IP || pptrs->l3_proto == ETHERTYPE_IPV6) {
+/* No convenient way to check if src_ip has been populated, must assume it is. */
+/*
+    if (!pdata->primitives.src_ip) {
+      src_ip_handler(chptr, pptrs, data);
+    }
+    if (pdata->primitives.src_ip) {
+      char *fqdn = reverse_lookup_ha(&pdata->primitives.src_ip);
+      strlcpy(pdata->primitives.src_fqdn, fqdn, NI_MAXHOST);
+    }
+*/
+    char *fqdn = reverse_lookup_ha(&pdata->primitives.src_ip);
+    strlcpy(pdata->primitives.src_fqdn, fqdn, NI_MAXHOST);
+  }
+}
+
+void dst_fqdn_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+
+  if (pptrs->l3_proto == ETHERTYPE_IP || pptrs->l3_proto == ETHERTYPE_IPV6) {
+/* No convenient way to check if dst_ip has been populated, must assume it is. */
+    char *fqdn = reverse_lookup_ha(&pdata->primitives.dst_ip);
+    strlcpy(pdata->primitives.dst_fqdn, fqdn, NI_MAXHOST);
+  }
+}
+
+void NF_src_fqdn_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+
+/* No convenient way to check if src_ip has been populated, must assume it is. */
+  char *fqdn = reverse_lookup_ha(&pdata->primitives.src_ip);
+  strlcpy(pdata->primitives.src_fqdn, fqdn, NI_MAXHOST);
+}
+
+void NF_dst_fqdn_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+
+/* No convenient way to check if dst_ip has been populated, must assume it is. */
+  char *fqdn = reverse_lookup_ha(&pdata->primitives.dst_ip);
+  strlcpy(pdata->primitives.dst_fqdn, fqdn, NI_MAXHOST);
+}
+
+void SF_src_fqdn_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  SFSample *sample = (SFSample *) pptrs->f_data;
+
+  if (sample->gotIPV4 || sample->gotIPV6) {
+/* No convenient way to check if src_ip has been populated, must assume it is. */
+    char *fqdn = reverse_lookup_ha(&pdata->primitives.src_ip);
+    strlcpy(pdata->primitives.src_fqdn, fqdn, NI_MAXHOST);
+  }
+}
+
+void SF_dst_fqdn_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  SFSample *sample = (SFSample *) pptrs->f_data;
+
+  if (sample->gotIPV4 || sample->gotIPV6) {
+/* No convenient way to check if dst_ip has been populated, must assume it is. */
+    char *fqdn = reverse_lookup_ha(&pdata->primitives.dst_ip);
+    strlcpy(pdata->primitives.dst_fqdn, fqdn, NI_MAXHOST);
+  }
 }

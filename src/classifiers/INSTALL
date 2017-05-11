@@ -1,0 +1,15 @@
+COMPILATION AND INSTALLATION.
+Some generic steps needed to compile correctly the package follow: 
+
+a) edit the Makefile changing, if required, the CC value (by default it's gcc)
+   and LIBS value (by default -ldl but some systems - ie. FreeBSD - don't need
+   it. Then run the Makefile:
+ 
+   shell> Makefile 
+
+b) move the desired shared object in the proper location:
+
+   shell> mv <file>.so /path/to/classifiers/
+
+c) configure and run pmacct
+

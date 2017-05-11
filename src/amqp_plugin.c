@@ -27,6 +27,8 @@
 #include "plugin_hooks.h"
 #include "plugin_common.h"
 #include "amqp_plugin.h"
+#include "flow_url_common.h"
+#include "flow_collapse.h"
 #ifndef WITH_JANSSON
 #error "--enable-rabbitmq requires --enable-jansson"
 #endif
@@ -144,6 +146,11 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   /* setting number of entries in _protocols structure */
   while (_protocols[protocols_number].number != -1) protocols_number++;
 
+  if (config.what_to_count & COUNT_CLASS) {
+    /* set up shared memory for url's */
+    init_url_entries();
+  }
+
   /* plugin main loop */
   for(;;) {
     poll_again:
@@ -181,6 +188,11 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
         amqp_timeout = plugin_pipe_set_retry_timeout(&amqp_host->btimers, pipe_fd);
       }
       else amqp_timeout = plugin_pipe_calc_retry_timeout_diff(&amqp_host->btimers, idata.now);
+    }
+
+    if (config.what_to_count & COUNT_CLASS) {
+      init_url_reader();
+      process_url();
     }
 
     switch (ret) {
@@ -340,7 +352,7 @@ void amqp_cache_purge(struct chained_cache *queue[], int index)
   memset(&empty_pmpls, 0, sizeof(struct pkt_mpls_primitives));
   memset(empty_pcust, 0, config.cpptrs.len);
 
-  ret = p_amqp_connect_to_publish(&amqpp_amqp_host);
+  ret = p_amqp_connect_to_publish_ssl(&amqpp_amqp_host);
   if (ret) return;
 
   for (j = 0, stop = 0; (!stop) && P_preprocess_funcs[j]; j++)
@@ -349,105 +361,12 @@ void amqp_cache_purge(struct chained_cache *queue[], int index)
   Log(LOG_INFO, "INFO ( %s/%s ): *** Purging cache - START (PID: %u) ***\n", config.name, config.type, writer_pid);
   start = time(NULL);
 
-  for (j = 0; j < index; j++) {
-    void *json_obj;
-    char *json_str;
+  collapse_flows(queue, index);
+  purge_flows();
 
-    if (queue[j]->valid != PRINT_CACHE_COMMITTED) continue;
-
-    data = &queue[j]->primitives;
-    if (queue[j]->pbgp) pbgp = queue[j]->pbgp;
-    else pbgp = &empty_pbgp;
-
-    if (queue[j]->pnat) pnat = queue[j]->pnat;
-    else pnat = &empty_pnat;
-
-    if (queue[j]->pmpls) pmpls = queue[j]->pmpls;
-    else pmpls = &empty_pmpls;
-
-    if (queue[j]->pcust) pcust = queue[j]->pcust;
-    else pcust = empty_pcust;
-
-    if (queue[j]->pvlen) pvlen = queue[j]->pvlen;
-    else pvlen = NULL;
-
-    if (queue[j]->valid == PRINT_CACHE_FREE) continue;
-
-    json_obj = compose_json(config.what_to_count, config.what_to_count_2, queue[j]->flow_type,
-                         &queue[j]->primitives, pbgp, pnat, pmpls, pcust, pvlen, queue[j]->bytes_counter,
-			 queue[j]->packet_counter, queue[j]->flow_counter, queue[j]->tcp_flags,
-			 &queue[j]->basetime, queue[j]->stitch);
-
-    json_str = compose_json_str(json_obj);
-
-#ifdef WITH_JANSSON
-    if (json_str && config.sql_multi_values) {
-      json_t *elem = NULL;
-      char *tmp_str = json_str;
-      int do_free = FALSE;
-
-      if (json_array_size(array) >= config.sql_multi_values) {
-	json_str = json_dumps(array, 0);
-	json_array_clear(array);
-        mv_num_save = mv_num;
-        mv_num = 0;
-      }
-      else do_free = TRUE;
-
-      elem = json_loads(tmp_str, 0, NULL);
-      json_array_append_new(array, elem);
-      mv_num++;
-
-      if (do_free) {
-        free(json_str);
-        json_str = NULL;
-      }
-    }
-#endif
-
-    if (json_str) {
-      if (is_routing_key_dyn) {
-	P_handle_table_dyn_strings(dyn_amqp_routing_key, SRVBUFLEN, orig_amqp_routing_key, queue[j]);
-	p_amqp_set_routing_key(&amqpp_amqp_host, dyn_amqp_routing_key);
-      }
-
-      if (config.amqp_routing_key_rr) {
-        P_handle_table_dyn_rr(dyn_amqp_routing_key, SRVBUFLEN, orig_amqp_routing_key, &amqpp_amqp_host.rk_rr);
-	p_amqp_set_routing_key(&amqpp_amqp_host, dyn_amqp_routing_key);
-      }
-
-      Log(LOG_DEBUG, "DEBUG ( %s/%s ): %s\n\n", config.name, config.type, json_str);
-      ret = p_amqp_publish_string(&amqpp_amqp_host, json_str);
-      free(json_str);
-      json_str = NULL;
-
-      if (!ret) {
-	if (!config.sql_multi_values) qn++;
-	else qn += mv_num_save;
-      }
-      else break;
-    }
+  if (config.what_to_count & COUNT_CLASS) {
+    url_entries_purge(config.what_to_count_2, pvlen);
   }
-
-#ifdef WITH_JANSSON
-  if (config.sql_multi_values && json_array_size(array)) {
-    char *json_str;
-
-    json_str = json_dumps(array, 0);
-    json_array_clear(array);
-    json_decref(array);
-
-    if (json_str) {
-      /* no handling of dyn routing keys here: not compatible */
-      Log(LOG_DEBUG, "DEBUG ( %s/%s ): %s\n\n", config.name, config.type, json_str);
-      ret = p_amqp_publish_string(&amqpp_amqp_host, json_str);
-      free(json_str);
-      json_str = NULL;
-
-      if (!ret) qn += mv_num;
-    }
-  }
-#endif
 
   p_amqp_close(&amqpp_amqp_host, FALSE);
 

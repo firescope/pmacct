@@ -230,6 +230,92 @@ int p_amqp_connect_to_publish(struct p_amqp_host *amqp_host)
   return SUCCESS;
 }
 
+int p_amqp_connect_to_publish_ssl(struct p_amqp_host *amqp_host)
+{
+  amqp_host->conn = amqp_new_connection();
+
+  amqp_host->socket = amqp_ssl_socket_new(amqp_host->conn);
+  if (!amqp_host->socket) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): Connection failed to RabbitMQ: p_amqp_connect_to_publish_ssl(): no socket\n", config.name, config.type);
+    p_amqp_close(amqp_host, TRUE);
+    return ERR;
+  }
+
+  amqp_ssl_socket_set_verify_peer(amqp_host->socket, 0);
+  amqp_ssl_socket_set_verify_hostname(amqp_host->socket, 0);
+
+  //amqp_host->status = amqp_socket_open(amqp_host->socket, amqp_host->host, 5672 /* default port */);
+  amqp_host->status = amqp_socket_open(amqp_host->socket, amqp_host->host, 5671 /* ssl default port */);
+
+  if (amqp_host->status != AMQP_STATUS_OK) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): Connection failed to RabbitMQ: p_amqp_connect_to_publish_ssl(): unable to open socket\n", config.name, config.type);
+    p_amqp_close(amqp_host, TRUE);
+    return ERR;
+  }
+
+  amqp_host->ret = amqp_login(amqp_host->conn, amqp_host->vhost, 0, amqp_host->frame_max, amqp_host->heartbeat_interval, AMQP_SASL_METHOD_PLAIN, amqp_host->user, amqp_host->passwd);
+  if (amqp_host->ret.reply_type != AMQP_RESPONSE_NORMAL) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): Connection failed to RabbitMQ: p_amqp_connect_to_publish_ssl(): login\n", config.name, config.type);
+    p_amqp_close(amqp_host, TRUE);
+    return ERR;
+  }
+
+  amqp_channel_open(amqp_host->conn, 1);
+
+  amqp_host->ret = amqp_get_rpc_reply(amqp_host->conn);
+  if (amqp_host->ret.reply_type != AMQP_RESPONSE_NORMAL) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): Connection failed to RabbitMQ: p_amqp_connect_to_publish_ssl(): unable to open channel\n", config.name, config.type);
+    p_amqp_close(amqp_host, TRUE);
+    return ERR;
+  }
+
+#if AMQP_VERSION_MAJOR <= 0 && AMQP_VERSION_MINOR <= 5 && AMQP_VERSION_PATCH <= 2
+  amqp_exchange_declare(amqp_host->conn, 1, amqp_cstring_bytes(amqp_host->exchange),
+                        amqp_cstring_bytes(amqp_host->exchange_type), 0, 0, amqp_empty_table);
+#else
+  amqp_exchange_declare(amqp_host->conn, 1, amqp_cstring_bytes(amqp_host->exchange),
+                        amqp_cstring_bytes(amqp_host->exchange_type), 0, 0, 0, 0, amqp_empty_table);
+#endif
+
+  amqp_host->ret = amqp_get_rpc_reply(amqp_host->conn);
+  if (amqp_host->ret.reply_type != AMQP_RESPONSE_NORMAL) {
+    const char *err_msg;
+
+    switch (amqp_host->ret.reply_type) {
+    case AMQP_RESPONSE_NONE:
+      err_msg = "Missing RPC reply type";
+      break;
+    case AMQP_RESPONSE_LIBRARY_EXCEPTION:
+      err_msg = "Client library exception";
+      break;
+    case AMQP_RESPONSE_SERVER_EXCEPTION:
+      err_msg = "Server generated an exception";
+      break;
+    default:
+      err_msg = "Unknown";
+      break;
+    }
+
+    Log(LOG_ERR, "ERROR ( %s/%s ): Handshake with RabbitMQ failed: %s\n", config.name, config.type, err_msg);
+    p_amqp_close(amqp_host, TRUE);
+    return ERR;
+  }
+
+  // XXX: to be removed 
+  amqp_host->msg_props._flags = AMQP_BASIC_CONTENT_TYPE_FLAG;
+  amqp_host->msg_props.content_type = amqp_cstring_bytes("application/json");
+
+  if (amqp_host->persistent_msg) {
+    amqp_host->msg_props._flags |= AMQP_BASIC_DELIVERY_MODE_FLAG;
+    amqp_host->msg_props.delivery_mode = 2; /* persistent delivery */
+  }
+
+  Log(LOG_DEBUG, "DEBUG ( %s/%s ): Connection successful to RabbitMQ: p_amqp_connect_to_publish()\n", config.name, config.type);
+
+  P_broker_timers_unset_last_fail(&amqp_host->btimers);
+  return SUCCESS;
+}
+
 int p_amqp_connect_to_consume(struct p_amqp_host *amqp_host)
 {
   amqp_host->conn = amqp_new_connection();

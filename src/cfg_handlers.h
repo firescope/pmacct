@@ -403,4 +403,8 @@ EXT int cfg_key_tmp_net_own_field(char *, char *, char *);
 
 EXT void parse_time(char *, char *, int *, int *);
 EXT void cfg_set_aggregate(char *, u_int64_t [], u_int64_t, char *);
+
+EXT int cfg_key_fqdn_cache_size(char *, char *, char *);
+EXT int cfg_key_fqdn_cache_ttl(char *, char *, char *);
+EXT int cfg_key_fqdn_cache_ttl_nth_sample(char *, char *, char *);
 #undef EXT

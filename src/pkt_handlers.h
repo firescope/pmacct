@@ -178,6 +178,13 @@ EXT void pre_tag_label_handler(struct channels_list_entry *, struct packet_ptrs 
 EXT void sampling_handler(struct channels_list_entry *, struct packet_ptrs *, char **);
 EXT void sfprobe_sampling_handler(struct channels_list_entry *, struct packet_ptrs *, char **);
 
+EXT void src_fqdn_handler(struct channels_list_entry *, struct packet_ptrs *, char **);
+EXT void dst_fqdn_handler(struct channels_list_entry *, struct packet_ptrs *, char **);
+EXT void NF_src_fqdn_handler(struct channels_list_entry *, struct packet_ptrs *, char **);
+EXT void NF_dst_fqdn_handler(struct channels_list_entry *, struct packet_ptrs *, char **);
+EXT void SF_src_fqdn_handler(struct channels_list_entry *, struct packet_ptrs *, char **);
+EXT void SF_dst_fqdn_handler(struct channels_list_entry *, struct packet_ptrs *, char **);
+
 #if defined (WITH_GEOIP)
 EXT void pm_geoip_init();
 EXT void src_host_country_geoip_handler(struct channels_list_entry *, struct packet_ptrs *, char **);

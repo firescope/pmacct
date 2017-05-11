@@ -497,6 +497,10 @@ void mask_elem(struct pkt_primitives *d1, struct pkt_bgp_primitives *d2, struct 
   if (w2 & COUNT_EXPORT_PROTO_SEQNO) memcpy(&d1->export_proto_seqno, &s1->export_proto_seqno, sizeof(d1->export_proto_seqno));
   if (w2 & COUNT_EXPORT_PROTO_VERSION) memcpy(&d1->export_proto_version, &s1->export_proto_version, sizeof(d1->export_proto_version));
 
+
+  if (w2 & COUNT_SRC_FQDN) memcpy(&d1->src_fqdn, &s1->src_fqdn, sizeof(d1->src_fqdn));
+  if (w2 & COUNT_DST_FQDN) memcpy(&d1->dst_fqdn, &s1->dst_fqdn, sizeof(d1->dst_fqdn));
+
 #if defined (WITH_GEOIP) || defined (WITH_GEOIPV2)
   if (w2 & COUNT_SRC_HOST_COUNTRY) memcpy(&d1->src_ip_country, &s1->src_ip_country, sizeof(d1->src_ip_country)); 
   if (w2 & COUNT_DST_HOST_COUNTRY) memcpy(&d1->dst_ip_country, &s1->dst_ip_country, sizeof(d1->dst_ip_country)); 

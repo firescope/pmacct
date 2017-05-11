@@ -18,6 +18,10 @@
     along with this program; if no, write to the Free Software
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
+#ifndef __NETWORK_H_
+#define __NETWORK_H_
+
+#include <netdb.h>
 
 #include "../include/extract.h"
 #include "../include/llc.h"
@@ -424,6 +428,10 @@ struct pkt_primitives {
   u_int8_t proto;
   u_int32_t ifindex_in;
   u_int32_t ifindex_out;
+
+  char src_fqdn[NI_MAXHOST];
+  char dst_fqdn[NI_MAXHOST];
+
 #if defined (WITH_GEOIP) || defined (WITH_GEOIPV2)
   pm_country_t src_ip_country;
   pm_country_t dst_ip_country;
@@ -638,3 +646,6 @@ struct tunnel_entry {
 #endif
 EXT struct tunnel_handler tunnel_registry[TUNNEL_REGISTRY_STACKS][TUNNEL_REGISTRY_ENTRIES];
 #undef EXT
+
+#endif  /* __NETWORK_H_ */
+

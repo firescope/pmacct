@@ -1,0 +1,9 @@
+
+
+LIBSHMHT
+-------------
+
+As the name explains it's a shared memory hash table.
+It's specifically designed to implemnt a cache, and it tries to provide the best access time.
+The HT has fixed size to avoid long locks until the hash table changes his size.
+The HT size must be set in init time.

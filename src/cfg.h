@@ -481,6 +481,10 @@ struct configuration {
   int use_ip_next_hop;
   int tmp_net_own_field;
   size_t thread_stack;
+
+  int fqdn_cache_size;
+  int fqdn_cache_ttl;
+  u_int32_t fqdn_cache_ttl_nth_sample;
 };
 
 /* prototypes */ 

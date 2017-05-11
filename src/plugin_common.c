@@ -381,7 +381,9 @@ void P_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *idata
     cache_ptr->flow_counter = data->flo_num;
     cache_ptr->bytes_counter = data->pkt_len;
     cache_ptr->flow_type = data->flow_type;
-    cache_ptr->tcp_flags = data->tcp_flags;
+    if ((data->tcp_flags & TH_SYN) && !(data->tcp_flags & TH_ACK)) {
+      cache_ptr->tcp_flags = data->tcp_flags;
+    }
 
     if (config.what_to_count & COUNT_CLASS) {
       cache_ptr->bytes_counter += data->cst.ba;
@@ -423,7 +425,9 @@ void P_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *idata
       cache_ptr->flow_counter += data->flo_num;
       cache_ptr->bytes_counter += data->pkt_len;
       cache_ptr->flow_type = data->flow_type;
-      cache_ptr->tcp_flags |= data->tcp_flags;
+      if ((data->tcp_flags & TH_SYN) && !(data->tcp_flags & TH_ACK)) {
+        cache_ptr->tcp_flags = data->tcp_flags;
+      }
 
       if (config.what_to_count & COUNT_CLASS) {
         cache_ptr->bytes_counter += data->cst.ba;
@@ -449,7 +453,10 @@ void P_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *idata
       cache_ptr->flow_counter = data->flo_num;
       cache_ptr->bytes_counter = data->pkt_len;
       cache_ptr->flow_type = data->flow_type;
-      cache_ptr->tcp_flags = data->tcp_flags;
+      if ((data->tcp_flags & TH_SYN) && !(data->tcp_flags & TH_ACK)) {
+        cache_ptr->tcp_flags = data->tcp_flags;
+      }
+
       if (config.what_to_count & COUNT_CLASS) {
         cache_ptr->bytes_counter += data->cst.ba;
         cache_ptr->packet_counter += data->cst.pa;

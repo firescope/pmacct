@@ -8,7 +8,8 @@ AM_CFLAGS  = @GEOIP_CFLAGS@ @GEOIPV2_CFLAGS@ @JANSSON_CFLAGS@
 
 noinst_LTLIBRARIES = libdaemons.la libcommon.la
 libcommon_la_SOURCES = strlcpy.c addr.c jansson.c addr.h pmacct.h	\
-	pmacct-build.h pmacct-data.h pmacct-defines.h mpls.h network.h once.h
+	pmacct-build.h pmacct-data.h pmacct-defines.h mpls.h network.h once.h \
+        fqdn_cache.c 
 libdaemons_la_SOURCES = signals.c util.c util.h plugin_hooks.c		\
         plugin_hooks.h server.c acct.c memory.c cfg.c cfg.h		\
         imt_plugin.c imt_plugin.h log.c log.h pkt_handlers.c		\
@@ -21,7 +22,7 @@ libdaemons_la_SOURCES = signals.c util.c util.h plugin_hooks.c		\
         regmagic.h regsub.c conntrack.c conntrack.h xflow_status.c	\
         xflow_status.h plugin_common.c plugin_common.h preprocess.c	\
         preprocess-data.h preprocess.h ll.c nl.c jhash.h pmacct-dlt.h	\
-        sflow.h crc32.h
+        sflow.h crc32.h 
 # Builtin plugins
 libdaemons_la_LIBADD  = nfprobe_plugin/libnfprobe_plugin.la
 libdaemons_la_LIBADD += sfprobe_plugin/libsfprobe_plugin.la

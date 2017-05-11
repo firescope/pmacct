@@ -1,0 +1,16 @@
+AC_INIT([lib_shmht], [0.5], [jon.ander.ortiz@gmail.com],[shmht], [http://hello.example.com/])
+AC_PREREQ([2.59])
+AM_INIT_AUTOMAKE([1.10 -Wall no-define])
+AC_CONFIG_HEADERS([config.h])
+AC_PROG_CXX
+AM_PROG_CC_C_O
+AC_PROG_CC_C_O
+AC_PROG_LIBTOOL
+AC_CONFIG_MACRO_DIR([m4])
+
+AC_SUBST([SHMHT_SO_VERSION], [0:0:1])
+AC_SUBST([SHMHT_API_VERSION], [0.1])
+
+AC_OUTPUT([Makefile
+	   src/Makefile
+	   ])

@@ -22,6 +22,7 @@
 /* includes */
 #include <amqp.h>
 #include <amqp_tcp_socket.h>
+#include <amqp_ssl_socket.h>
 #define	__PLUGIN_COMMON_EXPORT
 #include "plugin_common.h"
 #undef	__PLUGIN_COMMON_EXPORT
@@ -86,6 +87,7 @@ EXT int p_amqp_get_sockfd(struct p_amqp_host *);
 EXT void p_amqp_unset_routing_key(struct p_amqp_host *);
 
 EXT int p_amqp_connect_to_publish(struct p_amqp_host *);
+EXT int p_amqp_connect_to_publish_ssl(struct p_amqp_host *);
 EXT int p_amqp_connect_to_consume(struct p_amqp_host *);
 EXT int p_amqp_publish_string(struct p_amqp_host *, char *);
 EXT int p_amqp_publish_binary(struct p_amqp_host *, void *, u_int32_t);

@@ -18,6 +18,8 @@
     along with this program; if not, write to the Free Software
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
+#ifndef __PMACCT_DATA_H_
+#define __PMACCT_DATA_H_
 
 /* defines */
 #define PLUGIN_ID_CORE          0
@@ -112,6 +114,8 @@ static const struct _primitives_matrix_struct _primitives_matrix[] = {
   {"timestamp_start", 0, 0, 1, 0, 0, "Flow start time or observation time at the exporter"},
   {"timestamp_end", 0, 0, 1, 0, 0, "Flow end time"},
   {"timestamp_arrival", 1, 1, 1, 1, 0, "Observation time at the collector"},
+  {"src_fqdn", 1, 1, 1, 1, 0, "Source Fully Qualified Domain Name"}, 
+  {"dst_fqdn", 1, 1, 1, 1, 0, "Destination Fully Qualified Domain Name"},
   {"", 0, 0, 0, 0, 0, ""}
 };
 
@@ -793,6 +797,9 @@ static const struct _dictionary_line dictionary[] = {
   {"tunnel_0", cfg_key_tunnel_0},
   {"pkt_len_distrib_bins", cfg_key_pkt_len_distrib_bins},
   {"tmp_net_own_field", cfg_key_tmp_net_own_field},
+  {"fqdn_cache_size", cfg_key_fqdn_cache_size},
+  {"fqdn_cache_ttl", cfg_key_fqdn_cache_ttl},
+  {"fqdn_cache_ttl_nth_sample", cfg_key_fqdn_cache_ttl_nth_sample},
   {"", NULL},
 };
 
@@ -832,3 +839,5 @@ static struct tunnel_entry tunnel_handlers_list[] = {
 };
 
 #endif
+
+#endif /* __PMACCT_DATA_H_ */

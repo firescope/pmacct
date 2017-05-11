@@ -1,0 +1,114 @@
+INTRODUCTION for developers.
+This document is to explain how a newly created dynamic shared object (SO) classifier need to interact with pmacct.
+Other than reading this document, a valuable way to get started is looking at already existing SO classifiers code;
+often they are less than 100 lines of plain C code, easy and intuitive to understand.
+
+Shared Object classifiers are loaded runtime by a dlopen() call, shortly followed by few dlsym() ones, which are
+aimed to find some required symbols. They are:
+
+char protocol[] = "<something>"
+Static value. It's the string-identifier for the class. It is then returned to the user.
+
+char type[] = "classifier"
+Static value. It need to be "classifier". Keeping an eye to the future, it is meant to distinguish classifiers from
+other kind of shared objects that could be placed in the same directory.
+
+char version[] = "<some version number>"
+Static value. This is just for your own reference and will never appear. But versioning is useful and the symbol is
+required. 
+
+int init(void **extra)
+Initialization function. It's called once, shortly after the dlopen() . It allows to allocate private memory areas
+to be returned to pmacct through the void **extra argument. Such reference is then passed-back to the classifier()
+A return value of 1 means successful initialization; 0 otherwise.
+
+u_int32_t classifier(struct pkt_classifier_data *data, int caplen, void **context, void **rev_context, void **extra)
+Classification function. It's called, for a maximum of N (N = 5 by default) tentatives, each time a packet belonging
+to a still unclassified flow is collected. A return value of 1 means successful classification; 0 otherwise. The
+large scope of u_int32_t is reserved for future use. Let's now take a look to the arguments:
+
+	struct pkt_classifier_data *data 
+	A structure grouping a set of pointers and informations about the current packet passed by pmacct to the SO
+	classifier. An outlook of the structure can be found below. 
+
+	int caplen
+	The captured portion of the payload. Useful to understand the upper bound of the payload buffer. Modyfing the
+	'snaplen' configuration directive will directly affect this portion.
+
+	void **context
+	Suitable to pass back and forth a private memory area which is associated to both the current classifier and
+	the uni-directional flow. Such area is not provided by pmacct and should be allocated once by the classifier. 
+	If nothing is allocated *context is NULL. Once the flow is successfully classified (or tentatives are gone),
+	pmacct will clean it up so that the classifier has not to care about it.  
+
+        void **rev_context
+        Ptr-to-ptr to a memory area which is associated to both the current classifier and the reverse uni-directional
+	flow (ie. forward: ip_SRC:port_SRC -proto-> ip_DST:port_DST reverse: ip_DST:port_DST -proto->ip_SRC:port_SRC).
+	Such area should be considered read-only. If nothing is allocated *rev_context is NULL. pmacct will clean it
+	up for you.
+
+	void **extra
+	Suitable to pass back and forth a private memory area which is associated to the current classifier. It is
+	aimed to build private and persistent memory structures (on the contrary, contexts are quickly destroyed)
+	needed by the classifier itself. Such area will be not touched by pmacct in any way.
+	
+An outlook of the pkt_classifier_data structure - cited before - follows:
+
+struct pkt_classifier_data {
+  struct timeval stamp;
+  u_char *packet_ptr;
+  u_char *l3_ptr;
+  u_char *l4_ptr;
+  u_char *payload_ptr;
+  u_int16_t l3_proto;
+  u_int16_t l4_proto;
+  u_int16_t plen;
+  u_int8_t tentatives;
+  u_int16_t sampling_rate;
+};
+
+It is declared in common.h along with more structures needed by classifiers. common-dep.h is included by common.h
+and is meant to solve some structural/definition dependencies. As developer of a new classifier, all you need is
+to prepend the #include "common.h" line in your source file. Furthermore, pmacct offers some library functions to 
+deal with the classifiers' table. To get rid of them, pmacct need to feature a "full" Dynamic Symbol Table. This 
+is the default. Prototypes of the set of available functions follow:
+
+	pm_class_t pmct_register(struct pkt_classifier *)
+	Registers the supplied classifier structure in the classifiers table, checking that it a) contains a valid
+	protocol name (ie. not null), b) contains a vaild ID ( ie. > 0 and <= pmct_get_num_entries() ) and c) the
+	supplied ID is not in use. In the case the classifier ID is busy, it need to be unregistered before using
+	pmct_unregister(). pmct_isfree() has to be called to check whether a classifier ID is actually available.
+	pmct_register() returns the classifier ID if it is successfull, 0 otherwise.
+ 
+	void pmct_unregister(pm_class_t)
+	Unregisters the classifier holding the supplied ID from the classifiers table. Nothing is returned. For
+	further security, one can check that the ID has been effectively dropped by using pmct_isfree().
+
+	pm_class_t pmct_find_first_free()
+	Returns the first (ie. lowest numbered) available ID in the classifiers table. 
+
+	pm_class_t pmct_find_last_free()
+	Returns the last (ie. highest numbered) available ID in the classifiers table. 
+
+	int pmct_isfree(pm_class_t)
+	Checks whether the supplied classifier ID is actually free. The function returns 1 if it is, 0 if not. In
+	case of error (ie. the supplied ID is out of bounds) -1 is returned, instead. 
+
+	int pmct_get(pm_class_t, struct pkt_classifier *)
+	Copies the classifier holding the supplied ID in the structure pointed by "struct pkt_classifier *". Such
+	structure need to be allocated before the call to this function. The function returns 1 if it has completed
+	correctly (ie. requesting an un-existing ID is not an error), 0 otherwise. 
+
+	int pmct_get_num_entries()
+	Returns the maximum ID valid for the currently allocated classifiers table. The number can be tuned through
+	the use of the 'classifier_table_num' configuration directive.
+
+A closing note about the Dynamic Symbol Table. An extract from the GNU ld manpage about this topic follows:
+"[ .. ] When creating a dynamically linked executable, add all symbols to the dynamic symbol table.  The dynamic
+symbol table is the set of symbols which are visible from dynamic objects at run time. [ .. ] the dynamic symbol
+table will normally contain only those symbols which are referenced by some dynamicobject mentioned in the link.
+If you use "dlopen" to load a dynamic object which needs to refer back to the symbols defined by the program,
+rather than some other dynamic object, then you will probably need to use this option when linking the program
+itself. [ .. ]"
+
+/* EOF */

@@ -1,0 +1,17 @@
+INTRODUCTION.
+pmacct 0.10.0 sees the introduction of IPv4/IPv6 traffic classification capabilities. The goal is being able to identify
+and classify flows (traffic is meant to be a set of flows) in a dynamical way, ie. understanding the network application
+they belong to and not just relying upon TCP/UDP port numbers. This latter approach, in fact, has two critical points:
+it can be easily circumvented from users by using non-standard ports for their applications and it's unable to deal with
+applications that allocate dynamic data channels (ie. file transfers, IP telephony, P2P, etc.).
+
+Among the others, traffic classification can result highly beneficial for:
+  a) network planning and provisioning by determining services, quantities and peers involved;
+  b) accounting and billing per application layer logical entities (ie. virtual hosts);
+  c) detecting suspicious activities and either forbidden or just bandwidth hungry applications.
+
+This package includes some classifiers ready to be compiled as dynamic shared objects (SO). Follow the instructions in
+the INSTALL document for compilation and installation. More details (ie. measure of accuracy and time to execution for
+available classifiers) will be included as they emerge. For further details take a look to the pmacct classification
+page: http://www.ba.cnr.it/~paolo/pmacct/classification/ 
+
