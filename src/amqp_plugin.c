@@ -87,10 +87,6 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
     exit_plugin(1);
   }
 
-  p_amqp_init_host(&amqpp_amqp_host);
-  p_amqp_set_user(&amqpp_amqp_host, config.sql_user);
-  p_amqp_set_passwd(&amqpp_amqp_host, config.sql_passwd);
-
   /* setting function pointers */
   if (config.what_to_count & (COUNT_SUM_HOST|COUNT_SUM_NET))
     insert_func = P_sum_host_insert;
@@ -287,22 +283,27 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   }
 }
 
+void init_amqp_host() {
+  p_amqp_init_host(&amqpp_amqp_host);
+  p_amqp_set_user(&amqpp_amqp_host, config.sql_user);
+  p_amqp_set_passwd(&amqpp_amqp_host, config.sql_passwd);
+  p_amqp_set_exchange(&amqpp_amqp_host, config.sql_db);
+  p_amqp_set_routing_key(&amqpp_amqp_host, config.sql_table);
+  p_amqp_set_exchange_type(&amqpp_amqp_host, config.amqp_exchange_type);
+  p_amqp_set_host(&amqpp_amqp_host, config.sql_host);
+  p_amqp_set_vhost(&amqpp_amqp_host, config.amqp_vhost);
+  p_amqp_set_persistent_msg(&amqpp_amqp_host, config.amqp_persistent_msg);
+  p_amqp_set_frame_max(&amqpp_amqp_host, config.amqp_frame_max);
+  p_amqp_set_content_type_json(&amqpp_amqp_host);
+  p_amqp_init_routing_key_rr(&amqpp_amqp_host);
+  p_amqp_set_routing_key_rr(&amqpp_amqp_host, config.amqp_routing_key_rr);
+}
+
 void amqp_cache_purge(struct chained_cache *queue[], int index)
 {
-  struct pkt_primitives *data = NULL;
-  struct pkt_bgp_primitives *pbgp = NULL;
-  struct pkt_nat_primitives *pnat = NULL;
-  struct pkt_mpls_primitives *pmpls = NULL;
-  char *pcust = NULL;
   struct pkt_vlen_hdr_primitives *pvlen = NULL;
-  struct pkt_bgp_primitives empty_pbgp;
-  struct pkt_nat_primitives empty_pnat;
-  struct pkt_mpls_primitives empty_pmpls;
-  char *empty_pcust = NULL;
-  char src_mac[18], dst_mac[18], src_host[INET6_ADDRSTRLEN], dst_host[INET6_ADDRSTRLEN], ip_address[INET6_ADDRSTRLEN];
-  char rd_str[SRVBUFLEN], misc_str[SRVBUFLEN], dyn_amqp_routing_key[SRVBUFLEN], *orig_amqp_routing_key = NULL;
-  int i, j, stop, batch_idx, is_routing_key_dyn = FALSE, qn = 0, ret, saved_index = index;
-  int mv_num = 0, mv_num_save = 0;
+  char dyn_amqp_routing_key[SRVBUFLEN], *orig_amqp_routing_key = NULL;
+  int i, j, stop, is_routing_key_dyn = FALSE, qn = 0, ret, saved_index = index;
   time_t start, duration;
   pid_t writer_pid = getpid();
 
@@ -329,31 +330,21 @@ void amqp_cache_purge(struct chained_cache *queue[], int index)
     config.sql_table = dyn_amqp_routing_key;
   }
 
-  p_amqp_set_exchange(&amqpp_amqp_host, config.sql_db);
-  p_amqp_set_routing_key(&amqpp_amqp_host, config.sql_table);
-  p_amqp_set_exchange_type(&amqpp_amqp_host, config.amqp_exchange_type);
-  p_amqp_set_host(&amqpp_amqp_host, config.sql_host);
-  p_amqp_set_vhost(&amqpp_amqp_host, config.amqp_vhost);
-  p_amqp_set_persistent_msg(&amqpp_amqp_host, config.amqp_persistent_msg);
-  p_amqp_set_frame_max(&amqpp_amqp_host, config.amqp_frame_max);
-  p_amqp_set_content_type_json(&amqpp_amqp_host);
-
-  p_amqp_init_routing_key_rr(&amqpp_amqp_host);
-  p_amqp_set_routing_key_rr(&amqpp_amqp_host, config.amqp_routing_key_rr);
-
-  empty_pcust = malloc(config.cpptrs.len);
-  if (!empty_pcust) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): Unable to malloc() empty_pcust. Exiting.\n", config.name, config.type);
-    exit_plugin(1);
-  }
-
-  memset(&empty_pbgp, 0, sizeof(struct pkt_bgp_primitives));
-  memset(&empty_pnat, 0, sizeof(struct pkt_nat_primitives));
-  memset(&empty_pmpls, 0, sizeof(struct pkt_mpls_primitives));
-  memset(empty_pcust, 0, config.cpptrs.len);
-
+  init_amqp_host();
   ret = p_amqp_connect_to_publish_ssl(&amqpp_amqp_host);
-  if (ret) return;
+  if (ret) {
+    init_amqp_host();
+    ret = p_amqp_connect_to_publish(&amqpp_amqp_host);
+    if (ret) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): Can't connect to RabbitMQ server (%s) via SSL or standard socket. Exiting.\n", config.name, config.type, config.sql_host);
+      return;
+    }
+    else { 
+      Log(LOG_INFO, "INFO ( %s/%s ): Connected to RabbitMQ server(%s) via standard socket.\n", config.name, config.type, config.sql_host);
+    }
+  } else {
+    Log(LOG_INFO, "INFO ( %s/%s ): Connected to RabbitMQ server(%s) via SSL socket.\n", config.name, config.type, config.sql_host);
+  }
 
   for (j = 0, stop = 0; (!stop) && P_preprocess_funcs[j]; j++)
     stop = P_preprocess_funcs[j](queue, &index, j);
@@ -376,5 +367,4 @@ void amqp_cache_purge(struct chained_cache *queue[], int index)
 
   if (config.sql_trigger_exec) P_trigger_exec(config.sql_trigger_exec); 
 
-  if (empty_pcust) free(empty_pcust);
 }

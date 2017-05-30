@@ -312,12 +312,13 @@ void get_host_ip(char *host) {
     perror("getifaddrs");
   } else {
     //Walk through linked list, maintaining head pointer so we can free list later
+    char *interface = config.dev == NULL ? "eth0" : config.dev;
     for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
       if (ifa->ifa_addr != NULL) {
 	int family = ifa->ifa_addr->sa_family;
-	if(strcmp( ifa->ifa_name , "eth0") == 0) {
+	if(strcmp( ifa->ifa_name, interface) == 0) {
 	  if (family == AF_INET) {
-	    int s = getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in), host, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
+	    int s = getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in), host, 16, NULL, 0, NI_NUMERICHOST);
 	    if (s != 0) {
               Log(LOG_ERR, "ERROR ( %s/%s ):getnameinfo() failed: %s\n", MODULE_NAME, "get_host_ip", gai_strerror(s));
 	    } else break;

@@ -159,8 +159,10 @@ int p_amqp_connect_to_publish(struct p_amqp_host *amqp_host)
     return ERR;
   }
 
-  amqp_host->status = amqp_socket_open(amqp_host->socket, amqp_host->host, 5672 /* default port */);
-
+  struct timeval timeout;
+  timeout.tv_sec = 5;
+  timeout.tv_usec = 0;
+  amqp_host->status = amqp_socket_open_noblock(amqp_host->socket, amqp_host->host, 5672, &timeout);
   if (amqp_host->status != AMQP_STATUS_OK) {
     Log(LOG_ERR, "ERROR ( %s/%s ): Connection failed to RabbitMQ: p_amqp_connect_to_publish(): unable to open socket\n", config.name, config.type);
     p_amqp_close(amqp_host, TRUE);
@@ -244,9 +246,10 @@ int p_amqp_connect_to_publish_ssl(struct p_amqp_host *amqp_host)
   amqp_ssl_socket_set_verify_peer(amqp_host->socket, 0);
   amqp_ssl_socket_set_verify_hostname(amqp_host->socket, 0);
 
-  //amqp_host->status = amqp_socket_open(amqp_host->socket, amqp_host->host, 5672 /* default port */);
-  amqp_host->status = amqp_socket_open(amqp_host->socket, amqp_host->host, 5671 /* ssl default port */);
-
+  struct timeval timeout;
+  timeout.tv_sec = 5;
+  timeout.tv_usec = 0;
+  amqp_host->status = amqp_socket_open_noblock(amqp_host->socket, amqp_host->host, 5671, &timeout);
   if (amqp_host->status != AMQP_STATUS_OK) {
     Log(LOG_ERR, "ERROR ( %s/%s ): Connection failed to RabbitMQ: p_amqp_connect_to_publish_ssl(): unable to open socket\n", config.name, config.type);
     p_amqp_close(amqp_host, TRUE);
