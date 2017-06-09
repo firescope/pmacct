@@ -75,6 +75,7 @@ static const u_int32_t SZ_REGISTERED_PORT_ENTRY = sizeof(struct registered_port_
 
 /***** Global variables *****/
 char *edge_device_id = NULL;
+char *stamp_updated = NULL;
 struct flow_entry *flow_cache = NULL;
 struct registered_port_entry *registered_port_cache = NULL;
 char collector_ip[16];
@@ -330,6 +331,16 @@ void get_host_ip(char *host) {
   }
 }
 
+void compose_timestamp_utc(char *buf, int buflen, struct timeval *tv)
+{
+  time_t time1;
+  struct tm *time2;
+
+  time1 = tv->tv_sec;
+  time2 = gmtime(&time1);
+  strftime(buf, SRVBUFLEN, "%Y-%m-%d %H:%M:%S", time2);
+}
+
 
 void publish_port_entry(u_int64_t wtc, struct port_bucket_entry *port_bucket_entry, struct port_entry *port_entry, char *reason)
 {
@@ -384,14 +395,14 @@ void publish_port_entry(u_int64_t wtc, struct port_bucket_entry *port_bucket_ent
   add_element(json_obj, json_pack("{sI}", "packets", port_bucket_entry->total_packets));
   add_element(json_obj, json_pack("{sI}", "bytes", port_bucket_entry->total_bytes));
 
-  char tstamp_str[SRVBUFLEN];
-  struct timeval tv;
-  tv.tv_sec = time(NULL);
-  tv.tv_usec = 0;
-  compose_timestamp(tstamp_str, SRVBUFLEN, &tv, FALSE, config.timestamps_since_epoch);
-  add_element(json_obj, json_pack("{ss}", "stamp_inserted", tstamp_str));
-  compose_timestamp(tstamp_str, SRVBUFLEN, &tv, FALSE, config.timestamps_since_epoch);
-  add_element(json_obj, json_pack("{ss}", "stamp_updated", tstamp_str));
+  if (!stamp_updated) {
+    struct timeval tv;
+    tv.tv_sec = time(NULL);
+    tv.tv_usec = 0;
+    stamp_updated = malloc(SRVBUFLEN);
+    compose_timestamp_utc(stamp_updated, SRVBUFLEN, &tv);
+  }
+  add_element(json_obj, json_pack("{ss}", "stamp_updated", stamp_updated));
 
   char *json_str = compose_json_str(json_obj);
   int ret = p_amqp_publish_string(&amqpp_amqp_host, json_str);
@@ -699,4 +710,5 @@ void purge_flows()
       free(registered_port_entry);
     }
   }
+  free(stamp_updated);
 }
