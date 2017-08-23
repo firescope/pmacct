@@ -4,7 +4,7 @@
 
 #include <netdb.h>
 
-#define FIFO_NAME "/tmp/flow_url_pipe"
+#define FIFO_NAME "/etc/pmacct/flow_url_pipe"
 #define HTTP_PROTOCOL "http"
 #define HTTPS_PROTOCOL "https"
 #define HTTP_METHOD_LEN 8
