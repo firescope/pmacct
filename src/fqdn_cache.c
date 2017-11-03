@@ -46,11 +46,6 @@ struct ip_host_entry *add_to_cache(struct in_addr *key, char *value)
     memcpy(&entry->ip_address, key, SZ_IN_ADDR);
     strlcpy(entry->host, value, NI_MAXHOST);
     HASH_ADD(hh, ip_host_cache, ip_address, SZ_IN_ADDR, entry);
-    if (config.debug) {
-      char ip[INET6_ADDRSTRLEN];
-      inet_ntop(AF_INET, &entry->ip_address, ip, INET6_ADDRSTRLEN);
-      Log(LOG_DEBUG, "DEBUG ( %s/core ): add_to_cache(): Added Fully Qualified Domain Name[%s] to cache for ip address[%s].\n", config.name, entry->host, ip);
-    }
     enforce_cache_size();
     return entry;
 }
@@ -114,7 +109,31 @@ int lookup_fqdn(struct in_addr *ip_address, char *host)
     struct sockaddr_in sa;
     sa.sin_family = AF_INET;
     sa.sin_addr.s_addr = ip_address->s_addr;
-    return getnameinfo((struct sockaddr*)&sa, SZ_SOCKADDR, host, NI_MAXHOST, 0, 0, NI_NAMEREQD);
+    struct timeval t0;
+    struct timeval t1;
+
+    gettimeofday(&t0, 0);
+
+    int res = getnameinfo((struct sockaddr*)&sa, SZ_SOCKADDR, host, NI_MAXHOST, 0, 0, NI_NAMEREQD);
+    /*
+    struct hostent *he;
+    he = gethostbyaddr(ip_address, sizeof(ip_address), AF_INET);
+    if (he) {
+      strncpy(host, he->h_name, NI_MAXHOST);
+      res = 0;
+    } else {
+      res = h_errno;
+    }
+    */
+
+    gettimeofday(&t1, 0);
+    if (config.debug) {
+     char ip[INET6_ADDRSTRLEN];
+     inet_ntop(AF_INET, ip_address, ip, INET6_ADDRSTRLEN);
+     float elapsed = (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f;
+     Log(LOG_DEBUG, "DEBUG ( %s/core ): lookup_fqdn(): ip[%s] dns[%s] time taken[%fms] status[%d].\n", config.name, ip, res ? gai_strerror(res) : host, elapsed, res);
+    }
+    return res;
 }
 
 char *reverse_lookup_ia(struct in_addr *ip_address) {
@@ -124,13 +143,12 @@ char *reverse_lookup_ia(struct in_addr *ip_address) {
   if (entry) {
     return entry->host;
   } else {
-
     char host[NI_MAXHOST];
     int res = lookup_fqdn(ip_address, host);
-    if (res) {
-      entry = add_to_cache(ip_address, "");
-    } else {
+    if (res == 0) {
       entry = add_to_cache(ip_address, host);
+    } else  {
+      entry = add_to_cache(ip_address, "");
     }
 
     if (entry) {
