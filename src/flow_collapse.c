@@ -173,7 +173,7 @@ struct registered_port_entry *find_registered_port(u_int16_t port, u_int8_t prot
 
 void read_registered_ports()
 {
-  FILE* stream = fopen("/firescope/system_config/pmacct/service-names-port-numbers.csv", "r");
+  FILE* stream = fopen("/etc/pmacct/service-names-port-numbers.csv", "r");
   char line[1024];
   char *end_ptr;
   int i=0;
@@ -536,9 +536,11 @@ void publish(u_int64_t wtc, struct flow_entry *flow_entry)
   LL_FOREACH(flow_entry->port_bucket_list, port_bucket_entry) {
     if (port_bucket_entry) {
       struct port_entry *candidate_port = NULL;
+      /*
       int count = 0;
       LL_COUNT(port_bucket_entry->port_list, candidate_port, count);
       if (count > 1) {
+      */
 	struct chained_port *known_client_ports = NULL, *known_server_ports = NULL;
 	// sort weightiest first
 	int published_bucket = 0;
@@ -615,12 +617,14 @@ void publish(u_int64_t wtc, struct flow_entry *flow_entry)
 	log_candidates(port_bucket_entry);
 	clear_known_ports(&known_client_ports, "client");
 	clear_known_ports(&known_server_ports, "server");
+      /*
       } else {
         // handle one way flow, only allow traffic to inclusive range on IANA port
 	if (candidate_port && find_registered_port(candidate_port->dst_port, candidate_port->proto) != NULL) {
 	  publish_port_entry(wtc, port_bucket_entry, candidate_port, "one-way known port");
         }
       }
+      */
     }
   }
 }

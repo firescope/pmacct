@@ -3,7 +3,7 @@
 #include "network.h"
 #include "amqp_common.h"
 #include "fqdn_cache.h"
-#include "libshmht/include/shmht.h"
+#include "shmht.h"
 #include "flow_url_common.h"
 #include "flow_collapse.h"
 
