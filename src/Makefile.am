@@ -56,7 +56,7 @@ libdaemons_la_CFLAGS  += @SQLITE3_CFLAGS@
 endif
 if WITH_RABBITMQ
 libdaemons_la_SOURCES += amqp_common.c amqp_common.h amqp_plugin.c amqp_plugin.h
-libdaemons_la_LIBADD  += @RABBITMQ_LIBS@ -lshmht
+libdaemons_la_LIBADD  += @RABBITMQ_LIBS@ -lshmht_0.1
 libdaemons_la_CFLAGS  += @RABBITMQ_CFLAGS@
 endif
 if WITH_KAFKA
