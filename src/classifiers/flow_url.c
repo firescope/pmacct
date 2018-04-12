@@ -99,7 +99,7 @@ void init_url_writer() {
       flow_url_pipe_writer_fd = open(FIFO_NAME, O_WRONLY);
 
       /* Uncomment below to troubleshoot errors in opening pipe */
-      printf("%d - %d: classifier flow_url_pipe_writer_fd:%d err:%s\n", getpid(), time(NULL), flow_url_pipe_writer_fd, strerror(errno));
+      //printf("%d - %d: classifier flow_url_pipe_writer_fd:%d err:%s\n", getpid(), time(NULL), flow_url_pipe_writer_fd, strerror(errno));
     }
   }
 }

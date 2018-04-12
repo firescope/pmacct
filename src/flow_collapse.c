@@ -173,7 +173,7 @@ struct registered_port_entry *find_registered_port(u_int16_t port, u_int8_t prot
 
 void read_registered_ports()
 {
-  FILE* stream = fopen("/etc/pmacct/service-names-port-numbers.csv", "r");
+  FILE* stream = fopen("/usr/local/etc/pmacct/service-names-port-numbers.csv", "r");
   char line[1024];
   char *end_ptr;
   int i=0;
