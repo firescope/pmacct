@@ -6,7 +6,7 @@
 #include "uthash.h"
 #include "utlist.h"
 
-#define SHM_TABLE_NAME "/usr/local/etc/pmacct"
+#define SHM_TABLE_NAME "/firescope/system_config/pmacct"
 
 typedef struct flow_url_client {
     char ip_text[INET6_ADDRSTRLEN];
