@@ -28,3 +28,11 @@ Custom FireScope functionality which adds SSL support, fqdn, and flow collapsing
   * ./configure *[check-out available configure knobs via ./configure --help]* 
   * make
   * make install *[with super-user permission]*
+
+Docker
+Build release and push to registry
+docker build -t push registry.gitlab.com/firescope/stratis/pmacct/edge-pmacct .
+docker tag 4c35ff834f27 registry.gitlab.com/firescope/stratis/pmacct/edge-pmacct:4.0.0-alpha
+docker tag 4c35ff834f27 registry.gitlab.com/firescope/stratis/pmacct/edge-pmacct:4.0.0-beta1
+docker tag 4c35ff834f27 registry.gitlab.com/firescope/stratis/pmacct/edge-pmacct:latest
+docker push registry.gitlab.com/firescope/stratis/pmacct/edge-pmacct
