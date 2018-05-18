@@ -14,7 +14,8 @@ variables:
 
 before_script:
   - ./build-all.sh
-  - yum -y install docker
+  - yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+  - yum -y install docker-ce
   - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
   - docker build --pull -t $IMAGE .
   - docker tag $IMAGE $IMAGE:latest
