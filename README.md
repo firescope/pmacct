@@ -19,7 +19,7 @@ Custom FireScope functionality which adds SSL support, fqdn, and flow collapsing
   * examples/: Sample pmacct and 3rd party tools configurations; sample maps
   * sql/: SQL documentation, default SQL schemas and customization tips
 
-#BUILDING#
+BUILDING
 
 - Build GitHub code:
   * git clone https://github.com/pmacct/pmacct.git
@@ -30,9 +30,11 @@ Custom FireScope functionality which adds SSL support, fqdn, and flow collapsing
   * make install *[with super-user permission]*
 
 Docker
-Build release and push to registry
-docker build -t push registry.gitlab.com/firescope/stratis/pmacct/edge-pmacct .
-docker tag 4c35ff834f27 registry.gitlab.com/firescope/stratis/pmacct/edge-pmacct:4.0.0-alpha
-docker tag 4c35ff834f27 registry.gitlab.com/firescope/stratis/pmacct/edge-pmacct:4.0.0-beta1
-docker tag 4c35ff834f27 registry.gitlab.com/firescope/stratis/pmacct/edge-pmacct:latest
-docker push registry.gitlab.com/firescope/stratis/pmacct/edge-pmacct
+
+- Build release and push to registry
+  * docker login registry.gitlab.com
+  * docker build -t push registry.gitlab.com/firescope/stratis/pmacct/edge-pmacct .
+  * docker tag <IMAGE ID> registry.gitlab.com/firescope/stratis/pmacct/edge-pmacct:4.0.0-alpha
+  * docker tag <IMAGE ID> registry.gitlab.com/firescope/stratis/pmacct/edge-pmacct:4.0.0-beta1
+  * docker tag <IMAGE ID> registry.gitlab.com/firescope/stratis/pmacct/edge-pmacct:latest
+  * docker push registry.gitlab.com/firescope/stratis/pmacct/edge-pmacct
