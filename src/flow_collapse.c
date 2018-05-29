@@ -11,6 +11,8 @@
 #include "utlist.h"
 
 #define MODULE_NAME "flow_collapse"
+#define DEFAULT_PRETAG_PMACCT_FILENAME "/etc/pmacct/pretag_pmacct.map"
+#define DEFAULT_PRETAG_SFLOW_NETFLOW_FILENAME "/etc/pmacct/pretag_sflow_netflow.map"
 
 /***** Data structure definitions *****/
 struct flow_key {
@@ -629,6 +631,21 @@ void publish(u_int64_t wtc, struct flow_entry *flow_entry)
   }
 }
 
+void read_edge_device_id(char *pretag_filename) {
+  if (pretag_filename && strlen(pretag_filename) > 0) {
+    int allocated;
+    struct plugin_requests req;
+    struct id_table pretag_table;
+    memset(&req, 0, sizeof(req));
+    memset(&pretag_table, 0, sizeof(pretag_table));
+
+    load_id_file(config.acct_type, pretag_filename, &pretag_table, &req, &allocated);
+    if (pretag_table.num) {
+      edge_device_id = pretag_table.e[0].label.val;
+    }
+  }
+}
+
 /***** Public entry points *****/
 void collapse_flows(struct chained_cache *queue[], int index)
 {
@@ -638,17 +655,31 @@ void collapse_flows(struct chained_cache *queue[], int index)
     for (j = 0; j < index; j++) {
       if (queue[j]->valid != PRINT_CACHE_COMMITTED) continue;
 
-      if (!edge_device_id) {
-        vlen_prims_get(queue[j]->pvlen, COUNT_INT_LABEL, &edge_device_id);
-      }
-
       struct pkt_primitives *srcdst = &queue[j]->primitives;
-
       flow_entry = get_flow_bucket(srcdst);
       if (!flow_entry) {
 	// FATAL: can't allocate bucket
 	return;
       } 
+
+      if (!edge_device_id) {
+        vlen_prims_get(queue[j]->pvlen, COUNT_INT_LABEL, &edge_device_id);
+	if (!edge_device_id || strlen(edge_device_id) == 0) {
+            Log(LOG_DEBUG, "DEBUG ( %s/%s ): missing edge_device_id - attempting to reload %s from conf file\n", MODULE_NAME, "collapse_flows", config.pre_tag_map);
+            read_edge_device_id(config.pre_tag_map);
+	    if (!edge_device_id || strlen(edge_device_id) == 0) {
+	      char *pretag_filename = config.acct_type == ACCT_PM ? DEFAULT_PRETAG_PMACCT_FILENAME : DEFAULT_PRETAG_SFLOW_NETFLOW_FILENAME;
+	      Log(LOG_DEBUG, "DEBUG ( %s/%s ): missing edge_device_id - attempting to reload map from known path: %s\n", MODULE_NAME, "collapse_flows", pretag_filename);
+              read_edge_device_id(pretag_filename);
+	    }
+        }
+	if (edge_device_id) {
+	  Log(LOG_DEBUG, "DEBUG ( %s/%s ): found edge device id[%s]\n", MODULE_NAME, "collapse_flows", edge_device_id);
+	} else { 
+	  Log(LOG_ERR, "ERROR ( %s/%s ): Can't find edge device id, unable to publish results.\n", MODULE_NAME, "collapse_flows");
+	  exit(1);
+	}
+      }
 
       struct port_entry *src_port_entry = NULL;
       struct port_entry *dst_port_entry = NULL;
