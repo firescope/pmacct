@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 if [[ "$#" -ne 2 ]]; then
     echo "Usage: heathcheck.sh <executable name> <minimum expected number of running executable processes>" >&2;
     echo "Example: heathcheck.sh nfacctd 4" >&2;
