@@ -1,29 +1,28 @@
 #!/bin/bash
-if [ "$#" -ne 2 ]; then
-    echo "Usage: heathcheck.sh <executable name> <expected number of running executable processes>";
-    echo "Example: heathcheck.sh nfacctd 4";
+if [[ "$#" -ne 2 ]]; then
+    echo "Usage: heathcheck.sh <executable name> <minimum expected number of running executable processes>" >&2;
+    echo "Example: heathcheck.sh nfacctd 4" >&2;
     exit 1;
 fi
 
-
-count=`pgrep -c $1`;
-if [ $count -ne $2 ]
+count=$(pgrep -c $1);
+if [[ $count -ge $2 ]]
   then
-    echo "Expecting $2 $1 processes running but detected $count";
-    exit 1;
+    echo "Number of $1 processes found: $count";
   else
-    echo "Found expected number($count) of $1 processes";
+    echo "Expecting $2 or more $1 processes running but detected $count" >&2;
+    exit 1;
 fi
 
 pids="/var/run/pmacct/$1*.pid*";
-for pid in `cat $pids`;
+for pid in $(cat $pids);
   do
-    if ! ps -p $pid > /dev/null
+    if [[ ! $(ps -p $pid) ]]
       then
-        echo "$1 process $pid not found";
+        echo "Missing $1 process $pid" >&2;
         exit 1;
       else
-        echo "$1 process $pid is running";
+        echo "Verified $1 process $pid is running";
       fi
   done
 
