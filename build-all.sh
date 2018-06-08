@@ -1,6 +1,6 @@
 #!/bin/sh
 set -ex
-yum -y install libpcap-devel jansson-devel openssl-devel git gcc libtool make cmake tcpdump
+yum -y install libpcap-devel jansson-devel openssl-devel git gcc libtool make cmake
 cp -pfr dependencies/lib/* /usr/local/lib
 cp -pfr dependencies/include/* /usr/local/include
 export RABBITMQ_LIBS="-L/usr/local/lib -lrabbitmq"
