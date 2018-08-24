@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -34,16 +34,17 @@
 #include "kafka_common.h"
 #endif
 
-int bgp_peer_log_msg(struct bgp_node *route, struct bgp_info *ri, afi_t afi, safi_t safi, char *event_type, int output, int log_type)
+int bgp_peer_log_msg(struct bgp_node *route, struct bgp_info *ri, afi_t afi, safi_t safi,
+		     char *event_type, int output, char **output_data, int log_type)
 {
   struct bgp_misc_structs *bms;
-  char log_rk[SRVBUFLEN];
   struct bgp_peer *peer;
   struct bgp_attr *attr;
   int ret = 0, amqp_ret = 0, kafka_ret = 0, etype = BGP_LOGDUMP_ET_NONE;
   pid_t writer_pid = getpid();
 
-  if (!ri || !ri->peer || !ri->peer->log || !event_type) return ERR;
+  if (!ri || !ri->peer || !event_type) return ERR; /* missing required parameters */
+  if (!ri->peer->log && !output_data) return ERR; /* missing any output method */
 
   peer = ri->peer;
   attr = ri->attr;
@@ -53,6 +54,7 @@ int bgp_peer_log_msg(struct bgp_node *route, struct bgp_info *ri, afi_t afi, saf
 
   if (!strcmp(event_type, "dump")) etype = BGP_LOGDUMP_ET_DUMP;
   else if (!strcmp(event_type, "log")) etype = BGP_LOGDUMP_ET_LOG;
+  else if (!strcmp(event_type, "lglass")) etype = BGP_LOGDUMP_ET_LG;
 
 #ifdef WITH_RABBITMQ
   if ((bms->msglog_amqp_routing_key && etype == BGP_LOGDUMP_ET_LOG) ||
@@ -77,7 +79,7 @@ int bgp_peer_log_msg(struct bgp_node *route, struct bgp_info *ri, afi_t afi, saf
 
     /* no need for seq for "dump" event_type */
     if (etype == BGP_LOGDUMP_ET_LOG) {
-      json_object_set_new_nocheck(obj, "seq", json_integer((json_int_t)bms->log_seq));
+      json_object_set_new_nocheck(obj, "seq", json_integer((json_int_t) bgp_peer_log_seq_get(&bms->log_seq)));
       bgp_peer_log_seq_increment(&bms->log_seq);
 
       switch (log_type) {
@@ -108,6 +110,8 @@ int bgp_peer_log_msg(struct bgp_node *route, struct bgp_info *ri, afi_t afi, saf
 
     addr_to_str(ip_address, &peer->addr);
     json_object_set_new_nocheck(obj, bms->peer_str, json_string(ip_address));
+
+    if (bms->peer_port_str) json_object_set_new_nocheck(obj, bms->peer_port_str, json_integer((json_int_t)peer->tcp_port));
 
     json_object_set_new_nocheck(obj, "event_type", json_string(event_type));
 
@@ -167,6 +171,9 @@ int bgp_peer_log_msg(struct bgp_node *route, struct bgp_info *ri, afi_t afi, saf
     if ((bms->msglog_file && etype == BGP_LOGDUMP_ET_LOG) ||
 	(bms->dump_file && etype == BGP_LOGDUMP_ET_DUMP))
       write_and_free_json(peer->log->fd, obj);
+
+    if (output_data && etype == BGP_LOGDUMP_ET_LG)
+      (*output_data) = compose_json_str(obj);
 
 #ifdef WITH_RABBITMQ
     if ((bms->msglog_amqp_routing_key && etype == BGP_LOGDUMP_ET_LOG) ||
@@ -267,7 +274,7 @@ int bgp_peer_log_init(struct bgp_peer *peer, int output, int type)
       char ip_address[INET6_ADDRSTRLEN];
       json_t *obj = json_object();
 
-      json_object_set_new_nocheck(obj, "seq", json_integer((json_int_t)bms->log_seq));
+      json_object_set_new_nocheck(obj, "seq", json_integer((json_int_t) bgp_peer_log_seq_get(&bms->log_seq)));
       bgp_peer_log_seq_increment(&bms->log_seq);
 
       json_object_set_new_nocheck(obj, "timestamp", json_string(bms->log_tstamp_str));
@@ -277,6 +284,8 @@ int bgp_peer_log_init(struct bgp_peer *peer, int output, int type)
 
       addr_to_str(ip_address, &peer->addr);
       json_object_set_new_nocheck(obj, bms->peer_str, json_string(ip_address));
+
+      if (bms->peer_port_str) json_object_set_new_nocheck(obj, bms->peer_port_str, json_integer((json_int_t)peer->tcp_port));
 
       json_object_set_new_nocheck(obj, "event_type", json_string(event_type));
 
@@ -341,7 +350,7 @@ int bgp_peer_log_close(struct bgp_peer *peer, int output, int type)
     char ip_address[INET6_ADDRSTRLEN];
     json_t *obj = json_object();
 
-    json_object_set_new_nocheck(obj, "seq", json_integer((json_int_t)bms->log_seq));
+    json_object_set_new_nocheck(obj, "seq", json_integer((json_int_t) bgp_peer_log_seq_get(&bms->log_seq)));
     bgp_peer_log_seq_increment(&bms->log_seq);
 
     json_object_set_new_nocheck(obj, "timestamp", json_string(bms->log_tstamp_str));
@@ -351,6 +360,8 @@ int bgp_peer_log_close(struct bgp_peer *peer, int output, int type)
 
     addr_to_str(ip_address, &peer->addr);
     json_object_set_new_nocheck(obj, bms->peer_str, json_string(ip_address));
+
+    if (bms->peer_port_str) json_object_set_new_nocheck(obj, bms->peer_port_str, json_integer((json_int_t)peer->tcp_port));
 
     json_object_set_new_nocheck(obj, "event_type", json_string(event_type));
 
@@ -399,28 +410,68 @@ void bgp_peer_log_seq_increment(u_int64_t *seq)
   }
 }
 
+u_int64_t bgp_peer_log_seq_get(u_int64_t *seq)
+{
+  u_int64_t ret = 0;
+
+  if (seq) ret = (*seq);
+
+  return ret;
+}
+
+void bgp_peer_log_seq_set(u_int64_t *seq, u_int64_t value)
+{
+  if (seq) (*seq) = value;
+}
+
+int bgp_peer_log_seq_has_ro_bit(u_int64_t *seq)
+{
+  if ((*seq) & BGP_LOGSEQ_ROLLOVER_BIT) return TRUE;
+  else return FALSE;
+}
+
+/* XXX: 1) inefficient string testing and 2) string aliases can be mixed
+   and matched. But as long as this is used for determining filenames for
+   large outputs this is fine. To be refined in future */
 void bgp_peer_log_dynname(char *new, int newlen, char *old, struct bgp_peer *peer)
 {
   int oldlen;
-  char psi_string[] = "$peer_src_ip";
-  char *ptr_start, *ptr_end;
+  char psi_string[] = "$peer_src_ip", ptp_string[] = "$peer_tcp_port";
+  char br_string[] = "$bmp_router", brp_string[] = "$bmp_router_port";
+  char tn_string[] = "$telemetry_node", tnp_string[] = "$telemetry_node_port";
+  char *ptr_start, *ptr_end, *string_ptr;
 
   if (!new || !old || !peer) return;
 
   oldlen = strlen(old);
   if (oldlen <= newlen) strcpy(new, old);
 
-  ptr_start = strstr(new, psi_string);
+  ptr_start = NULL;
+  string_ptr = NULL; 
+
+  if (!ptr_start) {
+    ptr_start = strstr(new, psi_string);
+    string_ptr = psi_string;
+  }
+  if (!ptr_start) {
+    ptr_start = strstr(new, br_string);
+    string_ptr = br_string;
+  }
+  if (!ptr_start) {
+    ptr_start = strstr(new, tn_string);
+    string_ptr = tn_string;
+  }
+
   if (ptr_start) {
     char empty_peer_src_ip[] = "null";
     char peer_src_ip[SRVBUFLEN];
     char buf[newlen];
-    int len, howmany;
+    int len;
 
     len = strlen(ptr_start);
     ptr_end = ptr_start;
-    ptr_end += strlen(psi_string);
-    len -= strlen(psi_string);
+    ptr_end += strlen(string_ptr);
+    len -= strlen(string_ptr);
 
     if (peer->addr.family) addr_to_str(peer_src_ip, &peer->addr);
     else strlcpy(peer_src_ip, empty_peer_src_ip, strlen(peer_src_ip));
@@ -433,9 +484,42 @@ void bgp_peer_log_dynname(char *new, int newlen, char *old, struct bgp_peer *pee
     *ptr_start = '\0';
     strncat(new, buf, len);
   }
+
+  ptr_start = NULL;
+  string_ptr = NULL; 
+
+  if (!ptr_start) {
+    ptr_start = strstr(new, ptp_string);
+    string_ptr = ptp_string;
+  }
+  if (!ptr_start) {
+    ptr_start = strstr(new, brp_string);
+    string_ptr = brp_string;
+  }
+  if (!ptr_start) {
+    ptr_start = strstr(new, tnp_string);
+    string_ptr = tnp_string;
+  }
+
+  if (ptr_start) {
+    char buf[newlen];
+    int len;
+
+    len = strlen(ptr_start);
+    ptr_end = ptr_start;
+    ptr_end += strlen(string_ptr);
+    len -= strlen(string_ptr);
+
+    snprintf(buf, newlen, "%u", peer->tcp_port);
+    strncat(buf, ptr_end, len);
+
+    len = strlen(buf);
+    *ptr_start = '\0';
+    strncat(new, buf, len);
+  }
 }
 
-int bgp_peer_dump_init(struct bgp_peer *peer, int output, int type)
+int bgp_peer_dump_init(struct bgp_peer *peer, int output, int type, int do_seq)
 {
   struct bgp_misc_structs *bms = bgp_select_misc_db(type);
   char event_type[] = "dump_init";
@@ -477,9 +561,13 @@ int bgp_peer_dump_init(struct bgp_peer *peer, int output, int type)
     addr_to_str(ip_address, &peer->addr);
     json_object_set_new_nocheck(obj, bms->peer_str, json_string(ip_address));
 
+    if (bms->peer_port_str) json_object_set_new_nocheck(obj, bms->peer_port_str, json_integer((json_int_t)peer->tcp_port));
+
     json_object_set_new_nocheck(obj, "event_type", json_string(event_type));
 
     json_object_set_new_nocheck(obj, "dump_period", json_integer((json_int_t)bms->dump.period));
+
+    if (do_seq) json_object_set_new_nocheck(obj, "seq", json_integer((json_int_t) bgp_peer_log_seq_get(&bms->log_seq)));
 
     if (bms->dump_file)
       write_and_free_json(peer->log->fd, obj);
@@ -505,7 +593,7 @@ int bgp_peer_dump_init(struct bgp_peer *peer, int output, int type)
   return (ret | amqp_ret | kafka_ret);
 }
 
-int bgp_peer_dump_close(struct bgp_peer *peer, struct bgp_dump_stats *bds, int output, int type)
+int bgp_peer_dump_close(struct bgp_peer *peer, struct bgp_dump_stats *bds, int output, int type, int do_seq)
 {
   struct bgp_misc_structs *bms = bgp_select_misc_db(type);
   char event_type[] = "dump_close";
@@ -527,15 +615,17 @@ int bgp_peer_dump_close(struct bgp_peer *peer, struct bgp_dump_stats *bds, int o
   if (output == PRINT_OUTPUT_JSON) {
 #ifdef WITH_JANSSON
     char ip_address[INET6_ADDRSTRLEN];
-    json_t *obj = json_object(), *kv;
+    json_t *obj = json_object();
 
-    json_object_set_new_nocheck(obj, "timestamp", json_integer((json_int_t)bms->dump.tstamp_str));
+    json_object_set_new_nocheck(obj, "timestamp", json_string(bms->dump.tstamp_str));
 
     if (bms->bgp_peer_logdump_initclose_extras)
       bms->bgp_peer_logdump_initclose_extras(peer, output, obj);
 
     addr_to_str(ip_address, &peer->addr);
     json_object_set_new_nocheck(obj, bms->peer_str, json_string(ip_address));
+
+    if (bms->peer_port_str) json_object_set_new_nocheck(obj, bms->peer_port_str, json_integer((json_int_t)peer->tcp_port));
 
     json_object_set_new_nocheck(obj, "event_type", json_string(event_type));
 
@@ -544,6 +634,8 @@ int bgp_peer_dump_close(struct bgp_peer *peer, struct bgp_dump_stats *bds, int o
 
       json_object_set_new_nocheck(obj, "tables", json_integer((json_int_t)bds->tables));
     }
+
+    if (do_seq) json_object_set_new_nocheck(obj, "seq", json_integer((json_int_t) bgp_peer_log_seq_get(&bms->log_seq)));
 
     if (bms->dump_file)
       write_and_free_json(peer->log->fd, obj);
@@ -585,11 +677,15 @@ void bgp_handle_dump_event()
   safi_t safi;
   pid_t dumper_pid;
   time_t start;
-  u_int64_t dump_elems;
+  u_int64_t dump_elems, dump_seqno;
 
   /* pre-flight check */
   if (!bms->dump_backend_methods || !config.bgp_table_dump_refresh_time)
     return;
+
+  /* Sequencing the dump event */
+  dump_seqno = bgp_peer_log_seq_get(&bms->log_seq);
+  bgp_peer_log_seq_increment(&bms->log_seq);
 
   switch (ret = fork()) {
   case 0: /* Child */
@@ -602,6 +698,7 @@ void bgp_handle_dump_event()
     memset(&peer_log, 0, sizeof(struct bgp_peer_log));
     memset(&bds, 0, sizeof(struct bgp_dump_stats));
     fd_buf = malloc(OUTPUT_FILE_BUFSZ);
+    bgp_peer_log_seq_set(&bms->log_seq, dump_seqno);
 
 #ifdef WITH_RABBITMQ
     if (config.bgp_table_dump_amqp_routing_key) {
@@ -637,12 +734,12 @@ void bgp_handle_dump_event()
 	if (config.bgp_table_dump_kafka_topic)
 	  bgp_peer_log_dynname(current_filename, SRVBUFLEN, config.bgp_table_dump_kafka_topic, peer);
 
-	strftime_same(current_filename, SRVBUFLEN, tmpbuf, &bms->dump.tstamp.tv_sec);
+	pm_strftime_same(current_filename, SRVBUFLEN, tmpbuf, &bms->dump.tstamp.tv_sec, config.timestamps_utc);
 
 	/*
 	   we close last_filename and open current_filename in case they differ;
-	   we are safe with this approach until $peer_src_ip is the only variable
-	   supported as part of bgp_table_dump_file configuration directive.
+	   we are safe with this approach until time and BGP peer (IP, port) are
+	   the only variables supported as part of bgp_table_dump_file.
         */
 	if (config.bgp_table_dump_file) {
 	  if (strcmp(last_filename, current_filename)) {
@@ -681,7 +778,7 @@ void bgp_handle_dump_event()
 	}
 #endif
 
-	bgp_peer_dump_init(peer, config.bgp_table_dump_output, FUNC_TYPE_BGP);
+	bgp_peer_dump_init(peer, config.bgp_table_dump_output, FUNC_TYPE_BGP, TRUE);
         inter_domain_routing_db = bgp_select_routing_db(FUNC_TYPE_BGP);
 	dump_elems = 0;
 
@@ -700,7 +797,7 @@ void bgp_handle_dump_event()
 	      for (peer_buckets = 0; peer_buckets < config.bgp_table_per_peer_buckets; peer_buckets++) {
 	        for (ri = node->info[modulo+peer_buckets]; ri; ri = ri->next) {
 		  if (ri->peer == peer) {
-	            bgp_peer_log_msg(node, ri, afi, safi, event_type, config.bgp_table_dump_output, BGP_LOG_TYPE_MISC);
+	            bgp_peer_log_msg(node, ri, afi, safi, event_type, config.bgp_table_dump_output, NULL, BGP_LOG_TYPE_MISC);
 	            dump_elems++;
 		  }
 		}
@@ -717,7 +814,7 @@ void bgp_handle_dump_event()
         strlcpy(last_filename, current_filename, SRVBUFLEN);
 	bds.entries = dump_elems;
 	bds.tables = tables_num;
-        bgp_peer_dump_close(peer, &bds, config.bgp_table_dump_output, FUNC_TYPE_BGP);
+        bgp_peer_dump_close(peer, &bds, config.bgp_table_dump_output, FUNC_TYPE_BGP, TRUE);
       }
     }
 

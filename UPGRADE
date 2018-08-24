@@ -6,7 +6,162 @@ the changes done or break old assumptions no longer valid; while the effort
 is to keep these cases at a low, please read this file in preparation to
 upgrading your installation.
 
+TO:	>= 1.7.2
+FROM:	<= 1.7.1
+TOPIC:  Obsoleted features
+DESC:   Following is the list of features, knobs and plugins that are being
+        discontinued with release 1.7.2:
+	* pre_tag_map: matching on 'sampling_rate' is not supported anymore
+	  since a sampling_rate primitive is available from version 0.14.2;
+	  the 'return', feature to return matched data before completing the
+	  map workflow has started, and matching on NetFlow/IPFIX 'direction'
+	  are in the process of being obsoleted (retired from docs but still
+	  implemented).
+	* nfacctd: collection, processing and replication of NetFlow v1, v7
+	  and v8 has been discontinued. The focus will remain on popular v5,
+	  v9 and IPFIX. 
+	* tee_plugin: tee_dissect_send_full_pkt was allowing to specify if,
+	  when dissecting replicated packets due to a complex pre_tag_map,
+	  to send (or not) the full packet. Now, in a simplification move,
+	  full packets are replicated only if no pre_tag_map is set or a
+	  simple pre_tag_map is defined. In the context of replication, in
+	  QUICKSTART is defined what is a simple and a complex pre_tag_map.
 
+TO:	>= 1.7.1
+FROM:	<= 1.7.0
+TOPIC:	nfprobe plugin, nfprobe_engine and NetFlow v9/IPFIX
+DESC:	Until version 1.7.0 it was possible to (mistakenly) configure the
+	NetFlow v9 SourceID field/IPFIX Observation Domain ID with the old
+	NetFlow v5 jargon, ie. '1:1'. This is now threated as invalid and
+	a positive 32-bit number, ie. '100000', is expected. If exporting
+	NetFlow v5, nothing changed: the Engine ID/Engine Type input, ie.
+	'1:1', is still valid and expected.
+
+TO:	>= 1.7.1
+FROM:	<= 1.7.0
+TOPIC:	NetFlow/IPFIX/sFlow statistics via SIGUSR1
+DESC:	If using this feature, please note that there has been a change in
+	the output format. Mainly: 1) agent stats are now one per line, 2)
+	the stats format has been formalised a bit and 3) +++/--- separators
+	are sent at the beginning and at the end of the output (not anymore
+	one per agent).
+
+	The new output looks as follows:
+
+	NOTICE ( default/core ): +++
+	NOTICE ( default/core ): stats [0.0.0.0:2100] agent=X.X.X.X:0 time=1515772618 packets=1 bytes=496 seq_good=1 seq_jmp_fwd=0 seq_jmp_bck=0
+	NOTICE ( default/core ): stats [0.0.0.0:2100] agent=Y.Y.Y.Y:0 time=1515772618 packets=2 bytes=992 seq_good=2 seq_jmp_fwd=0 seq_jmp_bck=0
+	NOTICE ( default/core ): stats [0.0.0.0:2100] time=1515772618 discarded_packets=0
+	NOTICE ( default/core ): --- 
+
+	The old output was looking as follows:
+
+	NOTICE ( default/core ): +++
+	NOTICE ( default/core ): NetFlow statistics collector=0.0.0.0:2100 agent=X.X.X.X:0 (1515772618):
+	NOTICE ( default/core ): Datagrams:       1
+	NOTICE ( default/core ): Bytes:           496
+	NOTICE ( default/core ): Good datagrams:  1
+	NOTICE ( default/core ): Forward jumps:   0
+	NOTICE ( default/core ): Backward jumps:  0
+	NOTICE ( default/core ): ---
+        NOTICE ( default/core ): +++
+        NOTICE ( default/core ): NetFlow statistics collector=0.0.0.0:2100 agent=Y.Y.Y.Y:0 (1515772618):
+        NOTICE ( default/core ): Datagrams:       2
+        NOTICE ( default/core ): Bytes:           992
+        NOTICE ( default/core ): Good datagrams:  2 
+        NOTICE ( default/core ): Forward jumps:   0
+        NOTICE ( default/core ): Backward jumps:  0
+        NOTICE ( default/core ): ---
+	NOTICE ( default/core ): +++
+	NOTICE ( default/core ): Total bad NetFlow datagrams: 0 (1515772618)
+	NOTICE ( default/core ): ---
+
+TO:     >= 1.7.1
+FROM:   <= 1.7.0
+TOPIC:  Obsoleted features
+DESC:   Following is the list of features, knobs and plugins that are being
+        discontinued with release 1.7.1:
+	* pkt_len_distrib primitive is discontinued due to apparent lack of
+	  interest; the primitive was meant to bucket packet/flow/sample
+	  lenghts in a distribution.
+        * BGP daemon offline code, ie. bgp_daemon_offline_* directives, has
+	  been deprecated in favor of alternative approaches, ie. BGP Looking
+	  Glass (bgp_daemon_lg_*) and BGP Xconnects (bgp_daemon_xconnect_*).
+	* removed --enable-threads / --disable-threads configure switch to
+	  allow to compile pmacct even if no pthreads library is available.
+	  From this release support for threads is mandatory. 
+
+TO:	>= 1.7.1
+FROM:	<= 1.7.0
+TOPIC:	tag variables for dynamic Kafka topics and RabbitMQ routing keys.
+DESC:	In an effort to harmonise variable names - and variable replacement
+	functions - among the different plugins, $pre_tag has been renamed
+	as $tag and $pre_tag2 as $tag2.  
+
+TO:	>= 1.7.1
+FROM:	<= 1.7.0
+TOPIC:	allow file, ie. nfacctd_allow_file and equivalents.
+DESC:	Definition of IP prefixes is now supported and hence the 0.0.0.0/0
+	to allow all traffic in; whereas now an empty map rejects all input
+	traffic. In previous releases an empty map would allow all traffic
+	in instead and there was no way to simply reject all traffic. 
+
+TO:	>= 1.7.1
+FROM:	<= 1.7.0
+TOPIC:	pmacct IMT client and timestamps
+DESC:	Timestamps (ie. timestamp_start, timestamp_end, timestamp_arrival
+	primitives) are now formatted in a rfc3339 compliant way, ie. if
+	UTC timezone yyyy-MM-ddTHH:mm:ss(.ss)Z. This break compatibility
+	as in previous releases timestamps had a more liberal formatting.
+ 
+TO:	>= 1.7.0
+FROM:	<= 1.6.2
+TOPIC:	Obsoleted features
+DESC:	Following is the list of features, knobs and plugins that are being
+	discontinued with release 1.7:
+	* MongoDB plugin is being discontinued since the old Mongo API is
+	  not supported anymore and there has never been enough push from
+	  the community to transition to the new/current API (which would
+	  require a rewrite of most of the plugin)
+	* Packet classification basing on the L7-filter project is being
+	  discontinued (ie. 'classifiers' directive). This is being replaced
+	  by an implementation basing on the nDPI project. As part of this
+	  also the sql_aggressive_classification knob has been discontinued. 
+	* tee_receiver was part of the original implementation of the tee
+	  plugin, allowing to forward to a single target and hence requiring
+	  multiple plugins instantiated, one per target. Since 0.14.3 this
+	  directive was effectively outdated by tee_receivers. 
+        * tmp_net_own_field knob was allowing to revert to backward compatible
+          behaviour of IP prefixes (ie. src_net) being written in the same
+          field as IP addresses (ie. src_host)
+        * tmp_comms_same_field knob was allowing to revert to backward
+          compatible behaviour of BGP communities (standard, extended) being
+          writeen all in the same field.
+        * plugin_pipe_amqp and plugin_pipe_kafka features were meant as an
+          alternative to the homegrown queue solution for internal messaging,
+          ie. passing data from the Core Process to Plugins, and are being
+          discontinued. They are being replaced by a new implementation,
+          plugin_pipe_zmq, basing on ZeroMQ.
+	* plugin_pipe_backlog was allowing to keep an artificial backlog of
+	  data in the Core Process so for plugins to maximise bypass poll()
+	  syscalls in plugins. If home-grown queueing is found limiting,
+	  instead of falling back to such strategies, ZeroMQ queueing should
+	  be used. 
+
+TO:	>= 1.7.0
+FROM:	<= 1.6.2
+TOPIC:	change to sql_num_hosts
+DESC:	When sql_num_hosts is enabled and pmacct is not compiled with 
+	--disable-ipv6, INET6_ATON() is now used for both IPv4 and IPv6 with
+	MySQL and SQLite. Tables should be upgraded by changing columns from
+	INT(4) to VARBINARY(16) and then converting data - for MySQL:
+
+	ALTER TABLE table MODIFY COLUMN ip_src VARBINARY(16) NOT NULL;
+	UPDATE table SET ip_src = INET6_ATON(INET_NTOA(ip_src))
+	  WHERE INET_NTOA(ip_src) IS NOT NULL;
+
+	This has performance implications which are mentioned in README.IPv6.
+ 
 TO:	>= 1.6.2
 FROM:	<= 1.6.1
 TOPIC:	default plugin names

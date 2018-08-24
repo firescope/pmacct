@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -55,6 +55,7 @@ enum INMCounters_version {
 };
 
 typedef struct _SFSample {
+  struct timeval *ts;
   struct in_addr sourceIP;
   SFLAddress agent_addr;
   u_int32_t agentSubId;
@@ -205,11 +206,18 @@ typedef struct _SFSample {
 
   /* classification */
   pm_class_t class;
+#if defined (WITH_NDPI)
+  pm_class2_t ndpi_class;
+#endif 
+
   pm_id_t tag;
   pm_id_t tag2;
 
   SFLAddress ipsrc;
   SFLAddress ipdst;
+
+  struct packet_ptrs hdr_ptrs;
+  struct pcap_pkthdr hdr_pcap;
 } SFSample;
 
 /* define my own IP header struct - to ease portability */
@@ -280,6 +288,7 @@ EXT void reset_ip4(struct packet_ptrs *);
 EXT void reset_ip6(struct packet_ptrs *);
 EXT void SF_notify_malf_packet(short int, char *, struct sockaddr *);
 EXT int SF_find_id(struct id_table *, struct packet_ptrs *, pm_id_t *, pm_id_t *);
+EXT void SF_compute_once();
 
 EXT char *getPointer(SFSample *);
 EXT u_int32_t getData32(SFSample *);
@@ -299,7 +308,7 @@ EXT void readv2v4CountersSample(SFSample *, struct packet_ptrs_vector *);
 EXT void readv5CountersSample(SFSample *, int, struct packet_ptrs_vector *);
 EXT void finalizeSample(SFSample *, struct packet_ptrs_vector *, struct plugin_requests *);
 EXT void InterSampleCleanup(SFSample *);
-EXT void decodeMpls(SFSample *);
+EXT void decodeMpls(SFSample *, u_char **);
 EXT void decodePPP(SFSample *);
 EXT void decodeLinkLayer(SFSample *);
 EXT void decodeIPLayer4(SFSample *, u_char *, u_int32_t);
@@ -333,12 +342,21 @@ EXT int readCounters_vlan(struct bgp_peer *, SFSample *, char *, int, void *);
 EXT void sfacctd_counter_init_amqp_host();
 EXT int sfacctd_counter_init_kafka_host();
 EXT void sf_cnt_link_misc_structs(struct bgp_misc_structs *);
+EXT void sf_flow_sample_hdr_decode(SFSample *);
 
-EXT char *sfv245_check_status(SFSample *spp, struct sockaddr *);
+EXT char *sfv245_check_status(SFSample *spp, struct packet_ptrs *, struct sockaddr *);
 EXT void sfv245_check_counter_log_init(struct packet_ptrs *);
 
 EXT void usage_daemon(char *);
 EXT void compute_once();
+
+#ifdef WITH_KAFKA
+EXT void SF_init_kafka_host(void *);
+#endif
+
+#ifdef WITH_ZMQ
+EXT void SF_init_zmq_host(void *, int *);
+#endif
 
 /* global variables */
 EXT int sfacctd_counter_backend_methods;

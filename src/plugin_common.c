@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -25,6 +25,7 @@
 #include "pmacct.h"
 #include "addr.h"
 #include "pmacct-data.h"
+#include "plugin_hooks.h"
 #include "plugin_common.h"
 #include "ip_flow.h"
 #include "classifier.h"
@@ -462,7 +463,9 @@ void P_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *idata
       if (config.nfacctd_stitching) {
 	if (cache_ptr->stitch) {
 	  if (data->time_end.tv_sec) {
-	    memcpy(&cache_ptr->stitch->timestamp_max, &data->time_end, sizeof(struct timeval));
+	    if (data->time_end.tv_sec > cache_ptr->stitch->timestamp_max.tv_sec && 
+		data->time_end.tv_usec > cache_ptr->stitch->timestamp_max.tv_usec)
+	      memcpy(&cache_ptr->stitch->timestamp_max, &data->time_end, sizeof(struct timeval));
 	  }
 	  else {
 	    cache_ptr->stitch->timestamp_max.tv_sec = idata->now;
@@ -517,6 +520,7 @@ void P_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *idata
     if (dump_writers_get_flags() != CHLD_ALERT) {
       switch (ret = fork()) {
       case 0: /* Child */
+	pm_setproctitle("%s %s [%s]", config.type, "Plugin -- Writer (urgent)", config.name);
         (*purge_func)(queries_queue, qq_ptr, TRUE);
         exit(0);
       default: /* Parent */
@@ -674,7 +678,13 @@ void P_cache_mark_flush(struct chained_cache *queue[], int index, int exiting)
       else queue[j]->valid = PRINT_CACHE_COMMITTED;
     }
 
-    if (pqq_ptr) pqq_container = (struct chained_cache *) malloc(pqq_ptr*dbc_size); 
+    if (pqq_ptr) {
+      pqq_container = (struct chained_cache *) malloc(pqq_ptr*dbc_size); 
+      if (!pqq_container) {
+	Log(LOG_ERR, "ERROR ( %s/%s ): P_cache_mark_flush() cannot allocate pqq_container. Exiting ..\n", config.name, config.type);
+	exit_plugin(1); 
+      }
+    }
     
     /* we copy un-committed elements to a container structure for re-insertion
        in cache. As we copy elements out of the cache we mark entries as free */
@@ -780,23 +790,23 @@ void P_exit_now(int signum)
   if (dump_writers_get_flags() != CHLD_ALERT) (*purge_func)(queries_queue, qq_ptr, FALSE);
   else Log(LOG_WARNING, "WARN ( %s/%s ): Maximum number of writer processes reached (%d).\n", config.name, config.type, dump_writers_get_active());
 
+  if (config.pidfile) remove_pid_file(config.pidfile);
+
   wait(NULL);
   exit_plugin(0);
 }
 
 int P_trigger_exec(char *filename)
 {
-  char *args[1];
+  char *args[2] = { filename, NULL };
   int pid;
-
-  memset(args, 0, sizeof(args));
 
   switch (pid = vfork()) {
   case -1:
     return -1;
   case 0:
     execv(filename, args);
-    exit(0);
+    _exit(0);
   }
 
   return 0;
@@ -809,7 +819,8 @@ void P_init_historical_acct(time_t now)
   basetime.tv_sec = now;
   basetime.tv_usec = 0;
 
-  if (config.sql_history == COUNT_MINUTELY) timeslot = config.sql_history_howmany*60;
+  if (config.sql_history == COUNT_SECONDLY) timeslot = config.sql_history_howmany;
+  else if (config.sql_history == COUNT_MINUTELY) timeslot = config.sql_history_howmany*60;
   else if (config.sql_history == COUNT_HOURLY) timeslot = config.sql_history_howmany*3600;
   else if (config.sql_history == COUNT_DAILY) timeslot = config.sql_history_howmany*86400;
   else if (config.sql_history == COUNT_WEEKLY) timeslot = config.sql_history_howmany*86400*7;
@@ -887,26 +898,6 @@ int P_cmp_historical_acct(struct timeval *entry_basetime, struct timeval *insert
   return ret;
 }
 
-int P_test_zero_elem(struct chained_cache *elem)
-{
-  if (elem) {
-    if (elem->flow_type == NF9_FTYPE_NAT_EVENT) {
-      if (elem->pnat && elem->pnat->nat_event) return FALSE;
-      else return TRUE;
-    }
-    else if (elem->flow_type == NF9_FTYPE_OPTION) {
-      /* not really much we can test */
-      return FALSE;
-    }
-    else {
-      if (elem->bytes_counter || elem->packet_counter || elem->flow_counter) return FALSE;
-      else return TRUE;
-    }
-  }
-
-  return TRUE;
-}
-
 void primptrs_set_all_from_chained_cache(struct primitives_ptrs *prim_ptrs, struct chained_cache *entry)
 {
   struct pkt_data *data;
@@ -945,111 +936,16 @@ void P_handle_table_dyn_rr(char *new, int newlen, char *old, struct p_table_rr *
   rk_rr->next %= rk_rr->max;
 }
 
-void P_handle_table_dyn_strings(char *new, int newlen, char *old, struct chained_cache *elem)
+void P_update_time_reference(struct insert_data *idata)
 {
-  int oldlen, ptr_len;
-  char peer_src_ip_string[] = "$peer_src_ip", post_tag_string[] = "$post_tag";
-  char pre_tag_string[] = "$pre_tag";
-  char *ptr_start, *ptr_end;
+  idata->now = time(NULL);
 
-  oldlen = strlen(old);
-  if (oldlen <= newlen) strcpy(new, old);
-  else {
-    strncpy(new, old, newlen);
-    return;
+  if (config.sql_history) {
+    while (idata->now > (basetime.tv_sec + timeslot)) {
+      new_basetime.tv_sec = basetime.tv_sec;
+      basetime.tv_sec += timeslot;
+      if (config.sql_history == COUNT_MONTHLY)
+	timeslot = calc_monthly_timeslot(basetime.tv_sec, config.sql_history_howmany, ADD);
+    }
   }
-
-  if (!strchr(new, '$')) return;
-  ptr_start = strstr(new, peer_src_ip_string);
-  if (ptr_start) {
-    char ip_address[INET6_ADDRSTRLEN];
-    char buf[newlen];
-    int len;
-
-    if (!elem || !elem->pbgp) goto out_peer_src_ip; 
-
-    len = strlen(ptr_start);
-    ptr_end = ptr_start;
-    ptr_len = strlen(peer_src_ip_string);
-    ptr_end += ptr_len;
-    len -= ptr_len;
-
-    addr_to_str(ip_address, &elem->pbgp->peer_src_ip);
-    snprintf(buf, newlen, "%s", ip_address);
-    strncat(buf, ptr_end, len);
-
-    len = strlen(buf);
-    *ptr_start = '\0';
-    strncat(new, buf, len);
-  }
-  out_peer_src_ip:
-
-  if (!strchr(new, '$')) return;
-  ptr_start = strstr(new, post_tag_string);
-  if (ptr_start) {
-    char buf[newlen];
-    int len;
-
-    len = strlen(ptr_start);
-    ptr_end = ptr_start;
-    ptr_len = strlen(post_tag_string);
-    ptr_end += ptr_len;
-    len -= ptr_len;
-
-    snprintf(buf, newlen, "%u", config.post_tag);
-    strncat(buf, ptr_end, len);
-
-    len = strlen(buf);
-    *ptr_start = '\0';
-    strncat(new, buf, len);
-  }
-
-  if (!strchr(new, '$')) return;
-  ptr_start = strstr(new, pre_tag_string);
-  if (ptr_start) {
-    char buf[newlen];
-    int len;
-
-    len = strlen(ptr_start);
-    ptr_end = ptr_start;
-    ptr_len = strlen(pre_tag_string);
-    ptr_end += ptr_len;
-    len -= ptr_len;
-
-    snprintf(buf, newlen, "%u", elem->primitives.tag);
-    strncat(buf, ptr_end, len);
-
-    len = strlen(buf);
-    *ptr_start = '\0';
-    strncat(new, buf, len);
-  }
-}
-
-void P_broker_timers_set_last_fail(struct p_broker_timers *btimers, time_t timestamp)
-{
-  if (btimers) btimers->last_fail = timestamp;
-}
-
-time_t P_broker_timers_get_last_fail(struct p_broker_timers *btimers)
-{
-  if (btimers) return btimers->last_fail;
-
-  return FALSE;
-}
-
-void P_broker_timers_unset_last_fail(struct p_broker_timers *btimers)
-{
-  if (btimers) btimers->last_fail = FALSE;
-}
-
-void P_broker_timers_set_retry_interval(struct p_broker_timers *btimers, int interval)
-{
-  if (btimers) btimers->retry_interval = interval;
-}
-
-int P_broker_timers_get_retry_interval(struct p_broker_timers *btimers)
-{
-  if (btimers) return btimers->retry_interval;
-
-  return ERR;
 }

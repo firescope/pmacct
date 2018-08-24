@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -32,6 +32,7 @@ int bgp_parse_msg(struct bgp_peer *peer, time_t now, int online)
   struct bgp_misc_structs *bms;
   struct bgp_msg_data bmd;
   char tmp_packet[BGP_BUFFER_SIZE], *bgp_packet_ptr;
+  char bgp_peer_str[INET6_ADDRSTRLEN];
   struct bgp_header *bhdr;
   int ret, bgp_len = 0;
 
@@ -48,8 +49,9 @@ int bgp_parse_msg(struct bgp_peer *peer, time_t now, int online)
     bhdr = (struct bgp_header *) bgp_packet_ptr;
 
     if (peer->msglen < BGP_HEADER_SIZE && bgp_packet_ptr == peer->buf.base) {
+      bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
       Log(LOG_INFO, "INFO ( %s/%s ): [%s] Received malformed BGP packet (incomplete header).\n",
-		config.name, bms->log_str, bgp_peer_print(peer));
+		config.name, bms->log_str, bgp_peer_str);
       return BGP_NOTIFY_HEADER_ERR;
     }
 
@@ -64,14 +66,16 @@ int bgp_parse_msg(struct bgp_peer *peer, time_t now, int online)
     else peer->buf.truncated_len = 0;
 
     if (bgp_max_msglen_check(bgp_len) == ERR) {
+      bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
       Log(LOG_INFO, "INFO ( %s/%s ): [%s] Received malformed BGP packet (packet length check failed).\n",
-		config.name, bms->log_str, bgp_peer_print(peer));
+		config.name, bms->log_str, bgp_peer_str);
       return BGP_NOTIFY_HEADER_ERR;
     }
 
     if (bgp_marker_check(bhdr, BGP_MARKER_SIZE) == ERR) {
+      bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
       Log(LOG_INFO, "INFO ( %s/%s ): [%s] Received malformed BGP packet (marker check failed).\n",
-		config.name, bms->log_str, bgp_peer_print(peer));
+		config.name, bms->log_str, bgp_peer_str);
       return BGP_NOTIFY_HEADER_ERR;
     }
 
@@ -83,19 +87,22 @@ int bgp_parse_msg(struct bgp_peer *peer, time_t now, int online)
       break;
     case BGP_NOTIFICATION:
       {
-	u_int8_t res_maj = 0, res_min = 0, shutdown_msglen = (BGP_NOTIFY_CEASE_SM_LEN + 1);
+	u_int16_t shutdown_msglen = (BGP_NOTIFY_CEASE_SM_LEN + 1);
+	u_int8_t res_maj = 0, res_min = 0;
         char shutdown_msg[shutdown_msglen];
 
 	memset(shutdown_msg, 0, shutdown_msglen);
         bgp_parse_notification_msg(&bmd, bgp_packet_ptr, &res_maj, &res_min, shutdown_msg, shutdown_msglen);
 
+        bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
         Log(LOG_INFO, "INFO ( %s/%s ): [%s] BGP_NOTIFICATION received (%u, %u). Shutdown Message: '%s'\n",
-	    config.name, bms->log_str, bgp_peer_print(peer), res_maj, res_min, shutdown_msg);
+	    config.name, bms->log_str, bgp_peer_str, res_maj, res_min, shutdown_msg);
 
         return ERR;
       }
     case BGP_KEEPALIVE:
-      Log(LOG_DEBUG, "DEBUG ( %s/%s ): [%s] BGP_KEEPALIVE received\n", config.name, bms->log_str, bgp_peer_print(peer));
+      bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
+      Log(LOG_DEBUG, "DEBUG ( %s/%s ): [%s] BGP_KEEPALIVE received\n", config.name, bms->log_str, bgp_peer_str);
       if (peer->status >= OpenSent) {
         if (peer->status < Established) peer->status = Established;
 
@@ -108,7 +115,8 @@ int bgp_parse_msg(struct bgp_peer *peer, time_t now, int online)
           ret = send(peer->fd, bgp_reply_pkt, bgp_reply_pkt_ptr - bgp_reply_pkt, 0);
           peer->last_keepalive = now;
 
-	  Log(LOG_DEBUG, "DEBUG ( %s/%s ): [%s] BGP_KEEPALIVE sent\n", config.name, bms->log_str, bgp_peer_print(peer));
+          bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
+	  Log(LOG_DEBUG, "DEBUG ( %s/%s ): [%s] BGP_KEEPALIVE sent\n", config.name, bms->log_str, bgp_peer_str);
 	}
       }
       /* If we didn't pass through a successful BGP OPEN exchange just yet
@@ -116,21 +124,24 @@ int bgp_parse_msg(struct bgp_peer *peer, time_t now, int online)
       break;
     case BGP_UPDATE:
       if (peer->status < Established) {
+        bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
 	Log(LOG_DEBUG, "DEBUG ( %s/%s ): [%s] BGP UPDATE received (no neighbor). Discarding.\n",
-		config.name, bms->log_str, bgp_peer_print(peer));
+		config.name, bms->log_str, bgp_peer_str);
 	return BGP_NOTIFY_FSM_ERR;
       }
 
       ret = bgp_parse_update_msg(&bmd, bgp_packet_ptr);
       if (ret < 0) {
-	Log(LOG_WARNING, "WARN ( %s/%s ): [%s] BGP UPDATE: malformed (%d).\n", config.name, bms->log_str, bgp_peer_print(peer), ret);
+        bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
+	Log(LOG_WARNING, "WARN ( %s/%s ): [%s] BGP UPDATE: malformed (%d).\n", config.name, bms->log_str, bgp_peer_str);
 	return BGP_NOTIFY_UPDATE_ERR;
       }
 
       break;
     default:
+      bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
       Log(LOG_INFO, "INFO ( %s/%s ): [%s] Received malformed BGP packet (unsupported message type).\n",
-	  config.name, bms->log_str, bgp_peer_print(peer));
+	  config.name, bms->log_str, bgp_peer_str);
       return BGP_NOTIFY_HEADER_ERR;
     }
   }
@@ -143,6 +154,7 @@ int bgp_parse_open_msg(struct bgp_msg_data *bmd, char *bgp_packet_ptr, time_t no
   struct bgp_peer *peer = bmd->peer;
   struct bgp_misc_structs *bms;
   char bgp_reply_pkt[BGP_BUFFER_SIZE], *bgp_reply_pkt_ptr;
+  char bgp_peer_str[INET6_ADDRSTRLEN];
   struct bgp_open *bopen;
   int ret;
   u_int16_t remote_as = 0;
@@ -167,6 +179,14 @@ int bgp_parse_open_msg(struct bgp_msg_data *bmd, char *bgp_packet_ptr, time_t no
       peer->id.family = AF_INET; 
       peer->id.address.ipv4.s_addr = bopen->bgpo_id;
 
+      /* Check: duplicate Router-IDs; BGP only, ie. no BMP */
+      if (bms->bgp_msg_open_router_id_check) {
+	int check_ret;
+
+	check_ret = bms->bgp_msg_open_router_id_check(bmd);
+	if (check_ret) return check_ret;
+      }
+
       /* OPEN options parsing */
       if (bopen->bgpo_optlen && bopen->bgpo_optlen >= 2) {
 	u_int8_t len, opt_type, opt_len, cap_type;
@@ -179,9 +199,10 @@ int bgp_parse_open_msg(struct bgp_msg_data *bmd, char *bgp_packet_ptr, time_t no
 	  opt_type = (u_int8_t) ptr[0];
 	  opt_len = (u_int8_t) ptr[1];
 
-	  if (opt_len > bopen->bgpo_optlen) {
+	  if (opt_len > len) {
+            bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
 	    Log(LOG_INFO, "INFO ( %s/%s ): [%s] Received malformed BGP packet (option length).\n",
-		config.name, bms->log_str, bgp_peer_print(peer));
+		config.name, bms->log_str, bgp_peer_str);
 	    return ERR;
 	  } 
 
@@ -190,22 +211,28 @@ int bgp_parse_open_msg(struct bgp_msg_data *bmd, char *bgp_packet_ptr, time_t no
  	   * some we are forced to support (ie. MP-BGP or 4-bytes AS support)
  	   */
 	  if (opt_type == BGP_OPTION_CAPABILITY) {
-	    char *optcap_ptr;
+	    char *optcap_ptr, *bgp_open_cap_len_reply_ptr, *bgp_open_cap_base_reply_ptr;
 	    int optcap_len;
 
 	    bgp_open_cap_ptr = ptr;
+	    memcpy(bgp_open_cap_reply_ptr, bgp_open_cap_ptr, 2);
+	    bgp_open_cap_len_reply_ptr = bgp_open_cap_reply_ptr + 1;
+	    bgp_open_cap_base_reply_ptr = bgp_open_cap_reply_ptr;
+	    bgp_open_cap_reply_ptr += 2;
+
 	    ptr += 2;
 	    len -= 2;
 	    optcap_ptr = ptr;
-	    optcap_len = len;
+	    optcap_len = opt_len;
 
 	    while (optcap_len > 0) {
 	      u_int8_t cap_len = optcap_ptr[1];
 	      u_int8_t cap_type = optcap_ptr[0];
 
 	      if (cap_len > optcap_len) {
+                bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
 		Log(LOG_INFO, "INFO ( %s/%s ): [%s] Received malformed BGP packet (malformed capability: %x).\n",
-			config.name, bms->log_str, bgp_peer_print(peer), cap_type);
+			config.name, bms->log_str, bgp_peer_str, cap_type);
 		return ERR;
    	      }
 				     
@@ -215,14 +242,16 @@ int bgp_parse_open_msg(struct bgp_msg_data *bmd, char *bgp_packet_ptr, time_t no
 
 	  	memcpy(&cap_data, cap_ptr, sizeof(cap_data));
 					  
-		if (online)
+		if (online) {
+                  bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
 	  	  Log(LOG_INFO, "INFO ( %s/%s ): [%s] Capability: MultiProtocol [%x] AFI [%x] SAFI [%x]\n",
-			config.name, bms->log_str, bgp_peer_print(peer), cap_type, ntohs(cap_data.afi), cap_data.safi);
+			config.name, bms->log_str, bgp_peer_str, cap_type, ntohs(cap_data.afi), cap_data.safi);
+		}
 		peer->cap_mp = TRUE;
 
 		if (online) {
-		  memcpy(bgp_open_cap_reply_ptr, bgp_open_cap_ptr, opt_len+2); 
-		  bgp_open_cap_reply_ptr += opt_len+2;
+		  memcpy(bgp_open_cap_reply_ptr, optcap_ptr, cap_len+2);
+		  bgp_open_cap_reply_ptr += cap_len+2;
 		}
 	      }
 	      else if (cap_type == BGP_CAPABILITY_4_OCTET_AS_NUMBER) {
@@ -234,48 +263,76 @@ int bgp_parse_open_msg(struct bgp_msg_data *bmd, char *bgp_packet_ptr, time_t no
 
 		  memcpy(&cap_data, cap_ptr, sizeof(cap_data));
 
-		  if (online)
+		  if (online) {
+                    bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
 		    Log(LOG_INFO, "INFO ( %s/%s ): [%s] Capability: 4-bytes AS [%x] ASN [%u]\n",
-	    		config.name, bms->log_str, bgp_peer_print(peer), cap_type, ntohl(cap_data.as4));
+	    		config.name, bms->log_str, bgp_peer_str, cap_type, ntohl(cap_data.as4));
+		  }
 		  memcpy(&as4_ptr, cap_ptr, 4);
 		  remote_as4 = ntohl(as4_ptr);
 
 		  if (online) {
-		    memcpy(bgp_open_cap_reply_ptr, bgp_open_cap_ptr, opt_len+2); 
-		    peer->cap_4as = bgp_open_cap_reply_ptr+4;
-		    bgp_open_cap_reply_ptr += opt_len+2;
+		    memcpy(bgp_open_cap_reply_ptr, optcap_ptr, cap_len+2); 
+		    peer->cap_4as = bgp_open_cap_reply_ptr+2;
+		    bgp_open_cap_reply_ptr += cap_len+2;
 		  }
 		  else peer->cap_4as = bgp_open_cap_ptr+4;
 		}
 		else {
+                  bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
 		  Log(LOG_INFO, "INFO ( %s/%s ): [%s] Received malformed BGP packet (malformed AS4 option).\n",
-			config.name, bms->log_str, bgp_peer_print(peer));
+			config.name, bms->log_str, bgp_peer_str);
 		  return ERR;
 		}
 	      }
 	      else if (cap_type == BGP_CAPABILITY_ADD_PATHS) {
-		char *cap_ptr = optcap_ptr+2;
+		char *cap_ptr = (optcap_ptr + 2);
 		struct capability_add_paths cap_data;
 
-		memcpy(&cap_data, cap_ptr, sizeof(cap_data));
-
-		if (online)
-		  Log(LOG_INFO, "INFO ( %s/%s ): [%s] Capability: ADD-PATHs [%x] AFI [%x] SAFI [%x] SEND_RECEIVE [%x]\n",
-			config.name, bms->log_str, bgp_peer_print(peer), cap_type, ntohs(cap_data.afi), cap_data.safi,
-			cap_data.sndrcv);
-
-		if (cap_data.sndrcv == 2 /* send */) {
-		  peer->cap_add_paths = TRUE; 
+		int cap_set = FALSE;
+		u_int8_t *cap_newlen_ptr; /* ptr to field of outbound cap_len */
+		int cap_idx;
+		
+		/* check for each AFI.SAFI included if remote can send - only then reply with receive */
+		for (cap_idx = 0; cap_idx < cap_len; cap_idx += sizeof(struct capability_add_paths)) {
+		  memcpy(&cap_data, cap_ptr+cap_idx, sizeof(cap_data));
 		  if (online) {
-		    memcpy(bgp_open_cap_reply_ptr, bgp_open_cap_ptr, opt_len+2);
-		    *(bgp_open_cap_reply_ptr+((opt_len+2)-1)) = 1; /* receive */
-		    bgp_open_cap_reply_ptr += opt_len+2;
+		    bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
+		    Log(LOG_INFO, "INFO ( %s/%s ): [%s] Capability: ADD-PATHs [%x] AFI [%x] SAFI [%x] SEND_RECEIVE [%x]\n",
+		  	config.name, bms->log_str, bgp_peer_str, cap_type, ntohs(cap_data.afi), cap_data.safi,
+			cap_data.sndrcv);
 		  }
-		}
+		  if ((cap_data.sndrcv == 2 /* send */) || (cap_data.sndrcv == 3 /* send and receive */)) {
+		    peer->cap_add_paths = TRUE; 
+		    if (online) {
+		      if (!cap_set) {
+			/* we need to send BGP_CAPABILITY_ADD_PATHS first */
+			cap_set = TRUE;
+			memcpy(bgp_open_cap_reply_ptr, optcap_ptr, 2);
+			cap_newlen_ptr = (bgp_open_cap_reply_ptr + 1);
+			(*cap_newlen_ptr) = 0;
+			bgp_open_cap_reply_ptr += 2;
+		      }
+		      cap_data.sndrcv = 1; /* we can receive */
+		      (*cap_newlen_ptr) += sizeof(cap_data);
+		      memcpy(bgp_open_cap_reply_ptr, &cap_data, sizeof(cap_data));
+		      bgp_open_cap_reply_ptr += sizeof(cap_data);
+		    }
+		  }
+	        }
 	      }
 
-	      optcap_ptr += cap_len+2;
-	      optcap_len -= cap_len+2;
+	      optcap_ptr += (cap_len + 2);
+	      optcap_len -= (cap_len + 2);
+	    }
+
+	    /* writing the new capability length */
+	    if (bgp_open_cap_reply_ptr > bgp_open_cap_base_reply_ptr + 2) {
+	      (*bgp_open_cap_len_reply_ptr) = ((bgp_open_cap_reply_ptr - bgp_open_cap_base_reply_ptr) - 2);
+	    }
+	    /* otherwise rollback */
+	    else {
+	      bgp_open_cap_reply_ptr = bgp_open_cap_base_reply_ptr;
 	    }
 	  }
 	  else {
@@ -292,8 +349,9 @@ int bgp_parse_open_msg(struct bgp_msg_data *bmd, char *bgp_packet_ptr, time_t no
 	/* It is not valid to use the transitional ASN in the BGP OPEN and
  	   present an ASN == 0 or ASN == 23456 in the 4AS capability */
 	else {
+          bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
 	  Log(LOG_INFO, "INFO ( %s/%s ): [%s] Received malformed BGP packet (invalid AS4 option).\n",
-		config.name, bms->log_str, bgp_peer_print(peer));
+		config.name, bms->log_str, bgp_peer_str);
 	  return ERR;
 	}
       }
@@ -303,8 +361,9 @@ int bgp_parse_open_msg(struct bgp_msg_data *bmd, char *bgp_packet_ptr, time_t no
  	/* It is not valid to not use the transitional ASN in the BGP OPEN and
 	   present an ASN != remote_as in the 4AS capability */
 	else {
+          bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
 	  Log(LOG_INFO, "INFO ( %s/%s ): [%s] Received malformed BGP packet (mismatching AS4 option).\n",
-		config.name, bms->log_str, bgp_peer_print(peer));
+		config.name, bms->log_str, bgp_peer_str);
 	  return ERR;
 	}
       }
@@ -316,14 +375,16 @@ int bgp_parse_open_msg(struct bgp_msg_data *bmd, char *bgp_packet_ptr, time_t no
 	if (!config.nfacctd_bgp_as) peer->myas = peer->as;
 	else peer->myas = config.nfacctd_bgp_as;
 
+        bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
         Log(LOG_INFO, "INFO ( %s/%s ): [%s] BGP_OPEN: Local AS: %u Remote AS: %u HoldTime: %u\n", config.name,
-		bms->log_str, bgp_peer_print(peer), peer->myas, peer->as, peer->ht);
+		bms->log_str, bgp_peer_str, peer->myas, peer->as, peer->ht);
 
         ret = bgp_write_open_msg(bgp_reply_pkt_ptr, bgp_open_cap_reply, bgp_open_cap_reply_ptr-bgp_open_cap_reply, peer);
         if (ret > 0) bgp_reply_pkt_ptr += ret;
         else {
+          bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
 	  Log(LOG_INFO, "INFO ( %s/%s ): [%s] Local peer is 4AS while remote peer is 2AS: unsupported configuration.\n",
-		config.name, bms->log_str, bgp_peer_print(peer));
+		config.name, bms->log_str, bgp_peer_str);
 	  return ERR;
         }
 
@@ -334,8 +395,9 @@ int bgp_parse_open_msg(struct bgp_msg_data *bmd, char *bgp_packet_ptr, time_t no
       }
     }
     else {
+      bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
       Log(LOG_INFO, "INFO ( %s/%s ): [%s] Received malformed BGP packet (unsupported version).\n",
-		config.name, bms->log_str, bgp_peer_print(peer));
+		config.name, bms->log_str, bgp_peer_str);
       return ERR;
     }
 
@@ -409,7 +471,7 @@ int bgp_write_open_msg(char *msg, char *cp_msg, int cp_msglen, struct bgp_peer *
     }
   }
 
-  bopen_reply->bgpo_optlen = cp_msglen;
+  if (cp_msglen) bopen_reply->bgpo_optlen = cp_msglen;
   bopen_reply->bgpo_len = htons(BGP_MIN_OPEN_MSG_SIZE + bopen_reply->bgpo_optlen);
 
   if (config.nfacctd_bgp_ip) str_to_addr(config.nfacctd_bgp_ip, &bgp_ip);
@@ -451,7 +513,8 @@ int bgp_write_notification_msg(char *msg, int msglen, u_int8_t n_major, u_int8_t
 {
   struct bgp_notification *bn_reply = (struct bgp_notification *) msg;
   struct bgp_notification_shutdown_msg *bnsm_reply;
-  int ret = FALSE, shutdown_msglen;
+  u_int16_t shutdown_msglen;
+  int ret = FALSE;
   char *reply_msg_ptr;
 
   if (bn_reply && msglen >= BGP_MIN_NOTIFICATION_MSG_SIZE) {
@@ -468,7 +531,7 @@ int bgp_write_notification_msg(char *msg, int msglen, u_int8_t n_major, u_int8_t
 
     ret += BGP_MIN_NOTIFICATION_MSG_SIZE;
 
-    /* draft-ietf-idr-shutdown-04 */
+    /* rfc8203 (draft-ietf-idr-shutdown) */
     if (shutdown_msg) {
       shutdown_msglen = strlen(shutdown_msg);
 
@@ -490,7 +553,7 @@ int bgp_write_notification_msg(char *msg, int msglen, u_int8_t n_major, u_int8_t
   return ret;
 }
 
-int bgp_parse_notification_msg(struct bgp_msg_data *bmd, char *pkt, u_int8_t *res_maj, u_int8_t *res_min, char *shutdown_msg, u_int8_t shutdown_msglen)
+int bgp_parse_notification_msg(struct bgp_msg_data *bmd, char *pkt, u_int8_t *res_maj, u_int8_t *res_min, char *shutdown_msg, u_int16_t shutdown_msglen)
 {
   struct bgp_peer *peer = bmd->peer;
   struct bgp_notification *bn = (struct bgp_notification *) pkt;
@@ -507,7 +570,7 @@ int bgp_parse_notification_msg(struct bgp_msg_data *bmd, char *pkt, u_int8_t *re
   (*res_maj) = bn->bgpn_major;
   (*res_min) = bn->bgpn_minor;
 
-  /* draft-ietf-idr-shutdown-04 */
+  /* rfc8203 (draft-ietf-idr-shutdown) */
   if (bn->bgpn_major == BGP_NOTIFY_CEASE &&
       (bn->bgpn_minor == BGP_NOTIFY_CEASE_ADMIN_SHUTDOWN || bn->bgpn_minor == BGP_NOTIFY_CEASE_ADMIN_RESET)) {
     if (rem_len) {
@@ -532,7 +595,6 @@ int bgp_parse_update_msg(struct bgp_msg_data *bmd, char *pkt)
 {
   struct bgp_peer *peer = bmd->peer;
   struct bgp_header bhdr;
-  u_char *startp, *endp;
   struct bgp_attr attr;
   u_int16_t attribute_len;
   u_int16_t update_len;
@@ -1166,7 +1228,7 @@ log_update:
   {
     char event_type[] = "log";
 
-    bgp_peer_log_msg(route, ri, afi, safi, event_type, bms->msglog_output, BGP_LOG_TYPE_UPDATE);
+    bgp_peer_log_msg(route, ri, afi, safi, event_type, bms->msglog_output, NULL, BGP_LOG_TYPE_UPDATE);
   }
 
   if (bms->skip_rib) {
@@ -1246,7 +1308,7 @@ int bgp_process_withdraw(struct bgp_msg_data *bmd, struct prefix *p, void *attr,
   if (ri && bms->msglog_backend_methods) {
     char event_type[] = "log";
 
-    bgp_peer_log_msg(route, ri, afi, safi, event_type, bms->msglog_output, BGP_LOG_TYPE_WITHDRAW);
+    bgp_peer_log_msg(route, ri, afi, safi, event_type, bms->msglog_output, NULL, BGP_LOG_TYPE_WITHDRAW);
   }
 
   if (!bms->skip_rib) {

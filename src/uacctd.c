@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -39,6 +39,9 @@
 #include <netinet/ip.h>
 #include <libnfnetlink/libnfnetlink.h>
 #include <libnetfilter_log/libnetfilter_log.h>
+#if defined (WITH_NDPI)
+#include "ndpi/ndpi.h"
+#endif
 
 /* variables to be exported away */
 struct channels_list_entry channels_list[MAX_N_PLUGINS]; /* communication channels: core <-> plugins */
@@ -109,7 +112,7 @@ static int nflog_incoming(struct nflog_g_handle *gh, struct nfgenmsg *nfmsg,
 
 void usage_daemon(char *prog_name)
 {
-  printf("%s (%s)\n", UACCTD_USAGE_HEADER, PMACCT_BUILD);
+  printf("%s %s (%s)\n", UACCTD_USAGE_HEADER, PMACCT_VERSION, PMACCT_BUILD);
   printf("Usage: %s [ -D | -d ] [ -g NFLOG group ] [ -c primitive [ , ... ] ] [ -P plugin [ , ... ] ]\n", prog_name);
   printf("       %s [ -f config_file ]\n", prog_name);
   printf("       %s [ -h ]\n", prog_name);
@@ -122,7 +125,7 @@ void usage_daemon(char *prog_name)
   printf("  -D  \tDaemonize\n"); 
   printf("  -n  \tPath to a file containing networks and/or ASNs definitions\n");
   printf("  -t  \tPath to a file containing ports definitions\n");
-  printf("  -P  \t[ memory | print | mysql | pgsql | sqlite3 | mongodb | amqp | kafka | nfprobe | sfprobe ] \n\tActivate plugin\n"); 
+  printf("  -P  \t[ memory | print | mysql | pgsql | sqlite3 | amqp | kafka | nfprobe | sfprobe ] \n\tActivate plugin\n"); 
   printf("  -d  \tEnable debug\n");
   printf("  -S  \t[ auth | mail | daemon | kern | user | local[0-7] ] \n\tLog to the specified syslog facility\n");
   printf("  -F  \tWrite Core Process PID into the specified file\n");
@@ -140,7 +143,7 @@ void usage_daemon(char *prog_name)
   printf("  -O  \t[ formatted | csv | json | avro ] \n\tOutput format\n");
   printf("  -o  \tPath to output file\n");
   printf("  -A  \tAppend output (applies to -o)\n");
-  printf("  -E  \tCSV format serparator (applies to -O csv, DEFAULT: ',')\n");
+  printf("  -E  \tCSV format separator (applies to -O csv, DEFAULT: ',')\n");
   printf("\n");
   printf("For examples, see:\n");
   printf("  https://github.com/pmacct/pmacct/blob/master/QUICKSTART or\n");
@@ -153,7 +156,7 @@ void usage_daemon(char *prog_name)
 int main(int argc,char **argv, char **envp)
 {
   struct pcap_device device;
-  int index, logf, ret;
+  int index, logf;
 
   struct plugins_list_entry *list;
   struct plugin_requests req;
@@ -227,7 +230,7 @@ int main(int argc,char **argv, char **envp)
   config.acct_type = ACCT_PM;
 
   rows = 0;
-  glob_pcapt = NULL;
+  memset(&device, 0, sizeof(device));
 
   /* getting commandline values */
   while (!errflag && ((cp = getopt(argc, argv, ARGS_UACCTD)) != -1)) {
@@ -392,7 +395,7 @@ int main(int argc,char **argv, char **envp)
 
   /* Let's check whether we need superuser privileges */
   if (getuid() != 0) {
-    printf("%s (%s)\n\n", UACCTD_USAGE_HEADER, PMACCT_BUILD);
+    printf("%s %s (%s)\n\n", UACCTD_USAGE_HEADER, PMACCT_VERSION, PMACCT_BUILD);
     printf("ERROR ( %s/core ): You need superuser privileges to run this command.\nExiting ...\n\n", config.name);
     exit(1);
   }
@@ -509,14 +512,23 @@ int main(int argc,char **argv, char **envp)
 	list->cfg.what_to_count |= COUNT_DST_PORT;
 	list->cfg.what_to_count |= COUNT_IP_TOS;
 	list->cfg.what_to_count |= COUNT_IP_PROTO;
-	if (list->cfg.networks_file || (list->cfg.nfacctd_bgp && list->cfg.nfacctd_as == NF_AS_BGP)) {
+	if (list->cfg.networks_file ||
+	   ((list->cfg.nfacctd_bgp || list->cfg.nfacctd_bmp) && list->cfg.nfacctd_as == NF_AS_BGP)) {
 	  list->cfg.what_to_count |= COUNT_SRC_AS;
 	  list->cfg.what_to_count |= COUNT_DST_AS;
 	  list->cfg.what_to_count |= COUNT_PEER_DST_IP;
 	}
-	if ((list->cfg.nfprobe_version == 9 || list->cfg.nfprobe_version == 10) && list->cfg.classifiers_path) {
-	  list->cfg.what_to_count |= COUNT_CLASS; 
-	  config.handle_flows = TRUE;
+	if (list->cfg.nfprobe_version == 9 || list->cfg.nfprobe_version == 10) {
+	  if (list->cfg.classifiers_path) {
+	    list->cfg.what_to_count |= COUNT_CLASS; 
+	    config.handle_flows = TRUE;
+	  }
+
+          if (list->cfg.nfprobe_what_to_count_2 & COUNT_NDPI_CLASS)
+            list->cfg.what_to_count_2 |= COUNT_NDPI_CLASS;
+
+          if (list->cfg.nfprobe_what_to_count_2 & COUNT_MPLS_LABEL_TOP)
+            list->cfg.what_to_count_2 |= COUNT_MPLS_LABEL_TOP;
 	}
 	if (list->cfg.pre_tag_map) {
 	  list->cfg.what_to_count |= COUNT_TAG;
@@ -544,6 +556,12 @@ int main(int argc,char **argv, char **envp)
 	list->cfg.data_type = PIPE_TYPE_METADATA;
 	list->cfg.data_type |= PIPE_TYPE_EXTRAS;
 
+        if (list->cfg.what_to_count & (COUNT_PEER_DST_IP))
+          list->cfg.data_type |= PIPE_TYPE_BGP;
+
+        if (list->cfg.what_to_count_2 & (COUNT_MPLS_LABEL_TOP))
+          list->cfg.data_type |= PIPE_TYPE_MPLS;
+
         if (list->cfg.what_to_count_2 & (COUNT_LABEL))
           list->cfg.data_type |= PIPE_TYPE_VLEN;
       }
@@ -560,7 +578,13 @@ int main(int argc,char **argv, char **envp)
 	  config.handle_fragments = TRUE;
 	  config.handle_flows = TRUE;
 	}
-        if (list->cfg.networks_file || (list->cfg.nfacctd_bgp && list->cfg.nfacctd_as == NF_AS_BGP)) {
+#if defined (WITH_NDPI)
+        { // XXX: some if condition here
+          list->cfg.what_to_count_2 |= COUNT_NDPI_CLASS;
+        }
+#endif
+        if (list->cfg.networks_file ||
+	   ((list->cfg.nfacctd_bgp || list->cfg.nfacctd_bmp) && list->cfg.nfacctd_as == NF_AS_BGP)) {
           list->cfg.what_to_count |= COUNT_SRC_AS;
           list->cfg.what_to_count |= COUNT_DST_AS;
           list->cfg.what_to_count |= COUNT_PEER_DST_IP;
@@ -612,7 +636,7 @@ int main(int argc,char **argv, char **envp)
         if (list->cfg.what_to_count_2 & (COUNT_LABEL))
           list->cfg.data_type |= PIPE_TYPE_VLEN;
 
-	evaluate_sums(&list->cfg.what_to_count, list->name, list->type.string);
+	evaluate_sums(&list->cfg.what_to_count, &list->cfg.what_to_count_2, list->name, list->type.string);
 	if (list->cfg.what_to_count & (COUNT_SRC_PORT|COUNT_DST_PORT|COUNT_SUM_PORT|COUNT_TCPFLAGS))
 	  config.handle_fragments = TRUE;
 	if (list->cfg.what_to_count & COUNT_FLOWS) {
@@ -627,13 +651,6 @@ int main(int argc,char **argv, char **envp)
 	  Log(LOG_WARNING, "WARN ( %s/%s ): defaulting to SRC HOST aggregation.\n", list->name, list->type.string);
 	  list->cfg.what_to_count |= COUNT_SRC_HOST;
 	}
-        if (((list->cfg.what_to_count & COUNT_SRC_HOST) && (list->cfg.what_to_count & COUNT_SRC_NET)) ||
-            ((list->cfg.what_to_count & COUNT_DST_HOST) && (list->cfg.what_to_count & COUNT_DST_NET))) {
-          if (!list->cfg.tmp_net_own_field) {
-            Log(LOG_ERR, "ERROR ( %s/%s ): src_host, src_net and dst_host, dst_net are mutually exclusive: set tmp_net_own_field to true. Exiting...\n\n", list->name, list->type.string);
-            exit(1);
-          }
-        }
 	if (list->cfg.what_to_count & (COUNT_SRC_AS|COUNT_DST_AS|COUNT_SUM_AS)) {
 	  if (!list->cfg.networks_file && list->cfg.nfacctd_as != NF_AS_BGP) { 
 	    Log(LOG_ERR, "ERROR ( %s/%s ): AS aggregation selected but NO 'networks_file' or 'uacctd_as' are specified. Exiting...\n\n", list->name, list->type.string);
@@ -654,7 +671,7 @@ int main(int argc,char **argv, char **envp)
           else {
             if ((list->cfg.nfacctd_net == NF_NET_NEW && !list->cfg.networks_file) ||
                 (list->cfg.nfacctd_net == NF_NET_STATIC && !list->cfg.networks_mask) ||
-                (list->cfg.nfacctd_net == NF_NET_BGP && !list->cfg.nfacctd_bgp) ||
+                (list->cfg.nfacctd_net == NF_NET_BGP && !list->cfg.nfacctd_bgp && !list->cfg.nfacctd_bmp) ||
                 (list->cfg.nfacctd_net == NF_NET_IGP && !list->cfg.nfacctd_isis) ||
                 (list->cfg.nfacctd_net == NF_NET_KEEP)) {
               Log(LOG_ERR, "ERROR ( %s/%s ): network aggregation selected but none of 'bgp_daemon', 'isis_daemon', 'networks_file', 'networks_mask' is specified. Exiting ...\n\n", list->name, list->type.string);
@@ -664,6 +681,7 @@ int main(int argc,char **argv, char **envp)
               list->cfg.nfacctd_net |= NF_NET_NEW;
           }
         }
+
 	if (list->cfg.what_to_count & COUNT_CLASS && !list->cfg.classifiers_path) {
 	  Log(LOG_ERR, "ERROR ( %s/%s ): 'class' aggregation selected but NO 'classifiers' key specified. Exiting...\n\n", list->name, list->type.string);
 	  exit(1);
@@ -675,6 +693,18 @@ int main(int argc,char **argv, char **envp)
 	list->cfg.what_to_count |= COUNT_COUNTERS;
 	list->cfg.data_type |= PIPE_TYPE_METADATA;
       }
+
+      /* applies to all plugins */
+      if ((list->cfg.what_to_count_2 & COUNT_NDPI_CLASS) ||
+	  (list->cfg.nfprobe_what_to_count_2 & COUNT_NDPI_CLASS)) {
+	config.handle_fragments = TRUE;
+	config.classifier_ndpi = TRUE;
+      } 
+
+      if ((list->cfg.what_to_count & COUNT_CLASS) && (list->cfg.what_to_count_2 & COUNT_NDPI_CLASS)) { 
+	Log(LOG_ERR, "ERROR ( %s/%s ): 'class_legacy' and 'class' primitives are mutual exclusive. Exiting...\n\n", list->name, list->type.string);
+	exit(1);
+      }
     }
     list = list->next;
   }
@@ -684,6 +714,15 @@ int main(int argc,char **argv, char **envp)
     init_classifiers(config.classifiers_path);
     init_conntrack_table();
   }
+
+#if defined (WITH_NDPI)
+  if (config.classifier_ndpi) {
+    config.handle_fragments = TRUE;
+    pm_ndpi_wfl = pm_ndpi_workflow_init();
+    pm_ndpi_export_proto_to_class(pm_ndpi_wfl);
+  }
+  else pm_ndpi_wfl = NULL;
+#endif
 
   if (config.aggregate_primitives) {
     req.key_value_table = (void *) &custom_primitives_registry;
@@ -802,7 +841,11 @@ int main(int argc,char **argv, char **envp)
     exit_all(1);
   }
 
-#if defined ENABLE_THREADS
+  if (config.nfacctd_bgp && config.nfacctd_bmp) {
+    Log(LOG_ERR, "ERROR ( %s/core ): bgp_daemon and bmp_daemon are currently mutual exclusive. Exiting.\n", config.name);
+    exit(1);
+  }
+
   /* starting the ISIS threa */
   if (config.nfacctd_isis) {
     req.bpf_filter = TRUE;
@@ -816,8 +859,15 @@ int main(int argc,char **argv, char **envp)
   /* starting the BGP thread */
   if (config.nfacctd_bgp) {
     req.bpf_filter = TRUE;
+
+    if (config.nfacctd_bgp_stdcomm_pattern_to_asn && config.nfacctd_bgp_lrgcomm_pattern_to_asn) {
+      Log(LOG_ERR, "ERROR ( %s/core ): bgp_stdcomm_pattern_to_asn and bgp_lrgcomm_pattern_to_asn are mutual exclusive. Exiting.\n", config.name);
+      exit(1);
+    }
+
     load_comm_patterns(&config.nfacctd_bgp_stdcomm_pattern, &config.nfacctd_bgp_extcomm_pattern,
-                        &config.nfacctd_bgp_lrgcomm_pattern, &config.nfacctd_bgp_stdcomm_pattern_to_asn);
+                        &config.nfacctd_bgp_lrgcomm_pattern, &config.nfacctd_bgp_stdcomm_pattern_to_asn,
+			&config.nfacctd_bgp_lrgcomm_pattern_to_asn);
 
     if (config.nfacctd_bgp_peer_as_src_type == BGP_SRC_PRIMITIVES_MAP) {
       if (config.nfacctd_bgp_peer_as_src_map) {
@@ -875,17 +925,6 @@ int main(int argc,char **argv, char **envp)
     /* Let's give the BGP thread some advantage to create its structures */
     sleep(5);
   }
-#else
-  if (config.nfacctd_isis) {
-    Log(LOG_ERR, "ERROR ( %s/core ): 'isis_daemon' is available only with threads (--enable-threads). Exiting.\n", config.name);
-    exit(1);
-  }
-
-  if (config.nfacctd_bgp) {
-    Log(LOG_ERR, "ERROR ( %s/core ): 'bgp_daemon' is available only with threads (--enable-threads). Exiting.\n", config.name);
-    exit(1);
-  }
-#endif
 
 #if defined WITH_GEOIP
   if (config.geoip_ipv4_file || config.geoip_ipv6_file) {

@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -134,7 +134,7 @@ void bmp_process_msg_init(char **bmp_packet, u_int32_t *len, u_int32_t bmp_hdr_l
   if (bms->msglog_backend_methods) {
     char event_type[] = "log";
 
-    bmp_log_msg(peer, &bdata, NULL, bms->log_seq, event_type, config.nfacctd_bmp_msglog_output, BMP_LOG_TYPE_INIT);
+    bmp_log_msg(peer, &bdata, NULL, bgp_peer_log_seq_get(&bms->log_seq), event_type, config.nfacctd_bmp_msglog_output, BMP_LOG_TYPE_INIT);
   }
 
   if (bms->dump_backend_methods)
@@ -168,7 +168,7 @@ void bmp_process_msg_init(char **bmp_packet, u_int32_t *len, u_int32_t bmp_hdr_l
       if (bms->msglog_backend_methods) {
         char event_type[] = "log";
 
-        bmp_log_msg(peer, &bdata, &blinit, bms->log_seq, event_type, config.nfacctd_bmp_msglog_output, BMP_LOG_TYPE_INIT);
+        bmp_log_msg(peer, &bdata, &blinit, bgp_peer_log_seq_get(&bms->log_seq), event_type, config.nfacctd_bmp_msglog_output, BMP_LOG_TYPE_INIT);
       }
 
       if (bms->dump_backend_methods)
@@ -205,7 +205,7 @@ void bmp_process_msg_term(char **bmp_packet, u_int32_t *len, u_int32_t bmp_hdr_l
   if (bms->msglog_backend_methods) {
     char event_type[] = "log";
 
-    bmp_log_msg(peer, &bdata, NULL, bms->log_seq, event_type, config.nfacctd_bmp_msglog_output, BMP_LOG_TYPE_TERM);
+    bmp_log_msg(peer, &bdata, NULL, bgp_peer_log_seq_get(&bms->log_seq), event_type, config.nfacctd_bmp_msglog_output, BMP_LOG_TYPE_TERM);
   }
 
   if (bms->dump_backend_methods)
@@ -242,7 +242,7 @@ void bmp_process_msg_term(char **bmp_packet, u_int32_t *len, u_int32_t bmp_hdr_l
       if (bms->msglog_backend_methods) {
         char event_type[] = "log";
 
-        bmp_log_msg(peer, &bdata, &blterm, bms->log_seq, event_type, config.nfacctd_bmp_msglog_output, BMP_LOG_TYPE_TERM);
+        bmp_log_msg(peer, &bdata, &blterm, bgp_peer_log_seq_get(&bms->log_seq), event_type, config.nfacctd_bmp_msglog_output, BMP_LOG_TYPE_TERM);
       }
 
       if (bms->dump_backend_methods)
@@ -287,14 +287,20 @@ void bmp_process_msg_peer_up(char **bmp_packet, u_int32_t *len, struct bmp_peer 
     return;
   }
 
-  bmp_peer_hdr_get_v_flag(bph, &bdata.family);
+  bmp_peer_hdr_get_peer_type(bph, &bdata.peer_type);
+  if (bdata.peer_type == BMP_PEER_TYPE_LOC_RIB) {
+    bmp_peer_hdr_get_f_flag(bph, &bdata.is_filtered);
+  }
+  else {
+    bmp_peer_hdr_get_v_flag(bph, &bdata.family);
+    bmp_peer_hdr_get_l_flag(bph, &bdata.is_post);
+    bmp_peer_hdr_get_a_flag(bph, &bdata.is_2b_asn);
+    bmp_peer_hdr_get_o_flag(bph, &bdata.is_out);
+  }
   bmp_peer_hdr_get_peer_ip(bph, &bdata.peer_ip, bdata.family);
-  bmp_peer_hdr_get_l_flag(bph, &bdata.is_post);
-  bmp_peer_hdr_get_a_flag(bph, &bdata.is_2b_asn);
   bmp_peer_hdr_get_bgp_id(bph, &bdata.bgp_id);
   bmp_peer_hdr_get_tstamp(bph, &bdata.tstamp);
   bmp_peer_hdr_get_peer_asn(bph, &bdata.peer_asn);
-  bmp_peer_hdr_get_peer_type(bph, &bdata.peer_type);
 
   if (bdata.family) {
     /* If no timestamp in BMP then let's generate one */
@@ -306,7 +312,7 @@ void bmp_process_msg_peer_up(char **bmp_packet, u_int32_t *len, struct bmp_peer 
       struct bgp_msg_extra_data_bmp bmed_bmp;
       struct bgp_msg_data bmd;
       int bgp_open_len;
-      void *ret, *alloc_key;
+      void *ret;
 
       memset(&bgp_peer_loc, 0, sizeof(bgp_peer_loc));
       memset(&bgp_peer_rem, 0, sizeof(bgp_peer_rem));
@@ -341,7 +347,7 @@ void bmp_process_msg_peer_up(char **bmp_packet, u_int32_t *len, struct bmp_peer 
       if (bms->msglog_backend_methods) {
         char event_type[] = "log";
 
-        bmp_log_msg(peer, &bdata, &blpu, bms->log_seq, event_type, config.nfacctd_bmp_msglog_output, BMP_LOG_TYPE_PEER_UP);
+        bmp_log_msg(peer, &bdata, &blpu, bgp_peer_log_seq_get(&bms->log_seq), event_type, config.nfacctd_bmp_msglog_output, BMP_LOG_TYPE_PEER_UP);
       }
 
       if (bms->dump_backend_methods)
@@ -383,13 +389,16 @@ void bmp_process_msg_peer_down(char **bmp_packet, u_int32_t *len, struct bmp_pee
     return;
   }
 
-  bmp_peer_hdr_get_v_flag(bph, &bdata.family);
+  bmp_peer_hdr_get_peer_type(bph, &bdata.peer_type);
+  if (bdata.peer_type != BMP_PEER_TYPE_LOC_RIB) {
+    bmp_peer_hdr_get_v_flag(bph, &bdata.family);
+    bmp_peer_hdr_get_l_flag(bph, &bdata.is_post);
+    bmp_peer_hdr_get_o_flag(bph, &bdata.is_out);
+  }
   bmp_peer_hdr_get_peer_ip(bph, &bdata.peer_ip, bdata.family);
-  bmp_peer_hdr_get_l_flag(bph, &bdata.is_post);
   bmp_peer_hdr_get_bgp_id(bph, &bdata.bgp_id);
   bmp_peer_hdr_get_tstamp(bph, &bdata.tstamp);
   bmp_peer_hdr_get_peer_asn(bph, &bdata.peer_asn);
-  bmp_peer_hdr_get_peer_type(bph, &bdata.peer_type);
 
   if (bdata.family) {
     /* If no timestamp in BMP then let's generate one */
@@ -404,7 +413,7 @@ void bmp_process_msg_peer_down(char **bmp_packet, u_int32_t *len, struct bmp_pee
       if (bms->msglog_backend_methods) {
         char event_type[] = "log";
 
-        bmp_log_msg(peer, &bdata, &blpd, bms->log_seq, event_type, config.nfacctd_bmp_msglog_output, BMP_LOG_TYPE_PEER_DOWN);
+        bmp_log_msg(peer, &bdata, &blpd, bgp_peer_log_seq_get(&bms->log_seq), event_type, config.nfacctd_bmp_msglog_output, BMP_LOG_TYPE_PEER_DOWN);
       }
 
       if (bms->dump_backend_methods)
@@ -459,26 +468,36 @@ void bmp_process_msg_route_monitor(char **bmp_packet, u_int32_t *len, struct bmp
 
   if (!bms) return;
 
+  memset(&bdata, 0, sizeof(bdata));
+
   if (!(bph = (struct bmp_peer_hdr *) bmp_get_and_check_length(bmp_packet, len, sizeof(struct bmp_peer_hdr)))) {
     Log(LOG_INFO, "INFO ( %s/%s ): [%s] [route] packet discarded: failed bmp_get_and_check_length() BMP peer hdr\n",
         config.name, bms->log_str, peer->addr_str);
     return;
   }
 
-  bmp_peer_hdr_get_v_flag(bph, &bdata.family);
+  bmp_peer_hdr_get_peer_type(bph, &bdata.peer_type);
+  if (bdata.peer_type == BMP_PEER_TYPE_LOC_RIB) {
+    bmp_peer_hdr_get_f_flag(bph, &bdata.is_filtered);
+  }
+  else {
+    bmp_peer_hdr_get_v_flag(bph, &bdata.family);
+    bmp_peer_hdr_get_l_flag(bph, &bdata.is_post);
+    bmp_peer_hdr_get_a_flag(bph, &bdata.is_2b_asn);
+    bmp_peer_hdr_get_o_flag(bph, &bdata.is_out);
+  }
   bmp_peer_hdr_get_peer_ip(bph, &bdata.peer_ip, bdata.family);
-  bmp_peer_hdr_get_l_flag(bph, &bdata.is_post);
-  bmp_peer_hdr_get_a_flag(bph, &bdata.is_2b_asn);
   bmp_peer_hdr_get_bgp_id(bph, &bdata.bgp_id);
   bmp_peer_hdr_get_tstamp(bph, &bdata.tstamp);
   bmp_peer_hdr_get_peer_asn(bph, &bdata.peer_asn);
-  bmp_peer_hdr_get_peer_type(bph, &bdata.peer_type);
 
   if (bdata.family) {
     /* If no timestamp in BMP then let's generate one */
     if (!bdata.tstamp.tv_sec) gettimeofday(&bdata.tstamp, NULL);
 
-    compose_timestamp(tstamp_str, SRVBUFLEN, &bdata.tstamp, TRUE, config.timestamps_since_epoch);
+    compose_timestamp(tstamp_str, SRVBUFLEN, &bdata.tstamp, TRUE,
+		      config.timestamps_since_epoch, config.timestamps_rfc3339,
+		      config.timestamps_utc);
     addr_to_str(peer_ip, &bdata.peer_ip);
 
     ret = pm_tfind(&bdata.peer_ip, &bmpp->bgp_peers, bgp_peer_host_addr_cmp);
@@ -532,6 +551,8 @@ void bmp_process_msg_stats(char **bmp_packet, u_int32_t *len, struct bmp_peer *b
   u_int32_t index, count = 0, cnt_data32;
   u_int16_t cnt_type, cnt_len;
   u_int8_t got_data;
+  afi_t afi;
+  safi_t safi;
 
   if (!bmpp) return;
 
@@ -554,13 +575,19 @@ void bmp_process_msg_stats(char **bmp_packet, u_int32_t *len, struct bmp_peer *b
     return;
   }
 
-  bmp_peer_hdr_get_v_flag(bph, &bdata.family);
+  bmp_peer_hdr_get_peer_type(bph, &bdata.peer_type);
+  if (bdata.peer_type == BMP_PEER_TYPE_LOC_RIB) {
+    bmp_peer_hdr_get_f_flag(bph, &bdata.is_filtered);
+  }
+  else {
+    bmp_peer_hdr_get_v_flag(bph, &bdata.family);
+    bmp_peer_hdr_get_l_flag(bph, &bdata.is_post);
+    bmp_peer_hdr_get_o_flag(bph, &bdata.is_out);
+  }
   bmp_peer_hdr_get_peer_ip(bph, &bdata.peer_ip, bdata.family);
   bmp_peer_hdr_get_bgp_id(bph, &bdata.bgp_id);
-  bmp_peer_hdr_get_l_flag(bph, &bdata.is_post);
   bmp_peer_hdr_get_tstamp(bph, &bdata.tstamp);
   bmp_peer_hdr_get_peer_asn(bph, &bdata.peer_asn);
-  bmp_peer_hdr_get_peer_type(bph, &bdata.peer_type);
   bmp_stats_hdr_get_count(bsh, &count);
 
   if (bdata.family) {
@@ -576,7 +603,7 @@ void bmp_process_msg_stats(char **bmp_packet, u_int32_t *len, struct bmp_peer *b
 
       bmp_stats_cnt_hdr_get_type(bsch, &cnt_type);
       bmp_stats_cnt_hdr_get_len(bsch, &cnt_len);
-      cnt_data32 = 0; cnt_data64 = 0, got_data = TRUE;
+      cnt_data32 = 0, cnt_data64 = 0, afi = 0, safi = 0, got_data = TRUE;
 
       switch (cnt_type) {
       case BMP_STATS_TYPE0:
@@ -606,6 +633,33 @@ void bmp_process_msg_stats(char **bmp_packet, u_int32_t *len, struct bmp_peer *b
       case BMP_STATS_TYPE8:
         if (cnt_len == 8) bmp_stats_cnt_get_data64(bmp_packet, len, &cnt_data64);
         break;
+      case BMP_STATS_TYPE9:
+	if (cnt_len == 11) bmp_stats_cnt_get_afi_safi_data64(bmp_packet, len, &afi, &safi, &cnt_data64);
+	break;
+      case BMP_STATS_TYPE10:
+	if (cnt_len == 11) bmp_stats_cnt_get_afi_safi_data64(bmp_packet, len, &afi, &safi, &cnt_data64);
+	break;
+      case BMP_STATS_TYPE11:
+        if (cnt_len == 4) bmp_stats_cnt_get_data32(bmp_packet, len, &cnt_data32);
+        break;
+      case BMP_STATS_TYPE12:
+        if (cnt_len == 4) bmp_stats_cnt_get_data32(bmp_packet, len, &cnt_data32);
+        break;
+      case BMP_STATS_TYPE13:
+        if (cnt_len == 4) bmp_stats_cnt_get_data32(bmp_packet, len, &cnt_data32);
+        break;
+      case BMP_STATS_TYPE14:
+	if (cnt_len == 8) bmp_stats_cnt_get_data64(bmp_packet, len, &cnt_data64);
+	break;
+      case BMP_STATS_TYPE15:
+	if (cnt_len == 8) bmp_stats_cnt_get_data64(bmp_packet, len, &cnt_data64);
+	break;
+      case BMP_STATS_TYPE16:
+	if (cnt_len == 11) bmp_stats_cnt_get_afi_safi_data64(bmp_packet, len, &afi, &safi, &cnt_data64);
+	break;
+      case BMP_STATS_TYPE17:
+	if (cnt_len == 11) bmp_stats_cnt_get_afi_safi_data64(bmp_packet, len, &afi, &safi, &cnt_data64);
+	break;
       default:
         if (cnt_len == 4) bmp_stats_cnt_get_data32(bmp_packet, len, &cnt_data32);
         else if (cnt_len == 8) bmp_stats_cnt_get_data64(bmp_packet, len, &cnt_data64);
@@ -622,13 +676,15 @@ void bmp_process_msg_stats(char **bmp_packet, u_int32_t *len, struct bmp_peer *b
         struct bmp_log_stats blstats;
 
         blstats.cnt_type = cnt_type;
+	blstats.cnt_afi = afi;
+	blstats.cnt_safi = safi;
         blstats.cnt_data = cnt_data64;
         blstats.got_data = got_data;
 
         if (bms->msglog_backend_methods) {
           char event_type[] = "log";
 
-          bmp_log_msg(peer, &bdata, &blstats, bms->log_seq, event_type, config.nfacctd_bmp_msglog_output, BMP_LOG_TYPE_STATS);
+          bmp_log_msg(peer, &bdata, &blstats, bgp_peer_log_seq_get(&bms->log_seq), event_type, config.nfacctd_bmp_msglog_output, BMP_LOG_TYPE_STATS);
         } 
 
         if (bms->dump_backend_methods)
@@ -672,7 +728,7 @@ void bmp_peer_hdr_get_v_flag(struct bmp_peer_hdr *bph, u_int8_t *family)
   u_int8_t version;
 
   if (bph && family) {
-    version = (bph->flags & 0x80);
+    version = (bph->flags & BMP_PEER_FLAGS_ARI_V);
     (*family) = FALSE;
 
     if (version == 0) (*family) = AF_INET;
@@ -684,12 +740,22 @@ void bmp_peer_hdr_get_v_flag(struct bmp_peer_hdr *bph, u_int8_t *family)
 
 void bmp_peer_hdr_get_l_flag(struct bmp_peer_hdr *bph, u_int8_t *is_post)
 {
-  if (bph && is_post) (*is_post) = (bph->flags & 0x40);
+  if (bph && is_post) (*is_post) = (bph->flags & BMP_PEER_FLAGS_ARI_L);
 }
 
 void bmp_peer_hdr_get_a_flag(struct bmp_peer_hdr *bph, u_int8_t *is_2b_asn)
 {
-  if (bph && is_2b_asn) (*is_2b_asn) = (bph->flags & 0x20);
+  if (bph && is_2b_asn) (*is_2b_asn) = (bph->flags & BMP_PEER_FLAGS_ARI_A);
+}
+
+void bmp_peer_hdr_get_f_flag(struct bmp_peer_hdr *bph, u_int8_t *is_filtered)
+{
+  if (bph && is_filtered) (*is_filtered) = (bph->flags & BMP_PEER_FLAGS_LR_F);
+}
+
+void bmp_peer_hdr_get_o_flag(struct bmp_peer_hdr *bph, u_int8_t *is_out)
+{
+  if (bph && is_out) (*is_out) = (bph->flags & BMP_PEER_FLAGS_ARO_O);
 }
 
 void bmp_peer_hdr_get_peer_ip(struct bmp_peer_hdr *bph, struct host_addr *a, u_int8_t family)
@@ -807,6 +873,24 @@ void bmp_stats_cnt_get_data64(char **bmp_packet, u_int32_t *pkt_size, u_int64_t 
   char *ptr;
 
   if (bmp_packet && (*bmp_packet) && pkt_size && data) {
+    ptr = bmp_get_and_check_length(bmp_packet, pkt_size, 8);
+    memcpy(data, ptr, 8);
+    (*data) = pm_ntohll((*data));
+  }
+}
+
+void bmp_stats_cnt_get_afi_safi_data64(char **bmp_packet, u_int32_t *pkt_size, afi_t *afi, safi_t *safi, u_int64_t *data)
+{
+  char *ptr;
+
+  if (bmp_packet && (*bmp_packet) && pkt_size && afi && safi && data) {
+    ptr = bmp_get_and_check_length(bmp_packet, pkt_size, 2);
+    memcpy(afi, ptr, 2);
+    (*afi) = ntohs((*afi));
+
+    ptr = bmp_get_and_check_length(bmp_packet, pkt_size, 1);
+    memcpy(safi, ptr, 1);
+
     ptr = bmp_get_and_check_length(bmp_packet, pkt_size, 8);
     memcpy(data, ptr, 8);
     (*data) = pm_ntohll((*data));

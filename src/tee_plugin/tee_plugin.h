@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -59,6 +59,18 @@ struct tee_receivers_pool {
   struct pretag_filter tag_filter; 	/* filter datagrams basing on a pre_tag_map */
   struct tee_balance balance;		/* balance datagrams basing on supported algorithm */
   u_int16_t src_port;			/* Non transparent mode: source UDP port to use for replication */
+
+  char kafka_broker[SRVBUFLEN];		/* Emitting to Kafka: broker string */
+  char kafka_topic[SRVBUFLEN];		/* Emitting to Kafka: topic */
+#ifdef WITH_KAFKA
+  struct p_kafka_host kafka_host;	/* Emitting to Kafka: librdkafka structs */ 
+#endif
+
+  char zmq_address[SHORTBUFLEN];	/* Emitting via ZeroMQ: server address */
+#ifdef WITH_ZMQ
+  struct p_zmq_host zmq_host;		/* Emitting via ZeroMQ: libzmq structs */ 
+#endif
+
   int num;				/* Number of receivers in the pool */
 };
 
@@ -77,12 +89,23 @@ struct tee_receivers {
 EXT void Tee_exit_now(int);
 EXT void Tee_init_socks();
 EXT void Tee_destroy_recvs();
+EXT int Tee_craft_transparent_msg(struct pkt_msg *, struct sockaddr *);
 EXT void Tee_send(struct pkt_msg *, struct sockaddr *, int);
 EXT int Tee_prepare_sock(struct sockaddr *, socklen_t, u_int16_t);
-EXT int Tee_parse_hostport(const char *, struct sockaddr *, socklen_t *);
+EXT int Tee_parse_hostport(const char *, struct sockaddr *, socklen_t *, int);
 EXT struct tee_receiver *Tee_rr_balance(void *, struct pkt_msg *);
 EXT struct tee_receiver *Tee_hash_agent_balance(void *, struct pkt_msg *);
 EXT struct tee_receiver *Tee_hash_tag_balance(void *, struct pkt_msg *);
+
+#ifdef WITH_KAFKA
+EXT void Tee_kafka_send(struct pkt_msg *, struct tee_receivers_pool *);
+EXT void Tee_init_kafka_host(struct p_kafka_host *, char *, char *, u_int32_t);
+#endif
+
+#ifdef WITH_ZMQ
+EXT void Tee_zmq_send(struct pkt_msg *, struct tee_receivers_pool *); 
+EXT void Tee_init_zmq_host(struct p_zmq_host *, char *, u_int32_t);
+#endif
 
 /* global variables */
 EXT char tee_send_buf[65535];

@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -31,12 +31,10 @@ const struct _map_dictionary_line tag_map_dictionary[] = {
   {"nexthop", PT_map_nexthop_handler},
   {"bgp_nexthop", PT_map_bgp_nexthop_handler},
   {"filter", PT_map_filter_handler},
-  {"v8agg", PT_map_v8agg_handler},
   {"agent_id", PT_map_agent_id_handler},
   {"flowset_id", PT_map_flowset_id_handler},
-  {"sampling_rate", PT_map_sampling_rate_handler},
   {"sample_type", PT_map_sample_type_handler},
-  {"direction", PT_map_direction_handler},
+  {"direction", PT_map_direction_handler}, /* obsoleted */
   {"src_as", PT_map_src_as_handler},
   {"dst_as", PT_map_dst_as_handler},
   {"peer_src_as", PT_map_peer_src_as_handler},
@@ -50,14 +48,17 @@ const struct _map_dictionary_line tag_map_dictionary[] = {
   {"dst_mac", PT_map_dst_mac_handler},
   {"vlan", PT_map_vlan_id_handler},
   {"cvlan", PT_map_cvlan_id_handler},
+  {"src_net", PT_map_src_net_handler},
+  {"dst_net", PT_map_dst_net_handler},
   {"set_tag", PT_map_id_handler},
   {"set_tag2", PT_map_id2_handler},
   {"set_label", PT_map_label_handler},
   {"set_tos", PT_map_set_tos_handler},
   {"label", PT_map_entry_label_handler},
   {"jeq", PT_map_jeq_handler},
-  {"return", PT_map_return_handler},
+  {"return", PT_map_return_handler}, /* obsoleted */
   {"stack", PT_map_stack_handler},
+  {"fwdstatus", PT_map_fwdstatus_handler},
   {"", NULL}
 };
 
@@ -77,6 +78,7 @@ const struct _map_index_dictionary_line tag_map_index_entries_dictionary[] = {
   {PRETAG_DST_MAC, PT_map_index_entries_dst_mac_handler},
   {PRETAG_VLAN_ID, PT_map_index_entries_vlan_id_handler},
   {PRETAG_CVLAN_ID, PT_map_index_entries_cvlan_id_handler},
+  {PRETAG_FWDSTATUS_ID, PT_map_index_entries_fwdstatus_handler},
   {0, NULL}
 };
 
@@ -96,6 +98,7 @@ const struct _map_index_dictionary_line tag_map_index_fdata_dictionary[] = {
   {PRETAG_DST_MAC, PT_map_index_fdata_dst_mac_handler},
   {PRETAG_VLAN_ID, PT_map_index_fdata_vlan_id_handler},
   {PRETAG_CVLAN_ID, PT_map_index_fdata_cvlan_id_handler},
+  {PRETAG_FWDSTATUS_ID, PT_map_index_fdata_fwdstatus_handler},
   {0, NULL}
 };
 
@@ -110,6 +113,9 @@ const struct _map_dictionary_line tag_map_tee_dictionary[] = {
   {"src_mac", PT_map_src_mac_handler},
   {"dst_mac", PT_map_dst_mac_handler},
   {"vlan", PT_map_vlan_id_handler},
+  {"src_net", PT_map_src_net_handler},
+  {"dst_net", PT_map_dst_net_handler},
+  {"bgp_nexthop", PT_map_bgp_nexthop_handler},
   {"engine_type", PT_map_engine_type_handler},
   {"engine_id", PT_map_engine_id_handler},
   {"source_id", PT_map_engine_id_handler},
@@ -130,6 +136,8 @@ const struct _map_dictionary_line bpas_map_dictionary[] = {
   {"peer_dst_as", BPAS_map_bgp_peer_dst_as_handler},
   {"src_mac", PT_map_src_mac_handler},
   {"vlan", PT_map_vlan_id_handler},
+  {"src_net", PT_map_src_net_handler},
+  {"dst_net", PT_map_dst_net_handler},
   {"", NULL}
 };
 
@@ -169,5 +177,12 @@ const struct _map_dictionary_line custom_primitives_map_dictionary[] = {
   {"field_type", custom_primitives_map_field_type_handler},
   {"len", custom_primitives_map_len_handler},
   {"semantics", custom_primitives_map_semantics_handler},
+  {"", NULL}
+};
+
+const struct _map_dictionary_line pcap_interfaces_map_dictionary[] = {
+  {"ifindex", pcap_interfaces_map_ifindex_handler},
+  {"ifname", pcap_interfaces_map_ifname_handler},
+  {"direction", pcap_interfaces_map_direction_handler},
   {"", NULL}
 };

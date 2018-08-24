@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -28,10 +28,13 @@
 #include "nfacctd.h"
 #include "pretag_handlers.h"
 #include "pretag-data.h"
+#include "plugin_hooks.h"
 #include "tee_plugin/tee_recvs.h"
 #include "tee_plugin/tee_recvs-data.h"
 #include "isis/isis.h"
 #include "isis/isis-data.h"
+#include "bgp/bgp_xcs.h"
+#include "bgp/bgp_xcs-data.h"
 #include "crc32.h"
 #include "pmacct-data.h"
 
@@ -281,6 +284,22 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
                   }
                   key = NULL; value = NULL;
 		}
+		else if (acct_type == MAP_BGP_XCS) {
+                  for (dindex = 0; strcmp(bgp_xcs_map_dictionary[dindex].key, ""); dindex++) {
+                    if (!strcmp(bgp_xcs_map_dictionary[dindex].key, key)) {
+                      err = (*bgp_xcs_map_dictionary[dindex].func)(filename, NULL, value, req, acct_type);
+                      break;
+                    }
+                    else err = E_NOTFOUND; /* key not found */
+                  }
+                  if (err) {
+                    if (err == E_NOTFOUND) Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] unknown key '%s'. Ignored.\n", 
+						config.name, config.type, filename, tot_lines, key);
+                    else Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] Line ignored.\n", config.name, config.type, filename, tot_lines);
+                    break;
+                  }
+                  key = NULL; value = NULL;
+		}
                 else if (acct_type == MAP_IGP) {
                   for (dindex = 0; strcmp(igp_daemon_map_dictionary[dindex].key, ""); dindex++) {
                     if (!strcmp(igp_daemon_map_dictionary[dindex].key, key)) {
@@ -316,6 +335,22 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
                   }
                   key = NULL; value = NULL;
 		}
+                else if (acct_type == MAP_PCAP_INTERFACES) {
+                  for (dindex = 0; strcmp(pcap_interfaces_map_dictionary[dindex].key, ""); dindex++) {
+                    if (!strcmp(pcap_interfaces_map_dictionary[dindex].key, key)) {
+                      err = (*pcap_interfaces_map_dictionary[dindex].func)(filename, NULL, value, req, acct_type);
+                      break;
+                    }
+                    else err = E_NOTFOUND; /* key not found */
+                  }
+                  if (err) {
+                    if (err == E_NOTFOUND) Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] unknown key '%s'. Ignored.\n",
+                                                config.name, config.type, filename, tot_lines, key);
+                    else Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] Line ignored.\n", config.name, config.type, filename, tot_lines);
+                    break;
+                  }
+                  key = NULL; value = NULL;
+                }
 		else {
 		  if (tee_plugins) {
                     for (dindex = 0; strcmp(tag_map_tee_dictionary[dindex].key, ""); dindex++) {
@@ -487,9 +522,11 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
                   Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] required key missing. Required keys are: 'id', 'ip'. Line ignored.\n",
 			config.name, config.type, filename, tot_lines);
               }
-	      else if (acct_type == MAP_TEE_RECVS) tee_recvs_map_validate(filename, req); 
+	      else if (acct_type == MAP_TEE_RECVS) tee_recvs_map_validate(filename, tot_lines, req); 
+	      else if (acct_type == MAP_BGP_XCS) bgp_xcs_map_validate(filename, req); 
 	      else if (acct_type == MAP_IGP) igp_daemon_map_validate(filename, req); 
 	      else if (acct_type == MAP_CUSTOM_PRIMITIVES) custom_primitives_map_validate(filename, req); 
+	      else if (acct_type == MAP_PCAP_INTERFACES) pcap_interfaces_map_validate(filename, req); 
 	    }
           }
           else Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] malformed line. Ignored.\n",
@@ -676,7 +713,7 @@ char *pt_check_range(char *str)
 {
   char *ptr;
 
-  if (ptr = strchr(str, '-')) {
+  if ((ptr = strchr(str, '-'))) {
     *ptr = '\0';
     ptr++;
     return ptr;
@@ -840,7 +877,7 @@ int pretag_entry_process(struct id_entry *e, struct packet_ptrs *pptrs, pm_id_t 
 
     if (e->jeq.ptr) {
       if (e->ret) {
-	exec_plugins(pptrs);
+	exec_plugins(pptrs, NULL);
 	set_shadow_status(pptrs);
 	*tag = 0;
 	*tag2 = 0;
@@ -968,7 +1005,7 @@ int pretag_index_allocate(struct id_table *t)
 	  t->index[iterator].idx_t[j].depth = ID_TABLE_INDEX_DEPTH;
 	}
 
-	hash_init_serial(&t->index[iterator].hash_serializer, 16 /* dummy len for init sake */);
+	ret = hash_init_serial(&t->index[iterator].hash_serializer, 16 /* dummy len for init sake */);
 	if (ret == ERR) {
 	  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] maps_index: unable to allocate hash serializer for index %x.\n", config.name,
 		config.type, t->filename, t->index[iterator].bitmap);
@@ -1188,7 +1225,6 @@ void pretag_index_results_sort(struct id_entry **index_results, int ir_entries)
 
 void pretag_index_results_compress(struct id_entry **index_results, int ir_entries)
 {
-  struct id_entry *ptr = NULL;
   u_int32_t j, valid;
   int i;
 
@@ -1209,7 +1245,6 @@ void pretag_index_results_compress(struct id_entry **index_results, int ir_entri
 
 void pretag_index_results_compress_jeqs(struct id_entry **index_results, int ir_entries)
 {
-  struct id_entry *ptr = NULL;
   u_int32_t i, j, x;
 
   if (!index_results) return;

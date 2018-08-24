@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -31,6 +31,9 @@
 #endif
 #ifdef WITH_KAFKA
 #include "kafka_common.h"
+#endif
+#if defined WITH_ZMQ
+#include "zmq_common.h"
 #endif
 
 /* Functions */
@@ -75,10 +78,10 @@ void telemetry_peer_close(telemetry_peer *peer, int type)
   }
 
   if (config.telemetry_port_udp) {
-    telemetry_peer_udp_cache tpuc;
+    telemetry_peer_cache tpc;
 
-    memcpy(&tpuc.addr, &peer->addr, sizeof(struct host_addr));
-    pm_tdelete(&tpuc, &telemetry_peers_udp_cache, telemetry_tpuc_addr_cmp);
+    memcpy(&tpc.addr, &peer->addr, sizeof(struct host_addr));
+    pm_tdelete(&tpc, &telemetry_peers_cache, telemetry_tpc_addr_cmp);
 
     peer->fd = ERR; /* dirty trick to prevent close() a valid fd in bgp_peer_close() */
   }
@@ -119,9 +122,9 @@ int telemetry_is_zjson(int decoder)
   else return FALSE;
 }
 
-int telemetry_tpuc_addr_cmp(const void *a, const void *b)
+int telemetry_tpc_addr_cmp(const void *a, const void *b)
 {
-  return memcmp(&((telemetry_peer_udp_cache *)a)->addr, &((telemetry_peer_udp_cache *)b)->addr, sizeof(struct host_addr));
+  return memcmp(&((telemetry_peer_cache *)a)->addr, &((telemetry_peer_cache *)b)->addr, sizeof(struct host_addr));
 }
 
 void telemetry_link_misc_structs(telemetry_misc_structs *tms)
@@ -133,6 +136,10 @@ void telemetry_link_misc_structs(telemetry_misc_structs *tms)
   tms->msglog_kafka_host = &telemetry_daemon_msglog_kafka_host;
 #endif
   tms->max_peers = config.telemetry_max_peers;
+  tms->peers = telemetry_peers;
+  tms->peers_cache = NULL;
+  tms->peers_port_cache = NULL;
+  tms->xconnects = NULL;
   tms->dump_file = config.telemetry_dump_file;
   tms->dump_amqp_routing_key = config.telemetry_dump_amqp_routing_key;
   tms->dump_amqp_routing_key_rr = config.telemetry_dump_amqp_routing_key_rr;
@@ -146,6 +153,8 @@ void telemetry_link_misc_structs(telemetry_misc_structs *tms)
   tms->msglog_kafka_topic_rr = config.telemetry_msglog_kafka_topic_rr;
   tms->peer_str = malloc(strlen("telemetry_node") + 1);
   strcpy(tms->peer_str, "telemetry_node");
+  tms->peer_port_str = malloc(strlen("telemetry_node_port") + 1);
+  strcpy(tms->peer_port_str, "telemetry_node_port");
 }
 
 int telemetry_validate_input_output_decoders(int input, int output)
@@ -158,6 +167,8 @@ int telemetry_validate_input_output_decoders(int input, int output)
     if (output == PRINT_OUTPUT_JSON) return FALSE;
     /* else if (output == PRINT_OUTPUT_GPB) return ERR; */
   }
+
+  return ERR;
 }
 
 void telemetry_log_peer_stats(telemetry_peer *peer, struct telemetry_data *t_data)
@@ -188,3 +199,22 @@ void telemetry_log_global_stats(struct telemetry_data *t_data)
   t_data->global_stats.msg_bytes = 0;
   t_data->global_stats.msg_errors = 0;
 }
+
+#ifdef WITH_ZMQ
+void telemetry_init_zmq_host(void *zh, int *pipe_fd)
+{
+  struct p_zmq_host *zmq_host = zh;
+  char log_id[SHORTBUFLEN];
+
+  p_zmq_init_pull(zmq_host);
+
+  snprintf(log_id, sizeof(log_id), "%s/%s", config.name, config.type);
+  p_zmq_set_log_id(zmq_host, log_id);
+
+  p_zmq_set_address(zmq_host, config.telemetry_zmq_address);
+  p_zmq_pull_setup(zmq_host);
+  p_zmq_set_retry_timeout(zmq_host, PM_ZMQ_DEFAULT_RETRY);
+
+  if (pipe_fd) (*pipe_fd) = p_zmq_get_fd(zmq_host);
+}
+#endif

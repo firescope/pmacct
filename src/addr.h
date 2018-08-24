@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2015 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -35,14 +35,18 @@
 #endif
 EXT unsigned int str_to_addr(const char *, struct host_addr *);
 EXT unsigned int addr_to_str(char *, const struct host_addr *);
+EXT unsigned int addr_mask_to_str(char *, int, const struct host_addr *, const struct host_mask *);
 EXT unsigned int str_to_addr_mask(const char *, struct host_addr *, struct host_mask *);
 EXT unsigned int addr_to_sa(struct sockaddr *, struct host_addr *, u_int16_t);
 EXT unsigned int sa_to_addr(struct sockaddr *, struct host_addr *, u_int16_t *);
 EXT int sa_addr_cmp(struct sockaddr *, struct host_addr *);
 EXT int sa_port_cmp(struct sockaddr *, u_int16_t);
+EXT int host_addr_cmp(struct host_addr *, struct host_addr *);
 EXT int host_addr_mask_sa_cmp(struct host_addr *, struct host_mask *, struct sockaddr *);
-EXT unsigned int raw_to_sa(struct sockaddr *, char *, u_int8_t);
-EXT unsigned int sa_to_str(char *, const struct sockaddr *);
+EXT int host_addr_mask_cmp(struct host_addr *, struct host_mask *, struct host_addr *);
+EXT unsigned int raw_to_sa(struct sockaddr *, char *, u_int16_t port, u_int8_t);
+EXT unsigned int raw_to_addr(struct host_addr *, char *, u_int8_t);
+EXT unsigned int sa_to_str(char *, int, const struct sockaddr *);
 EXT void *pm_htonl6(void *);
 EXT void *pm_ntohl6(void *);
 EXT u_int64_t pm_htonll(u_int64_t);
@@ -56,8 +60,14 @@ EXT int is_multicast(struct host_addr *);
 EXT int is_any(struct host_addr *);
 EXT void clean_sin_addr(struct sockaddr *);
 EXT unsigned int label_to_addr(const char *, struct host_addr *, int);
+EXT u_int8_t etype_to_af(u_int16_t);
+EXT u_int16_t af_to_etype(u_int8_t);
+EXT u_int32_t addr_hash(struct host_addr *, u_int32_t);
+EXT u_int32_t addr_port_hash(struct host_addr *, u_int16_t, u_int32_t);
+EXT u_int16_t sa_has_family(struct sockaddr *);
 
 #if defined ENABLE_IPV6
+EXT void ipv4_to_ipv4_mapped(struct sockaddr_storage *);
 EXT void ipv4_mapped_to_ipv4(struct sockaddr_storage *);
 #endif
 

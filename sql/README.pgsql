@@ -70,7 +70,12 @@ CHAR fields because making use of IP prefix labels, transparently to pmacct.
 - To understand difference between the various BGP table versions:
   * Only BGP table v1 is currently available.
 
-- Aggregation primitives to SQL schema mapping:
+- Aggregation primitives to SQL schema mapping. Although default schemas
+  come all with "NOT NULL", this is optional and depending on the scenario:
+  for example, if mixed L2 (containing L2 only info) and L3 (containing L2
+  and L3 info) flows are collected, maybe L3-related fields like src_host
+  or dst_host are best defined without the "NOT NULL" constraint.
+
   Aggregation primitive => SQL table field
   * tag => agent_id (BIGINT NOT NULL DEFAULT 0)
     - or tag => tag (BIGINT NOT NULL DEFAULT 0, if sql_table_version >= 9)
@@ -107,8 +112,12 @@ CHAR fields because making use of IP prefix labels, transparently to pmacct.
   * dst_host_country => country_ip_dst (CHAR (2) NOT NULL DEFAULT '--', see README.GeoIP)
   * src_host_pocode => pocode_ip_src (CHAR (12) NOT NULL DEFAULT ' ', see README.GeoIP)
   * dst_host_pocode => pocode_ip_dst (CHAR (12) NOT NULL DEFAULT ' ', see README.GeoIP)
-  * sampling_rate => sampling_rate (BIGINT NOT NULL DEFAULT 0, see README.sampling_rate)
-  * pkt_len_distrib => pkt_len_distrib (CHAR(10) NOT NULL DEFAULT ' ', see README.pkt_len_distrib)
+  * src_host_coords => lat_ip_src (REAL NOT NULL DEFAULT 0, see README.GeoIP)
+  * src_host_coords => lon_ip_src (REAL NOT NULL DEFAULT 0, see README.GeoIP)
+  * dst_host_coords => lat_ip_dst (REAL NOT NULL DEFAULT 0, see README.GeoIP)
+  * dst_host_coords => lon_ip_dst (REAL NOT NULL DEFAULT 0, see README.GeoIP)
+  * sampling_rate => sampling_rate (BIGINT NOT NULL DEFAULT 0, see README.sampling)
+  * sampling_direction => sampling_direction (CHAR (1) NOT NULL DEFAULT ' ', see README.sampling)
   * class => class_id (CHAR(16) NOT NOT NULL DEFAULT ' ')
   * src_mac => mac_src (macaddr NOT NULL DEFAULT '0:0:0:0:0:0')
   * dst_mac => mac_dst (macaddr NOT NULL DEFAULT '0:0:0:0:0:0')
@@ -117,10 +126,8 @@ CHAR fields because making use of IP prefix labels, transparently to pmacct.
   * dst_as => as_dst (BIGINT NOT NULL DEFAULT 0)
   * src_host => ip_src (inet NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
   * dst_host => ip_dst (inet NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
-  * src_net => ip_src (inet NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
-    - or src_net => net_src (same definition, if tmp_net_own_field: true)
-  * dst_net => ip_dst (inet NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
-    - or dst_net => net_dst (same definition, if tmp_net_own_field: true)
+  * src_net => net_src (inet NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
+  * dst_net => net_dst (inet NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
   * src_port => port_src (INT NOT NULL DEFAULT 0)
   * dst_port => port_dst (INT NOT NULL DEFAULT 0)
   * tcpflags => tcp_flags (SMALLINT NOT NULL DEFAULT 0)
@@ -153,6 +160,9 @@ CHAR fields because making use of IP prefix labels, transparently to pmacct.
   * timestamp_max => timestamp_max, timestamp_max_residual:
     - timestamp_max timestamp without time zone NOT NULL DEFAULT '0000-01-01 00:00:00', see README.timestamp)
     - timestamp_max_residual INT NOT NULL DEFAULT 0, see README.timestamp)
+  * export_proto_seqno => export_proto_seqno (INT NOT NULL DEFAULT 0, see README.export_proto)
+  * export_proto_version => export_proto_version (SMALLINT NOT NULL DEFAULT 0, see README.export_proto)
+  * export_proto_sysid => export_proto_sysid (INT NOT NULL DEFAULT 0, see README.export_proto)
 
 - If not using COPY statements (sql_use_copy, sql_dont_try_update both enabled)
   'packets' and 'bytes' counters need to be defined as part of the SQL schema
@@ -184,14 +194,10 @@ in looking up protocol names by their number and viceversa. Because joins are ex
 'proto' table has been created *only* for your personal reference. 
 
 NOTE: mind to specify EVERYTIME which SQL table version you
-intend to adhere to by using either of the following rules:
+intend to adhere to by using the following config directives:
 
-When using commandline options:
-  * -v [ 1 | 2 | 3 | 4 | 5 | 6 | 7 ]
-
-When using configuration directives:
-  * sql_table_version: [ 1 | 2 | 3 | 4 | 5 | 6 | 7 ]
-  * sql_table_type: [ bgp ]
+* sql_table_version: [ 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 ]
+* sql_table_type: [ bgp ]
 
 NOTE: specifying a non-documented SQL table profile will result
 in an non-determined behaviour. Unless this will create crashes

@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -34,6 +34,9 @@
 #include "classifier.h"
 #include "crc32.h"
 #include "bgp/bgp.h"
+#if defined (WITH_NDPI)
+#include "ndpi/ndpi.h"
+#endif
 
 /* Functions */
 void print_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr) 
@@ -43,8 +46,7 @@ void print_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   unsigned char *pipebuf;
   struct pollfd pfd;
   struct insert_data idata;
-  time_t t;
-  int timeout, refresh_timeout, amqp_timeout, kafka_timeout, ret, num, is_event;
+  int refresh_timeout, ret, num, is_event, recv_budget, poll_bypass;
   struct ring *rg = &((struct channels_list_entry *)ptr)->rg;
   struct ch_status *status = ((struct channels_list_entry *)ptr)->status;
   struct plugins_list_entry *plugin_data = ((struct channels_list_entry *)ptr)->plugin;
@@ -52,7 +54,7 @@ void print_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   u_int32_t bufsz = ((struct channels_list_entry *)ptr)->bufsize;
   pid_t core_pid = ((struct channels_list_entry *)ptr)->core_pid;
   struct networks_file_data nfd;
-  char default_separator[] = ",";
+  char default_sep[] = ",", spacing_sep[2];
 
   unsigned char *rgptr;
   int pollagain = TRUE;
@@ -61,14 +63,11 @@ void print_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   struct extra_primitives extras;
   struct primitives_ptrs prim_ptrs;
   char *dataptr;
-  void *kafka_msg;
 
-#ifdef WITH_RABBITMQ
-  struct p_amqp_host *amqp_host = &((struct channels_list_entry *)ptr)->amqp_host;
-#endif
-
-#ifdef WITH_KAFKA
-  struct p_kafka_host *kafka_host = &((struct channels_list_entry *)ptr)->kafka_host;
+#ifdef WITH_ZMQ
+  struct p_zmq_host *zmq_host = &((struct channels_list_entry *)ptr)->zmq_host;
+#else
+  void *zmq_host = NULL;
 #endif
 
   memcpy(&config, cfgptr, sizeof(struct configuration));
@@ -119,32 +118,12 @@ void print_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   set_net_funcs(&nt);
 
   if (config.ports_file) load_ports(config.ports_file, &pt);
-  if (config.pkt_len_distrib_bins_str) load_pkt_len_distrib_bins();
-  else {
-    if (config.what_to_count_2 & COUNT_PKT_LEN_DISTRIB) {
-      Log(LOG_ERR, "ERROR ( %s/%s ): 'aggregate' contains pkt_len_distrib but no 'pkt_len_distrib_bins' defined. Exiting.\n", config.name, config.type);
-      exit_plugin(1);
-    }
-  }
 
   memset(&idata, 0, sizeof(idata));
   memset(&prim_ptrs, 0, sizeof(prim_ptrs));
   set_primptrs_funcs(&extras);
 
-  if (config.pipe_amqp) {
-    plugin_pipe_amqp_compile_check();
-#ifdef WITH_RABBITMQ
-    pipe_fd = plugin_pipe_amqp_connect_to_consume(amqp_host, plugin_data);
-    amqp_timeout = plugin_pipe_set_retry_timeout(&amqp_host->btimers, pipe_fd);
-#endif
-  }
-  else if (config.pipe_kafka) {
-    plugin_pipe_kafka_compile_check();
-#ifdef WITH_KAFKA
-    pipe_fd = plugin_pipe_kafka_connect_to_consume(kafka_host, plugin_data);
-    kafka_timeout = plugin_pipe_set_retry_timeout(&kafka_host->btimers, pipe_fd);
-#endif
-  }
+  if (config.pipe_zmq) P_zmq_pipe_init(zmq_host, &pipe_fd, &seq);
   else setnonblocking(pipe_fd);
 
   idata.now = time(NULL);
@@ -164,7 +143,20 @@ void print_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   /* setting number of entries in _protocols structure */
   while (_protocols[protocols_number].number != -1) protocols_number++;
 
-  if (!config.print_output_separator) config.print_output_separator = default_separator;
+  if (!config.print_output_separator) config.print_output_separator = default_sep;
+  else {
+    if (!strcmp(config.print_output_separator, "\\s")) {
+      spacing_sep[0] = ' ';
+      spacing_sep[1] = '\0';
+      config.print_output_separator = spacing_sep;
+    }
+
+    if (!strcmp(config.print_output_separator, "\\t")) {
+      spacing_sep[0] = '\t';
+      spacing_sep[1] = '\0';
+      config.print_output_separator = spacing_sep;
+    }
+  }
 
   if (extras.off_pkt_vlen_hdr_primitives && config.print_output & PRINT_OUTPUT_FORMATTED) {
     Log(LOG_ERR, "ERROR ( %s/%s ): variable-length primitives, ie. label as_path std_comm etc., are not supported in print plugin with formatted output.\n", config.name, config.type);
@@ -177,10 +169,15 @@ void print_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
     Log(LOG_WARNING, "WARN ( %s/%s ): no print_output_file and no print_output_lock_file defined.\n", config.name, config.type);
 
   if (config.sql_table) {
-    if (strchr(config.sql_table, '%') || strchr(config.sql_table, '$'))
+    if (strchr(config.sql_table, '%') || strchr(config.sql_table, '$')) {
       dyn_table = TRUE;
+
+      if (!have_dynname_nontime(config.sql_table)) dyn_table_time_only = TRUE;
+      else dyn_table_time_only = FALSE;
+    }
     else {
       dyn_table = FALSE;
+      dyn_table_time_only = FALSE;
     
       if (config.print_latest_file && (strchr(config.print_latest_file, '%') || strchr(config.print_latest_file, '$'))) {
         Log(LOG_WARNING, "WARN ( %s/%s ): Disabling print_latest_file due to non-dynamic print_output_file.\n", config.name, config.type); 
@@ -193,24 +190,16 @@ void print_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   for(;;) {
     poll_again:
     status->wakeup = TRUE;
+    poll_bypass = FALSE;
     calc_refresh_timeout(refresh_deadline, idata.now, &refresh_timeout);
     
     pfd.fd = pipe_fd;
     pfd.events = POLLIN;
 
-    if (config.pipe_homegrown || config.pipe_amqp) {
-      timeout = MIN(refresh_timeout, (amqp_timeout ? amqp_timeout : INT_MAX));
-      ret = poll(&pfd, (pfd.fd == ERR ? 0 : 1), timeout);
-    }
-#ifdef WITH_KAFKA
-    else if (config.pipe_kafka) {
-      timeout = MIN(refresh_timeout, (kafka_timeout ? kafka_timeout : INT_MAX)); 
-      ret = p_kafka_consume_poller(kafka_host, &kafka_msg, timeout);
-    }
-#endif
+    ret = poll(&pfd, (pfd.fd == ERR ? 0 : 1), refresh_timeout);
 
     if (ret <= 0) {
-      if (getppid() == 1) {
+      if (getppid() != core_pid) {
         Log(LOG_ERR, "ERROR ( %s/%s ): Core process *seems* gone. Exiting.\n", config.name, config.type);
         exit_plugin(1);
       }
@@ -218,49 +207,33 @@ void print_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       if (ret < 0) goto poll_again;
     }
 
-    idata.now = time(NULL);
+    poll_ops:
+    P_update_time_reference(&idata);
 
-    if (config.sql_history) {
-      while (idata.now > (basetime.tv_sec + timeslot)) {
-	new_basetime.tv_sec = basetime.tv_sec;
-        basetime.tv_sec += timeslot;
-        if (config.sql_history == COUNT_MONTHLY)
-          timeslot = calc_monthly_timeslot(basetime.tv_sec, config.sql_history_howmany, ADD);
-      }
+    if (idata.now > refresh_deadline) {
+      int saved_qq_ptr;
+
+      saved_qq_ptr = qq_ptr;
+      P_cache_handle_flush_event(&pt);
+      if (saved_qq_ptr) print_output_stdout_header = FALSE;
     }
 
-#ifdef WITH_RABBITMQ
-    if (config.pipe_amqp && pipe_fd == ERR) {
-      if (timeout == amqp_timeout) {
-        pipe_fd = plugin_pipe_amqp_connect_to_consume(amqp_host, plugin_data);
-        amqp_timeout = plugin_pipe_set_retry_timeout(&amqp_host->btimers, pipe_fd);
-      }
-      else amqp_timeout = plugin_pipe_calc_retry_timeout_diff(&amqp_host->btimers, idata.now); 
+    recv_budget = 0;
+    if (poll_bypass) {
+      poll_bypass = FALSE;
+      goto read_data;
     }
-#endif
-
-#ifdef WITH_KAFKA
-    if (config.pipe_kafka && pipe_fd == ERR) {
-      if (timeout == kafka_timeout) {
-        pipe_fd = plugin_pipe_kafka_connect_to_consume(kafka_host, plugin_data);
-        kafka_timeout = plugin_pipe_set_retry_timeout(&kafka_host->btimers, pipe_fd);
-      }
-      else kafka_timeout = plugin_pipe_calc_retry_timeout_diff(&kafka_host->btimers, idata.now);
-    }
-#endif
 
     switch (ret) {
     case 0: /* timeout */
-      if (timeout == refresh_timeout) {
-	int saved_qq_ptr;
-
-	saved_qq_ptr = qq_ptr;
-	P_cache_handle_flush_event(&pt);
-	if (saved_qq_ptr) print_output_stdout_header = FALSE;
-      }
       break;
     default: /* we received data */
       read_data:
+      if (recv_budget == DEFAULT_PLUGIN_COMMON_RECV_BUDGET) {
+	poll_bypass = TRUE;
+	goto poll_ops;
+      }
+
       if (config.pipe_homegrown) {
         if (!pollagain) {
           seq++;
@@ -297,42 +270,28 @@ void print_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
         memcpy(pipebuf, rg->ptr, bufsz);
         rg->ptr += bufsz;
       }
-#ifdef WITH_RABBITMQ
-      else if (config.pipe_amqp) {
-        ret = p_amqp_consume_binary(amqp_host, pipebuf, config.buffer_size);
-	if (ret) pipe_fd = ERR;
+#ifdef WITH_ZMQ
+      else if (config.pipe_zmq) {
+	ret = p_zmq_topic_recv(zmq_host, pipebuf, config.buffer_size);
+	if (ret > 0) {
+	  if (seq && (((struct ch_buf_hdr *)pipebuf)->seq != ((seq + 1) % MAX_SEQNUM))) {
+	    Log(LOG_WARNING, "WARN ( %s/%s ): Missing data detected. Sequence received=%u expected=%u\n",
+		config.name, config.type, ((struct ch_buf_hdr *)pipebuf)->seq, ((seq + 1) % MAX_SEQNUM));
+	  } 
 
-	seq = ((struct ch_buf_hdr *)pipebuf)->seq;
-	amqp_timeout = plugin_pipe_set_retry_timeout(&amqp_host->btimers, pipe_fd);
+	  seq = ((struct ch_buf_hdr *)pipebuf)->seq;
+	}
+	else goto poll_again;
       }
 #endif
-#ifdef WITH_KAFKA
-      else if (config.pipe_kafka) {
-        ret = p_kafka_consume_data(kafka_host, kafka_msg, pipebuf, config.buffer_size);
-        if (ret) pipe_fd = ERR;
-
-        seq = ((struct ch_buf_hdr *)pipebuf)->seq;
-        kafka_timeout = plugin_pipe_set_retry_timeout(&kafka_host->btimers, pipe_fd);
-      }
-#endif
-
-      /* lazy refresh time handling */ 
-      if (idata.now > refresh_deadline) {
-	int saved_qq_ptr;
-
-	saved_qq_ptr = qq_ptr;
-	P_cache_handle_flush_event(&pt);
-	if (saved_qq_ptr) print_output_stdout_header = FALSE;
-      }
 
       data = (struct pkt_data *) (pipebuf+sizeof(struct ch_buf_hdr));
 
       if (config.debug_internal_msg) 
-        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received cpid=%u len=%llu seq=%u num_entries=%u\n",
-                config.name, config.type, core_pid, ((struct ch_buf_hdr *)pipebuf)->len,
-                seq, ((struct ch_buf_hdr *)pipebuf)->num);
+        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received len=%llu seq=%u num_entries=%u\n",
+                config.name, config.type, ((struct ch_buf_hdr *)pipebuf)->len, seq,
+                ((struct ch_buf_hdr *)pipebuf)->num);
 
-      if (!config.pipe_check_core_pid || ((struct ch_buf_hdr *)pipebuf)->core_pid == core_pid) {
       while (((struct ch_buf_hdr *)pipebuf)->num > 0) {
 	for (num = 0; primptrs_funcs[num]; num++)
 	  (*primptrs_funcs[num])((u_char *)data, &extras, &prim_ptrs);
@@ -345,10 +304,6 @@ void print_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
           if (!pt.table[data->primitives.dst_port]) data->primitives.dst_port = 0;
         }
 
-        if (config.pkt_len_distrib_bins_str &&
-            config.what_to_count_2 & COUNT_PKT_LEN_DISTRIB)
-          evaluate_pkt_len_distrib(data);
-
         prim_ptrs.data = data;
         (*insert_func)(&prim_ptrs, &idata);
 
@@ -360,9 +315,9 @@ void print_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
           data = (struct pkt_data *) dataptr;
 	}
       }
-      }
 
-      if (config.pipe_homegrown) goto read_data;
+      recv_budget++;
+      goto read_data;
     }
   }
 }
@@ -383,12 +338,12 @@ void P_cache_purge(struct chained_cache *queue[], int index, int safe_action)
   char *empty_pcust = NULL;
   char src_mac[18], dst_mac[18], src_host[INET6_ADDRSTRLEN], dst_host[INET6_ADDRSTRLEN], ip_address[INET6_ADDRSTRLEN];
   char rd_str[SRVBUFLEN], *sep = config.print_output_separator, *fd_buf;
-  char *as_path, *bgp_comm, empty_string[] = "", empty_aspath[] = "^$", empty_ip4[] = "0.0.0.0", empty_ip6[] = "::";
-  char empty_macaddress[] = "00:00:00:00:00:00", empty_rd[] = "0:0";
+  char *as_path, *bgp_comm, empty_string[] = "", empty_ip4[] = "0.0.0.0", empty_ip6[] = "::";
+  char empty_macaddress[] = "00:00:00:00:00:00", empty_rd[] = "0:0", ndpi_class[SUPERSHORTBUFLEN];
   FILE *f = NULL, *lockf = NULL;
   int j, stop, is_event = FALSE, qn = 0, go_to_pending, saved_index = index, file_to_be_created;
   time_t start, duration;
-  char tmpbuf[LONGLONGSRVBUFLEN], current_table[SRVBUFLEN], elem_table[SRVBUFLEN];
+  char tmpbuf[SRVBUFLEN], current_table[SRVBUFLEN], elem_table[SRVBUFLEN];
   struct primitives_ptrs prim_ptrs, elem_prim_ptrs;
   struct pkt_data dummy_data, elem_dummy_data;
   pid_t writer_pid = getpid();
@@ -439,17 +394,15 @@ void P_cache_purge(struct chained_cache *queue[], int index, int safe_action)
   if (config.sql_table) {
     time_t stamp = 0;
 
-    strlcpy(current_table, config.sql_table, SRVBUFLEN);
-
     if (dyn_table) {
       stamp = queue[0]->basetime.tv_sec;
-
       prim_ptrs.data = &dummy_data;
       primptrs_set_all_from_chained_cache(&prim_ptrs, queue[0]);
 
-      handle_dynname_internal_strings_same(tmpbuf, LONGSRVBUFLEN, current_table, &prim_ptrs);
-      strftime_same(current_table, LONGSRVBUFLEN, tmpbuf, &stamp);
+      handle_dynname_internal_strings(current_table, SRVBUFLEN, config.sql_table, &prim_ptrs, DYN_STR_PRINT_FILE);
+      pm_strftime_same(current_table, SRVBUFLEN, tmpbuf, &stamp, config.timestamps_utc);
     }
+    else strlcpy(current_table, config.sql_table, SRVBUFLEN);
 
     if (config.print_output & PRINT_OUTPUT_AVRO) {
       int file_is_empty, ret;
@@ -481,13 +434,13 @@ void P_cache_purge(struct chained_cache *queue[], int index, int safe_action)
         f = open_output_file(current_table, "w", TRUE);
     }
 
-    if (!(config.print_output & PRINT_OUTPUT_AVRO) && fd_buf) {
-      if (setvbuf(f, fd_buf, _IOFBF, OUTPUT_FILE_BUFSZ))
-        Log(LOG_WARNING, "WARN ( %s/%s ): [%s] setvbuf() failed: %s\n", config.name, config.type, current_table, errno);
-      else memset(fd_buf, 0, OUTPUT_FILE_BUFSZ);
-    }
-
     if (f) {
+      if (!(config.print_output & PRINT_OUTPUT_AVRO) && fd_buf) {
+        if (setvbuf(f, fd_buf, _IOFBF, OUTPUT_FILE_BUFSZ))
+          Log(LOG_WARNING, "WARN ( %s/%s ): [%s] setvbuf() failed: %s\n", config.name, config.type, current_table, errno);
+        else memset(fd_buf, 0, OUTPUT_FILE_BUFSZ);
+      }
+
       if (config.print_markers) {
 	if ((config.print_output & PRINT_OUTPUT_CSV) || (config.print_output & PRINT_OUTPUT_FORMATTED))
 	  fprintf(f, "--START (%u)--\n", writer_pid);
@@ -542,17 +495,15 @@ void P_cache_purge(struct chained_cache *queue[], int index, int safe_action)
 
     if (queue[j]->valid != PRINT_CACHE_COMMITTED) continue;
 
-    if (dyn_table) {
+    if (dyn_table && (!dyn_table_time_only || !config.nfacctd_time_new)) {
       time_t stamp = 0;
 
-      memset(tmpbuf, 0, LONGLONGSRVBUFLEN); // XXX: pedantic?
       stamp = queue[j]->basetime.tv_sec;
-      strlcpy(elem_table, config.sql_table, SRVBUFLEN);
-
       elem_prim_ptrs.data = &elem_dummy_data;
       primptrs_set_all_from_chained_cache(&elem_prim_ptrs, queue[j]);
-      handle_dynname_internal_strings_same(tmpbuf, LONGSRVBUFLEN, elem_table, &elem_prim_ptrs);
-      strftime_same(elem_table, LONGSRVBUFLEN, tmpbuf, &stamp);
+
+      handle_dynname_internal_strings(elem_table, SRVBUFLEN, config.sql_table, &elem_prim_ptrs, DYN_STR_PRINT_FILE);
+      pm_strftime_same(elem_table, SRVBUFLEN, tmpbuf, &stamp, config.timestamps_utc);
 
       if (strncmp(current_table, elem_table, SRVBUFLEN)) {
         pending_queries_queue[pqq_ptr] = queue[j];
@@ -563,7 +514,7 @@ void P_cache_purge(struct chained_cache *queue[], int index, int safe_action)
     }
 
     if (!go_to_pending) {
-      qn++;
+      if (f) qn++;
 
       data = &queue[j]->primitives;
       if (queue[j]->pbgp) pbgp = queue[j]->pbgp;
@@ -590,7 +541,15 @@ void P_cache_purge(struct chained_cache *queue[], int index, int safe_action)
         if (config.what_to_count & COUNT_TAG) fprintf(f, "%-10llu  ", data->tag);
         if (config.what_to_count & COUNT_TAG2) fprintf(f, "%-10llu  ", data->tag2);
         if (config.what_to_count & COUNT_CLASS) fprintf(f, "%-16s  ", ((data->class && class[(data->class)-1].id) ? class[(data->class)-1].protocol : "unknown" ));
-  #if defined (HAVE_L2)
+  #if defined (WITH_NDPI)
+	if (config.what_to_count_2 & COUNT_NDPI_CLASS) {
+	  snprintf(ndpi_class, SUPERSHORTBUFLEN, "%s/%s",
+		ndpi_get_proto_name(pm_ndpi_wfl->ndpi_struct, data->ndpi_class.master_protocol),
+		ndpi_get_proto_name(pm_ndpi_wfl->ndpi_struct, data->ndpi_class.app_protocol));
+	  fprintf(f, "%-16s  ", ndpi_class);
+	}
+  #endif
+  #if defined HAVE_L2
         if (config.what_to_count & (COUNT_SRC_MAC|COUNT_SUM_MAC)) {
           etheraddr_string(data->eth_shost, src_mac);
   	if (strlen(src_mac))
@@ -744,10 +703,18 @@ void P_cache_purge(struct chained_cache *queue[], int index, int safe_action)
         if (config.what_to_count_2 & COUNT_DST_HOST_COUNTRY) fprintf(f, "%-5s       ", data->dst_ip_country.str);
         if (config.what_to_count_2 & COUNT_SRC_HOST_POCODE) fprintf(f, "%-12s  ", data->src_ip_pocode.str);
         if (config.what_to_count_2 & COUNT_DST_HOST_POCODE) fprintf(f, "%-12s  ", data->dst_ip_pocode.str);
+        if (config.what_to_count_2 & COUNT_SRC_HOST_COORDS) {
+          fprintf(f, "%-8f  ", data->src_ip_lat);
+          fprintf(f, "%-8f  ", data->src_ip_lon);
+        }
+        if (config.what_to_count_2 & COUNT_DST_HOST_COORDS) {
+          fprintf(f, "%-8f  ", data->dst_ip_lat);
+          fprintf(f, "%-8f  ", data->dst_ip_lon);
+        }
   #endif
   
         if (config.what_to_count_2 & COUNT_SAMPLING_RATE) fprintf(f, "%-7u       ", data->sampling_rate);
-        if (config.what_to_count_2 & COUNT_PKT_LEN_DISTRIB) fprintf(f, "%-10s      ", config.pkt_len_distrib_bins[data->pkt_len_distrib]);
+        if (config.what_to_count_2 & COUNT_SAMPLING_DIRECTION) fprintf(f, "%-1s                   ", data->sampling_direction);
   
         if (config.what_to_count_2 & COUNT_POST_NAT_SRC_HOST) {
           addr_to_str(ip_address, &pnat->post_nat_src_ip);
@@ -837,88 +804,54 @@ void P_cache_purge(struct chained_cache *queue[], int index, int safe_action)
 	if (config.what_to_count_2 & COUNT_TUNNEL_IP_TOS) fprintf(f, "%-3u         ", ptun->tunnel_tos);
   
         if (config.what_to_count_2 & COUNT_TIMESTAMP_START) {
-          char buf1[SRVBUFLEN], buf2[SRVBUFLEN];
-          time_t time1;
-          struct tm *time2;
-  
-          if (config.timestamps_since_epoch) {
-	    snprintf(buf2, SRVBUFLEN, "%u.%u", pnat->timestamp_start.tv_sec, pnat->timestamp_start.tv_usec);
-	  }
-	  else {
-            time1 = pnat->timestamp_start.tv_sec;
-            time2 = localtime(&time1);
-            strftime(buf1, SRVBUFLEN, "%Y-%m-%d %H:%M:%S", time2);
-            snprintf(buf2, SRVBUFLEN, "%s.%u", buf1, pnat->timestamp_start.tv_usec);
-	  }
+	  char tstamp_str[VERYSHORTBUFLEN];
 
-          fprintf(f, "%-30s ", buf2);
+	  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &pnat->timestamp_start, TRUE,
+			    config.timestamps_since_epoch, config.timestamps_rfc3339,
+			    config.timestamps_utc);
+
+          fprintf(f, "%-30s ", tstamp_str);
         }
   
         if (config.what_to_count_2 & COUNT_TIMESTAMP_END) {
-          char buf1[SRVBUFLEN], buf2[SRVBUFLEN];
-          time_t time1;
-          struct tm *time2;
-        
-          if (config.timestamps_since_epoch) {
-            snprintf(buf2, SRVBUFLEN, "%u.%u", pnat->timestamp_end.tv_sec, pnat->timestamp_end.tv_usec);
-          }
-          else {
-            time1 = pnat->timestamp_end.tv_sec;
-            time2 = localtime(&time1);
-            strftime(buf1, SRVBUFLEN, "%Y-%m-%d %H:%M:%S", time2);
-            snprintf(buf2, SRVBUFLEN, "%s.%u", buf1, pnat->timestamp_end.tv_usec);
-	  }
+	  char tstamp_str[VERYSHORTBUFLEN];
 
-          fprintf(f, "%-30s ", buf2);
+	  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &pnat->timestamp_end, TRUE,
+			    config.timestamps_since_epoch, config.timestamps_rfc3339,
+			    config.timestamps_utc);
+
+          fprintf(f, "%-30s ", tstamp_str);
         }
 
         if (config.what_to_count_2 & COUNT_TIMESTAMP_ARRIVAL) {
-          char buf1[SRVBUFLEN], buf2[SRVBUFLEN];
-          time_t time1;
-          struct tm *time2;
+	  char tstamp_str[VERYSHORTBUFLEN];
 
-          if (config.timestamps_since_epoch) {
-            snprintf(buf2, SRVBUFLEN, "%u.%u", pnat->timestamp_arrival.tv_sec, pnat->timestamp_arrival.tv_usec);
-          }
-          else {
-            time1 = pnat->timestamp_arrival.tv_sec;
-            time2 = localtime(&time1);
-            strftime(buf1, SRVBUFLEN, "%Y-%m-%d %H:%M:%S", time2);
-            snprintf(buf2, SRVBUFLEN, "%s.%u", buf1, pnat->timestamp_arrival.tv_usec);
-          }
+	  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &pnat->timestamp_arrival, TRUE,
+			    config.timestamps_since_epoch, config.timestamps_rfc3339,
+			    config.timestamps_utc);
 
-          fprintf(f, "%-30s ", buf2);
+          fprintf(f, "%-30s ", tstamp_str);
         }
 
         if (config.nfacctd_stitching && queue[j]->stitch) {
-          char buf1[SRVBUFLEN], buf2[SRVBUFLEN];
-          time_t time1;
-          struct tm *time2;
+	  char tstamp_str[VERYSHORTBUFLEN];
 
-          if (config.timestamps_since_epoch) {
-            snprintf(buf2, SRVBUFLEN, "%u.%u", queue[j]->stitch->timestamp_min.tv_sec, queue[j]->stitch->timestamp_min.tv_usec);
-            fprintf(f, "%-30s ", buf2);
+	  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &queue[j]->stitch->timestamp_min, TRUE,
+			    config.timestamps_since_epoch, config.timestamps_rfc3339,
+			    config.timestamps_utc);
 
-            snprintf(buf2, SRVBUFLEN, "%u.%u", queue[j]->stitch->timestamp_max.tv_sec, queue[j]->stitch->timestamp_max.tv_usec);
-            fprintf(f, "%-30s ", buf2);
-          }
-          else {
-	    time1 = queue[j]->stitch->timestamp_min.tv_sec;
-            time2 = localtime(&time1);
-            strftime(buf1, SRVBUFLEN, "%Y-%m-%d %H:%M:%S", time2);
-            snprintf(buf2, SRVBUFLEN, "%s.%u", buf1, queue[j]->stitch->timestamp_min.tv_usec);
-            fprintf(f, "%-30s ", buf2);
+          fprintf(f, "%-30s ", tstamp_str);
 
-            time1 = queue[j]->stitch->timestamp_max.tv_sec;
-            time2 = localtime(&time1);
-            strftime(buf1, SRVBUFLEN, "%Y-%m-%d %H:%M:%S", time2);
-            snprintf(buf2, SRVBUFLEN, "%s.%u", buf1, queue[j]->stitch->timestamp_max.tv_usec);
-            fprintf(f, "%-30s ", buf2);
-	  }
+	  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &queue[j]->stitch->timestamp_max, TRUE,
+			    config.timestamps_since_epoch, config.timestamps_rfc3339,
+			    config.timestamps_utc);
+
+          fprintf(f, "%-30s ", tstamp_str);
         }
 
         if (config.what_to_count_2 & COUNT_EXPORT_PROTO_SEQNO) fprintf(f, "%-18u  ", data->export_proto_seqno);
         if (config.what_to_count_2 & COUNT_EXPORT_PROTO_VERSION) fprintf(f, "%-20u  ", data->export_proto_version);
+        if (config.what_to_count_2 & COUNT_EXPORT_PROTO_SYSID) fprintf(f, "%-18u  ", data->export_proto_sysid);
 
         /* all custom primitives printed here */
         {
@@ -960,6 +893,14 @@ void P_cache_purge(struct chained_cache *queue[], int index, int safe_action)
         if (config.what_to_count & COUNT_TAG2) fprintf(f, "%s%llu", write_sep(sep, &count), data->tag2);
 	if (config.what_to_count_2 & COUNT_LABEL) P_fprintf_csv_string(f, pvlen, COUNT_INT_LABEL, write_sep(sep, &count), empty_string);
         if (config.what_to_count & COUNT_CLASS) fprintf(f, "%s%s", write_sep(sep, &count), ((data->class && class[(data->class)-1].id) ? class[(data->class)-1].protocol : "unknown" ));
+  #if defined (WITH_NDPI)
+        if (config.what_to_count_2 & COUNT_NDPI_CLASS) {
+	  snprintf(ndpi_class, SUPERSHORTBUFLEN, "%s/%s",
+		ndpi_get_proto_name(pm_ndpi_wfl->ndpi_struct, data->ndpi_class.master_protocol),
+		ndpi_get_proto_name(pm_ndpi_wfl->ndpi_struct, data->ndpi_class.app_protocol));
+	  fprintf(f, "%s%s", write_sep(sep, &count), ndpi_class);
+	}
+  #endif
   #if defined (HAVE_L2)
         if (config.what_to_count & (COUNT_SRC_MAC|COUNT_SUM_MAC)) {
           etheraddr_string(data->eth_shost, src_mac);
@@ -1167,10 +1108,18 @@ void P_cache_purge(struct chained_cache *queue[], int index, int safe_action)
         if (config.what_to_count_2 & COUNT_DST_HOST_COUNTRY) fprintf(f, "%s%s", write_sep(sep, &count), data->dst_ip_country.str);
         if (config.what_to_count_2 & COUNT_SRC_HOST_POCODE) fprintf(f, "%s%s", write_sep(sep, &count), data->src_ip_pocode.str);
         if (config.what_to_count_2 & COUNT_DST_HOST_POCODE) fprintf(f, "%s%s", write_sep(sep, &count), data->dst_ip_pocode.str);
+        if (config.what_to_count_2 & COUNT_SRC_HOST_COORDS) {
+          fprintf(f, "%s%f", write_sep(sep, &count), data->src_ip_lat);
+          fprintf(f, "%s%f", write_sep(sep, &count), data->src_ip_lon);
+        }
+        if (config.what_to_count_2 & COUNT_DST_HOST_COORDS) {
+          fprintf(f, "%s%f", write_sep(sep, &count), data->dst_ip_lat);
+          fprintf(f, "%s%f", write_sep(sep, &count), data->dst_ip_lon);
+        }
   #endif
   
         if (config.what_to_count_2 & COUNT_SAMPLING_RATE) fprintf(f, "%s%u", write_sep(sep, &count), data->sampling_rate);
-        if (config.what_to_count_2 & COUNT_PKT_LEN_DISTRIB) fprintf(f, "%s%s", write_sep(sep, &count), config.pkt_len_distrib_bins[data->pkt_len_distrib]);
+        if (config.what_to_count_2 & COUNT_SAMPLING_DIRECTION) fprintf(f, "%s%s", write_sep(sep, &count), data->sampling_direction);
   
         if (config.what_to_count_2 & COUNT_POST_NAT_SRC_HOST) {
           addr_to_str(src_host, &pnat->post_nat_src_ip);
@@ -1207,88 +1156,54 @@ void P_cache_purge(struct chained_cache *queue[], int index, int safe_action)
 	if (config.what_to_count_2 & COUNT_TUNNEL_IP_TOS) fprintf(f, "%s%u", write_sep(sep, &count), ptun->tunnel_tos);
   
         if (config.what_to_count_2 & COUNT_TIMESTAMP_START) {
-          char buf1[SRVBUFLEN], buf2[SRVBUFLEN];
-          time_t time1;
-          struct tm *time2;
- 
-          if (config.timestamps_since_epoch) {
-            snprintf(buf2, SRVBUFLEN, "%u.%u", pnat->timestamp_start.tv_sec, pnat->timestamp_start.tv_usec);
-          }
-          else {
-            time1 = pnat->timestamp_start.tv_sec;
-            time2 = localtime(&time1);
-            strftime(buf1, SRVBUFLEN, "%Y-%m-%d %H:%M:%S", time2);
-            snprintf(buf2, SRVBUFLEN, "%s.%u", buf1, pnat->timestamp_start.tv_usec);
-	  }
+	  char tstamp_str[VERYSHORTBUFLEN];
 
-          fprintf(f, "%s%s", write_sep(sep, &count), buf2);
+	  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &pnat->timestamp_start, TRUE,
+			    config.timestamps_since_epoch, config.timestamps_rfc3339,
+			    config.timestamps_utc);
+
+          fprintf(f, "%s%s", write_sep(sep, &count), tstamp_str);
         }
   
         if (config.what_to_count_2 & COUNT_TIMESTAMP_END) {
-          char buf1[SRVBUFLEN], buf2[SRVBUFLEN];
-          time_t time1;
-          struct tm *time2;
-  
-          if (config.timestamps_since_epoch) {
-            snprintf(buf2, SRVBUFLEN, "%u.%u", pnat->timestamp_end.tv_sec, pnat->timestamp_end.tv_usec);
-          }
-          else {
-            time1 = pnat->timestamp_end.tv_sec;
-            time2 = localtime(&time1);
-            strftime(buf1, SRVBUFLEN, "%Y-%m-%d %H:%M:%S", time2);
-            snprintf(buf2, SRVBUFLEN, "%s.%u", buf1, pnat->timestamp_end.tv_usec);
-	  }
+	  char tstamp_str[VERYSHORTBUFLEN];
 
-          fprintf(f, "%s%s", write_sep(sep, &count), buf2);
+	  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &pnat->timestamp_end, TRUE,
+			    config.timestamps_since_epoch, config.timestamps_rfc3339,
+			    config.timestamps_utc);
+
+          fprintf(f, "%s%s", write_sep(sep, &count), tstamp_str);
         }
 
         if (config.what_to_count_2 & COUNT_TIMESTAMP_ARRIVAL) {
-          char buf1[SRVBUFLEN], buf2[SRVBUFLEN];
-          time_t time1;
-          struct tm *time2;
+	  char tstamp_str[VERYSHORTBUFLEN];
 
-          if (config.timestamps_since_epoch) {
-            snprintf(buf2, SRVBUFLEN, "%u.%u", pnat->timestamp_arrival.tv_sec, pnat->timestamp_arrival.tv_usec);
-          }
-          else {
-            time1 = pnat->timestamp_arrival.tv_sec;
-            time2 = localtime(&time1);
-            strftime(buf1, SRVBUFLEN, "%Y-%m-%d %H:%M:%S", time2);
-            snprintf(buf2, SRVBUFLEN, "%s.%u", buf1, pnat->timestamp_arrival.tv_usec);
-          }
+	  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &pnat->timestamp_arrival, TRUE,
+			    config.timestamps_since_epoch, config.timestamps_rfc3339,
+			    config.timestamps_utc);
 
-          fprintf(f, "%s%s", write_sep(sep, &count), buf2);
+          fprintf(f, "%s%s", write_sep(sep, &count), tstamp_str);
         }
 
         if (config.nfacctd_stitching && queue[j]->stitch) {
-          char buf1[SRVBUFLEN], buf2[SRVBUFLEN];
-          time_t time1;
-          struct tm *time2;
+	  char tstamp_str[VERYSHORTBUFLEN];
 
-          if (config.timestamps_since_epoch) {
-            snprintf(buf2, SRVBUFLEN, "%u.%u", queue[j]->stitch->timestamp_min.tv_sec, queue[j]->stitch->timestamp_min.tv_usec);
-	    fprintf(f, "%s%s", write_sep(sep, &count), buf2);
+	  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &queue[j]->stitch->timestamp_min, TRUE,
+			    config.timestamps_since_epoch, config.timestamps_rfc3339,
+			    config.timestamps_utc);
 
-            snprintf(buf2, SRVBUFLEN, "%u.%u", queue[j]->stitch->timestamp_max.tv_sec, queue[j]->stitch->timestamp_max.tv_usec);
-	    fprintf(f, "%s%s", write_sep(sep, &count), buf2);
-          }
-	  else {
-            time1 = queue[j]->stitch->timestamp_min.tv_sec;
-            time2 = localtime(&time1);
-            strftime(buf1, SRVBUFLEN, "%Y-%m-%d %H:%M:%S", time2);
-            snprintf(buf2, SRVBUFLEN, "%s.%u", buf1, queue[j]->stitch->timestamp_min.tv_usec);
-            fprintf(f, "%s%s", write_sep(sep, &count), buf2);
+          fprintf(f, "%s%s", write_sep(sep, &count), tstamp_str);
 
-            time1 = queue[j]->stitch->timestamp_max.tv_sec;
-            time2 = localtime(&time1);
-            strftime(buf1, SRVBUFLEN, "%Y-%m-%d %H:%M:%S", time2);
-            snprintf(buf2, SRVBUFLEN, "%s.%u", buf1, queue[j]->stitch->timestamp_max.tv_usec);
-            fprintf(f, "%s%s", write_sep(sep, &count), buf2);
-	  }
+	  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &queue[j]->stitch->timestamp_max, TRUE,
+			    config.timestamps_since_epoch, config.timestamps_rfc3339,
+			    config.timestamps_utc);
+
+          fprintf(f, "%s%s", write_sep(sep, &count), tstamp_str);
         }
 
         if (config.what_to_count_2 & COUNT_EXPORT_PROTO_SEQNO) fprintf(f, "%s%u", write_sep(sep, &count), data->export_proto_seqno);
         if (config.what_to_count_2 & COUNT_EXPORT_PROTO_VERSION) fprintf(f, "%s%u", write_sep(sep, &count), data->export_proto_version);
+        if (config.what_to_count_2 & COUNT_EXPORT_PROTO_SYSID) fprintf(f, "%s%u", write_sep(sep, &count), data->export_proto_sysid);
   
         /* all custom primitives printed here */
         {
@@ -1392,8 +1307,7 @@ void P_cache_purge(struct chained_cache *queue[], int index, int safe_action)
 
     if (config.print_latest_file) {
       if (!safe_action) {
-        memset(tmpbuf, 0, LONGLONGSRVBUFLEN);
-        handle_dynname_internal_strings(tmpbuf, LONGSRVBUFLEN, config.print_latest_file, &prim_ptrs);
+        handle_dynname_internal_strings(tmpbuf, SRVBUFLEN, config.print_latest_file, &prim_ptrs, DYN_STR_PRINT_FILE);
         link_latest_output_file(tmpbuf, current_table);
       }
     }
@@ -1419,7 +1333,7 @@ void P_cache_purge(struct chained_cache *queue[], int index, int safe_action)
   Log(LOG_INFO, "INFO ( %s/%s ): *** Purging cache - END (PID: %u, QN: %u/%u, ET: %u) ***\n",
 		config.name, config.type, writer_pid, qn, saved_index, duration);
 
-  if (config.sql_trigger_exec) P_trigger_exec(config.sql_trigger_exec); 
+  if (config.sql_trigger_exec && !safe_action) P_trigger_exec(config.sql_trigger_exec); 
 
   if (empty_pcust) free(empty_pcust);
 }
@@ -1429,7 +1343,10 @@ void P_write_stats_header_formatted(FILE *f, int is_event)
   if (config.what_to_count & COUNT_TAG) fprintf(f, "TAG         ");
   if (config.what_to_count & COUNT_TAG2) fprintf(f, "TAG2        ");
   if (config.what_to_count & COUNT_CLASS) fprintf(f, "CLASS             ");
-#if defined HAVE_L2
+#if defined (WITH_NDPI)
+  if (config.what_to_count_2 & COUNT_NDPI_CLASS) fprintf(f, "CLASS             ");
+#endif
+#if defined (HAVE_L2)
   if (config.what_to_count & (COUNT_SRC_MAC|COUNT_SUM_MAC)) fprintf(f, "SRC_MAC            ");
   if (config.what_to_count & COUNT_DST_MAC) fprintf(f, "DST_MAC            ");
   if (config.what_to_count & COUNT_VLAN) fprintf(f, "VLAN   ");
@@ -1444,35 +1361,27 @@ void P_write_stats_header_formatted(FILE *f, int is_event)
   if (config.what_to_count & COUNT_SRC_MED) fprintf(f, "SRC_MED ");
   if (config.what_to_count & COUNT_PEER_SRC_AS) fprintf(f, "PEER_SRC_AS ");
   if (config.what_to_count & COUNT_PEER_DST_AS) fprintf(f, "PEER_DST_AS ");
+#if defined ENABLE_IPV6
+  if (config.what_to_count & COUNT_PEER_SRC_IP) fprintf(f, "PEER_SRC_IP                                    ");
+  if (config.what_to_count & COUNT_PEER_DST_IP) fprintf(f, "PEER_DST_IP                                    ");
+#else
   if (config.what_to_count & COUNT_PEER_SRC_IP) fprintf(f, "PEER_SRC_IP      ");
   if (config.what_to_count & COUNT_PEER_DST_IP) fprintf(f, "PEER_DST_IP      ");
+#endif
   if (config.what_to_count & COUNT_IN_IFACE) fprintf(f, "IN_IFACE    ");
   if (config.what_to_count & COUNT_OUT_IFACE) fprintf(f, "OUT_IFACE   ");
   if (config.what_to_count & COUNT_MPLS_VPN_RD) fprintf(f, "MPLS_VPN_RD         ");
-  if (!config.tmp_net_own_field) {
 #if defined ENABLE_IPV6
-    if (config.what_to_count & (COUNT_SRC_HOST|COUNT_SRC_NET)) fprintf(f, "SRC_IP                                         ");
-    if (config.what_to_count & (COUNT_SUM_HOST|COUNT_SUM_NET)) fprintf(f, "SRC_IP                                         ");
-    if (config.what_to_count & (COUNT_DST_HOST|COUNT_DST_NET)) fprintf(f, "DST_IP                                         ");
+  if (config.what_to_count & (COUNT_SRC_HOST|COUNT_SUM_HOST)) fprintf(f, "SRC_IP                                         ");
+  if (config.what_to_count & (COUNT_SRC_NET|COUNT_SUM_NET)) fprintf(f, "SRC_NET                                        ");
+  if (config.what_to_count & COUNT_DST_HOST) fprintf(f, "DST_IP                                         ");
+  if (config.what_to_count & COUNT_DST_NET) fprintf(f, "DST_NET                                        ");
 #else
-    if (config.what_to_count & (COUNT_SRC_HOST|COUNT_SRC_NET)) fprintf(f, "SRC_IP           ");
-    if (config.what_to_count & (COUNT_SUM_HOST|COUNT_SUM_NET)) fprintf(f, "SRC_IP           ");
-    if (config.what_to_count & (COUNT_DST_HOST|COUNT_DST_NET)) fprintf(f, "DST_IP           ");
+  if (config.what_to_count & (COUNT_SRC_HOST|COUNT_SUM_HOST)) fprintf(f, "SRC_IP           ");
+  if (config.what_to_count & (COUNT_SRC_NET|COUNT_SUM_NET)) fprintf(f, "SRC_NET          ");
+  if (config.what_to_count & COUNT_DST_HOST) fprintf(f, "DST_IP           ");
+  if (config.what_to_count & COUNT_DST_NET) fprintf(f, "DST_NET          ");
 #endif
-  } 
-  else {
-#if defined ENABLE_IPV6
-    if (config.what_to_count & (COUNT_SRC_HOST|COUNT_SUM_HOST)) fprintf(f, "SRC_IP                                         ");
-    if (config.what_to_count & (COUNT_SRC_NET|COUNT_SUM_NET)) fprintf(f, "SRC_NET                                        ");
-    if (config.what_to_count & COUNT_DST_HOST) fprintf(f, "DST_IP                                         ");
-    if (config.what_to_count & COUNT_DST_NET) fprintf(f, "DST_NET                                        ");
-#else
-    if (config.what_to_count & (COUNT_SRC_HOST|COUNT_SUM_HOST)) fprintf(f, "SRC_IP           ");
-    if (config.what_to_count & (COUNT_SRC_NET|COUNT_SUM_NET)) fprintf(f, "SRC_NET          ");
-    if (config.what_to_count & COUNT_DST_HOST) fprintf(f, "DST_IP           ");
-    if (config.what_to_count & COUNT_DST_NET) fprintf(f, "DST_NET          ");
-#endif
-  }
   if (config.what_to_count & COUNT_SRC_NMASK) fprintf(f, "SRC_MASK  ");
   if (config.what_to_count & COUNT_DST_NMASK) fprintf(f, "DST_MASK  ");
   if (config.what_to_count & (COUNT_SRC_PORT|COUNT_SUM_PORT)) fprintf(f, "SRC_PORT  ");
@@ -1487,9 +1396,17 @@ void P_write_stats_header_formatted(FILE *f, int is_event)
 #if defined (WITH_GEOIPV2)
   if (config.what_to_count_2 & COUNT_SRC_HOST_POCODE) fprintf(f, "SH_POCODE     ");
   if (config.what_to_count_2 & COUNT_DST_HOST_POCODE) fprintf(f, "DH_POCODE     ");
+  if (config.what_to_count_2 & COUNT_SRC_HOST_COORDS) {
+    fprintf(f, "SH_LAT        ");
+    fprintf(f, "SH_LON        ");
+  }
+  if (config.what_to_count_2 & COUNT_DST_HOST_COORDS) {
+    fprintf(f, "DH_LAT        ");
+    fprintf(f, "DH_LON        ");
+  }
 #endif
   if (config.what_to_count_2 & COUNT_SAMPLING_RATE) fprintf(f, "SAMPLING_RATE ");
-  if (config.what_to_count_2 & COUNT_PKT_LEN_DISTRIB) fprintf(f, "PKT_LEN_DISTRIB ");
+  if (config.what_to_count_2 & COUNT_SAMPLING_DIRECTION) fprintf(f, "SAMPLING_DIRECTION ");
 #if defined ENABLE_IPV6
   if (config.what_to_count_2 & COUNT_POST_NAT_SRC_HOST) fprintf(f, "POST_NAT_SRC_IP                                ");
   if (config.what_to_count_2 & COUNT_POST_NAT_DST_HOST) fprintf(f, "POST_NAT_DST_IP                                ");
@@ -1521,6 +1438,7 @@ void P_write_stats_header_formatted(FILE *f, int is_event)
   }
   if (config.what_to_count_2 & COUNT_EXPORT_PROTO_SEQNO) fprintf(f, "EXPORT_PROTO_SEQNO  ");
   if (config.what_to_count_2 & COUNT_EXPORT_PROTO_VERSION) fprintf(f, "EXPORT_PROTO_VERSION  ");
+  if (config.what_to_count_2 & COUNT_EXPORT_PROTO_SYSID) fprintf(f, "EXPORT_PROTO_SYSID  ");
 
   /* all custom primitives printed here */
   {
@@ -1556,6 +1474,9 @@ void P_write_stats_header_csv(FILE *f, int is_event)
   if (config.what_to_count & COUNT_TAG2) fprintf(f, "%sTAG2", write_sep(sep, &count));
   if (config.what_to_count_2 & COUNT_LABEL) fprintf(f, "%sLABEL", write_sep(sep, &count));
   if (config.what_to_count & COUNT_CLASS) fprintf(f, "%sCLASS", write_sep(sep, &count));
+#if defined (WITH_NDPI)
+  if (config.what_to_count_2 & COUNT_NDPI_CLASS) fprintf(f, "%sCLASS", write_sep(sep, &count));
+#endif
 #if defined HAVE_L2
   if (config.what_to_count & (COUNT_SRC_MAC|COUNT_SUM_MAC)) fprintf(f, "%sSRC_MAC", write_sep(sep, &count));
   if (config.what_to_count & COUNT_DST_MAC) fprintf(f, "%sDST_MAC", write_sep(sep, &count));
@@ -1565,21 +1486,11 @@ void P_write_stats_header_csv(FILE *f, int is_event)
 #endif
   if (config.what_to_count & (COUNT_SRC_AS|COUNT_SUM_AS)) fprintf(f, "%sSRC_AS", write_sep(sep, &count));
   if (config.what_to_count & COUNT_DST_AS) fprintf(f, "%sDST_AS", write_sep(sep, &count));
-  if (!config.tmp_comms_same_field) {
-    if (config.what_to_count & COUNT_STD_COMM) fprintf(f, "%sCOMMS", write_sep(sep, &count));
-    if (config.what_to_count & COUNT_EXT_COMM) fprintf(f, "%sECOMMS", write_sep(sep, &count));
-  }
-  else {
-    if (config.what_to_count & (COUNT_STD_COMM|COUNT_EXT_COMM)) fprintf(f, "%sCOMMS", write_sep(sep, &count));
-  }
+  if (config.what_to_count & COUNT_STD_COMM) fprintf(f, "%sCOMMS", write_sep(sep, &count));
+  if (config.what_to_count & COUNT_EXT_COMM) fprintf(f, "%sECOMMS", write_sep(sep, &count));
   if (config.what_to_count_2 & COUNT_LRG_COMM) fprintf(f, "%sLCOMMS", write_sep(sep, &count));
-  if (!config.tmp_comms_same_field) {
-    if (config.what_to_count & COUNT_SRC_STD_COMM) fprintf(f, "%sSRC_COMMS", write_sep(sep, &count));
-    if (config.what_to_count & COUNT_SRC_EXT_COMM) fprintf(f, "%sSRC_ECOMMS", write_sep(sep, &count));
-  }
-  else {
-    if (config.what_to_count & (COUNT_SRC_STD_COMM|COUNT_SRC_EXT_COMM)) fprintf(f, "%sSRC_COMMS", write_sep(sep, &count));
-  }
+  if (config.what_to_count & COUNT_SRC_STD_COMM) fprintf(f, "%sSRC_COMMS", write_sep(sep, &count));
+  if (config.what_to_count & COUNT_SRC_EXT_COMM) fprintf(f, "%sSRC_ECOMMS", write_sep(sep, &count));
   if (config.what_to_count_2 & COUNT_SRC_LRG_COMM) fprintf(f, "%sSRC_LCOMMS", write_sep(sep, &count));
   if (config.what_to_count & COUNT_AS_PATH) fprintf(f, "%sAS_PATH", write_sep(sep, &count));
   if (config.what_to_count & COUNT_SRC_AS_PATH) fprintf(f, "%sSRC_AS_PATH", write_sep(sep, &count));
@@ -1594,17 +1505,10 @@ void P_write_stats_header_csv(FILE *f, int is_event)
   if (config.what_to_count & COUNT_IN_IFACE) fprintf(f, "%sIN_IFACE", write_sep(sep, &count));
   if (config.what_to_count & COUNT_OUT_IFACE) fprintf(f, "%sOUT_IFACE", write_sep(sep, &count));
   if (config.what_to_count & COUNT_MPLS_VPN_RD) fprintf(f, "%sMPLS_VPN_RD", write_sep(sep, &count));
-  if (!config.tmp_net_own_field) {
-    if (config.what_to_count & (COUNT_SRC_HOST|COUNT_SRC_NET)) fprintf(f, "%sSRC_IP", write_sep(sep, &count));
-    if (config.what_to_count & (COUNT_SUM_HOST|COUNT_SUM_NET)) fprintf(f, "%sSRC_IP", write_sep(sep, &count));
-    if (config.what_to_count & (COUNT_DST_HOST|COUNT_DST_NET)) fprintf(f, "%sDST_IP", write_sep(sep, &count));
-  }
-  else {
-    if (config.what_to_count & (COUNT_SRC_HOST|COUNT_SUM_HOST)) fprintf(f, "%sSRC_IP", write_sep(sep, &count));
-    if (config.what_to_count & (COUNT_SRC_NET|COUNT_SUM_NET)) fprintf(f, "%sSRC_NET", write_sep(sep, &count));
-    if (config.what_to_count & COUNT_DST_HOST) fprintf(f, "%sDST_IP", write_sep(sep, &count));
-    if (config.what_to_count & COUNT_DST_NET) fprintf(f, "%sDST_NET", write_sep(sep, &count));
-  }
+  if (config.what_to_count & (COUNT_SRC_HOST|COUNT_SUM_HOST)) fprintf(f, "%sSRC_IP", write_sep(sep, &count));
+  if (config.what_to_count & (COUNT_SRC_NET|COUNT_SUM_NET)) fprintf(f, "%sSRC_NET", write_sep(sep, &count));
+  if (config.what_to_count & COUNT_DST_HOST) fprintf(f, "%sDST_IP", write_sep(sep, &count));
+  if (config.what_to_count & COUNT_DST_NET) fprintf(f, "%sDST_NET", write_sep(sep, &count));
   if (config.what_to_count & COUNT_SRC_NMASK) fprintf(f, "%sSRC_MASK", write_sep(sep, &count));
   if (config.what_to_count & COUNT_DST_NMASK) fprintf(f, "%sDST_MASK", write_sep(sep, &count));
   if (config.what_to_count & (COUNT_SRC_PORT|COUNT_SUM_PORT)) fprintf(f, "%sSRC_PORT", write_sep(sep, &count));
@@ -1619,9 +1523,17 @@ void P_write_stats_header_csv(FILE *f, int is_event)
 #if defined (WITH_GEOIPV2)
   if (config.what_to_count_2 & COUNT_SRC_HOST_POCODE) fprintf(f, "%sSH_POCODE", write_sep(sep, &count));
   if (config.what_to_count_2 & COUNT_DST_HOST_POCODE) fprintf(f, "%sDH_POCODE", write_sep(sep, &count));
+  if (config.what_to_count_2 & COUNT_SRC_HOST_COORDS) {
+    fprintf(f, "%sSH_LAT", write_sep(sep, &count));
+    fprintf(f, "%sSH_LON", write_sep(sep, &count));
+  }
+  if (config.what_to_count_2 & COUNT_DST_HOST_COORDS) {
+    fprintf(f, "%sDH_LAT", write_sep(sep, &count));
+    fprintf(f, "%sDH_LON", write_sep(sep, &count));
+  }
 #endif
   if (config.what_to_count_2 & COUNT_SAMPLING_RATE) fprintf(f, "%sSAMPLING_RATE", write_sep(sep, &count));
-  if (config.what_to_count_2 & COUNT_PKT_LEN_DISTRIB) fprintf(f, "%sPKT_LEN_DISTRIB", write_sep(sep, &count));
+  if (config.what_to_count_2 & COUNT_SAMPLING_DIRECTION) fprintf(f, "%sSAMPLING_DIRECTION", write_sep(sep, &count));
   if (config.what_to_count_2 & COUNT_POST_NAT_SRC_HOST) fprintf(f, "%sPOST_NAT_SRC_IP", write_sep(sep, &count));
   if (config.what_to_count_2 & COUNT_POST_NAT_DST_HOST) fprintf(f, "%sPOST_NAT_DST_IP", write_sep(sep, &count));
   if (config.what_to_count_2 & COUNT_POST_NAT_SRC_PORT) fprintf(f, "%sPOST_NAT_SRC_PORT", write_sep(sep, &count));
@@ -1643,6 +1555,7 @@ void P_write_stats_header_csv(FILE *f, int is_event)
   }
   if (config.what_to_count_2 & COUNT_EXPORT_PROTO_SEQNO) fprintf(f, "%sEXPORT_PROTO_SEQNO", write_sep(sep, &count));
   if (config.what_to_count_2 & COUNT_EXPORT_PROTO_VERSION) fprintf(f, "%sEXPORT_PROTO_VERSION", write_sep(sep, &count));
+  if (config.what_to_count_2 & COUNT_EXPORT_PROTO_SYSID) fprintf(f, "%sEXPORT_PROTO_SYSID", write_sep(sep, &count));
 
   /* all custom primitives printed here */
   { 

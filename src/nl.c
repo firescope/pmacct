@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -24,6 +24,7 @@
 
 /* includes */
 #include "pmacct.h"
+#include "addr.h"
 #include "pmacct-data.h"
 #include "pmacct-dlt.h"
 #include "pretag_handlers.h"
@@ -36,6 +37,9 @@
 #include "isis/isis.h"
 #include "bgp/bgp.h"
 #include "bmp/bmp.h"
+#if defined (WITH_NDPI)
+#include "ndpi/ndpi.h"
+#endif
 
 void pcap_cb(u_char *user, const struct pcap_pkthdr *pkthdr, const u_char *buf)
 {
@@ -43,6 +47,8 @@ void pcap_cb(u_char *user, const struct pcap_pkthdr *pkthdr, const u_char *buf)
   struct pcap_callback_data *cb_data = (struct pcap_callback_data *) user;
   struct pcap_device *device = cb_data->device;
   struct plugin_requests req;
+  u_int32_t iface32 = 0;
+  u_int32_t ifacePresent = 0;
 
   /* We process the packet with the appropriate
      data link layer function */
@@ -56,13 +62,74 @@ void pcap_cb(u_char *user, const struct pcap_pkthdr *pkthdr, const u_char *buf)
     pptrs.blp_table = cb_data->blp_table;
     pptrs.bmed_table = cb_data->bmed_table;
     pptrs.bta_table = cb_data->bta_table;
-    pptrs.ifindex_in = cb_data->ifindex_in;
-    pptrs.ifindex_out = cb_data->ifindex_out;
     pptrs.flow_type = NF9_FTYPE_TRAFFIC;
+
+    assert(cb_data);
+
+    /* direction */
+    if (cb_data->device &&
+	cb_data->device->pcap_if &&
+	cb_data->device->pcap_if->direction) {
+      pptrs.direction = cb_data->device->pcap_if->direction;
+    }
+    else if (config.pcap_direction) {
+      pptrs.direction = config.pcap_direction;
+    }
+    else pptrs.direction = FALSE;
+
+    /* input interface */
+    if (cb_data->ifindex_in) {
+      pptrs.ifindex_in = cb_data->ifindex_in;
+    }
+    else if (cb_data->device &&
+	     cb_data->device->id &&
+	     cb_data->device->pcap_if &&
+	     cb_data->device->pcap_if->direction) {
+      if (cb_data->device->pcap_if->direction == PCAP_D_IN) {
+        pptrs.ifindex_in = cb_data->device->id;
+      }
+    }
+    else if (cb_data->device->id &&
+	     config.pcap_direction == PCAP_D_IN) {
+      pptrs.ifindex_in = cb_data->device->id;
+    }
+    else pptrs.ifindex_in = 0;
+
+    /* output interface */
+    if (cb_data->ifindex_out) {
+      pptrs.ifindex_out = cb_data->ifindex_out;
+    }
+    else if (cb_data->device &&
+	     cb_data->device->id &&
+	     cb_data->device->pcap_if &&
+             cb_data->device->pcap_if->direction) { 
+      if (cb_data->device->pcap_if->direction == PCAP_D_OUT) {
+        pptrs.ifindex_out = cb_data->device->id;
+      }
+    }
+    else if (cb_data->device->id && config.pcap_direction == PCAP_D_OUT) {
+      pptrs.ifindex_out = cb_data->device->id;
+    }
+    else pptrs.ifindex_out = 0;
+
+    if (config.decode_arista_trailer) {
+      memcpy(&ifacePresent, buf + pkthdr->len - 8, 4);
+        if (ifacePresent == 1) {
+          memcpy(&iface32, buf + pkthdr->len - 4, 4);
+          pptrs.ifindex_out = iface32;
+        }
+    }
 
     (*device->data->handler)(pkthdr, &pptrs);
     if (pptrs.iph_ptr) {
       if ((*pptrs.l3_handler)(&pptrs)) {
+
+#if defined (WITH_NDPI)
+        if (config.classifier_ndpi && pm_ndpi_wfl) {
+          pptrs.ndpi_class = pm_ndpi_workflow_process_packet(pm_ndpi_wfl, &pptrs);
+	}
+#endif
+
         if (config.nfacctd_isis) {
           isis_srcdst_lookup(&pptrs);
         }
@@ -113,14 +180,14 @@ int ip_handler(register struct packet_ptrs *pptrs)
   int ret = TRUE, num, is_fragment = 0;
 
   /* len: number of 32bit words forming the header */
-  len = IP_HL(((struct my_iphdr *) pptrs->iph_ptr));
+  len = IP_HL(((struct pm_iphdr *) pptrs->iph_ptr));
   len <<= 2;
   ptr = pptrs->iph_ptr+len;
   off += len;
 
   /* check len */
   if (off > caplen) return FALSE; /* IP packet truncated */
-  pptrs->l4_proto = ((struct my_iphdr *)pptrs->iph_ptr)->ip_p;
+  pptrs->l4_proto = ((struct pm_iphdr *)pptrs->iph_ptr)->ip_p;
   pptrs->payload_ptr = NULL;
   off_l4 = off;
 
@@ -134,7 +201,7 @@ int ip_handler(register struct packet_ptrs *pptrs)
       }
       pptrs->tlh_ptr = ptr;
 
-      if (((struct my_iphdr *)pptrs->iph_ptr)->ip_off & htons(IP_MF|IP_OFFMASK)) {
+      if (((struct pm_iphdr *)pptrs->iph_ptr)->ip_off & htons(IP_MF|IP_OFFMASK)) {
 	is_fragment = TRUE;
         ret = ip_fragment_handler(pptrs);
         if (!ret) {
@@ -152,14 +219,14 @@ int ip_handler(register struct packet_ptrs *pptrs)
       /* Let's handle both fragments and packets. If we are facing any subsequent frag
          our pointer is in place; we handle unknown L4 protocols likewise. In case of
          "entire" TCP/UDP packets we have to jump the L4 header instead */
-      if (((struct my_iphdr *)pptrs->iph_ptr)->ip_off & htons(IP_OFFMASK));
+      if (((struct pm_iphdr *)pptrs->iph_ptr)->ip_off & htons(IP_OFFMASK));
       else if (pptrs->l4_proto == IPPROTO_UDP) {
         ptr += UDPHdrSz;
         off += UDPHdrSz;
       }
       else if (pptrs->l4_proto == IPPROTO_TCP) {
-        ptr += ((struct my_tcphdr *)pptrs->tlh_ptr)->th_off << 2;
-        off += ((struct my_tcphdr *)pptrs->tlh_ptr)->th_off << 2;
+        ptr += ((struct pm_tcphdr *)pptrs->tlh_ptr)->th_off << 2;
+        off += ((struct pm_tcphdr *)pptrs->tlh_ptr)->th_off << 2;
       }
       if (off < caplen) pptrs->payload_ptr = ptr;
     }
@@ -177,10 +244,10 @@ int ip_handler(register struct packet_ptrs *pptrs)
 			config.name, caplen, off_l4+TCPFlagOff+1);
           return FALSE;
         }
-        if (((struct my_tcphdr *)pptrs->tlh_ptr)->th_flags & TH_SYN) pptrs->tcp_flags |= TH_SYN;
-        if (((struct my_tcphdr *)pptrs->tlh_ptr)->th_flags & TH_FIN) pptrs->tcp_flags |= TH_FIN;
-        if (((struct my_tcphdr *)pptrs->tlh_ptr)->th_flags & TH_RST) pptrs->tcp_flags |= TH_RST;
-        if (((struct my_tcphdr *)pptrs->tlh_ptr)->th_flags & TH_ACK && pptrs->tcp_flags) pptrs->tcp_flags |= TH_ACK;
+        if (((struct pm_tcphdr *)pptrs->tlh_ptr)->th_flags & TH_SYN) pptrs->tcp_flags |= TH_SYN;
+        if (((struct pm_tcphdr *)pptrs->tlh_ptr)->th_flags & TH_FIN) pptrs->tcp_flags |= TH_FIN;
+        if (((struct pm_tcphdr *)pptrs->tlh_ptr)->th_flags & TH_RST) pptrs->tcp_flags |= TH_RST;
+        if (((struct pm_tcphdr *)pptrs->tlh_ptr)->th_flags & TH_ACK && pptrs->tcp_flags) pptrs->tcp_flags |= TH_ACK;
       }
 
       ip_flow_handler(pptrs);
@@ -189,22 +256,22 @@ int ip_handler(register struct packet_ptrs *pptrs)
     /* XXX: optimize/short circuit here! */
     pptrs->tcp_flags = FALSE;
     if (pptrs->l4_proto == IPPROTO_TCP && off_l4+TCPFlagOff+1 <= caplen)
-      pptrs->tcp_flags = ((struct my_tcphdr *)pptrs->tlh_ptr)->th_flags;
+      pptrs->tcp_flags = ((struct pm_tcphdr *)pptrs->tlh_ptr)->th_flags;
 
-    /* tunnel handlers here */ 
+    /* tunnel handlers here */
     if (config.tunnel0 && !pptrs->tun_stack) {
       for (num = 0; pptrs->payload_ptr && !is_fragment && tunnel_registry[0][num].tf; num++) {
         if (tunnel_registry[0][num].proto == pptrs->l4_proto) {
-	  if (!tunnel_registry[0][num].port || (pptrs->tlh_ptr && tunnel_registry[0][num].port == ntohs(((struct my_tlhdr *)pptrs->tlh_ptr)->dst_port))) {
+	  if (!tunnel_registry[0][num].port || (pptrs->tlh_ptr && tunnel_registry[0][num].port == ntohs(((struct pm_tlhdr *)pptrs->tlh_ptr)->dst_port))) {
 	    pptrs->tun_stack = num;
 	    ret = (*tunnel_registry[0][num].tf)(pptrs);
 	  }
         }
       }
     }
-    else if (pptrs->tun_stack) { 
+    else if (pptrs->tun_stack) {
       if (tunnel_registry[pptrs->tun_stack][pptrs->tun_layer].proto == pptrs->l4_proto) {
-        if (!tunnel_registry[pptrs->tun_stack][pptrs->tun_layer].port || (pptrs->tlh_ptr && tunnel_registry[pptrs->tun_stack][pptrs->tun_layer].port == ntohs(((struct my_tlhdr *)pptrs->tlh_ptr)->dst_port))) {
+        if (!tunnel_registry[pptrs->tun_stack][pptrs->tun_layer].port || (pptrs->tlh_ptr && tunnel_registry[pptrs->tun_stack][pptrs->tun_layer].port == ntohs(((struct pm_tlhdr *)pptrs->tlh_ptr)->dst_port))) {
           ret = (*tunnel_registry[pptrs->tun_stack][pptrs->tun_layer].tf)(pptrs);
         }
       }
@@ -220,10 +287,10 @@ int ip6_handler(register struct packet_ptrs *pptrs)
 {
   struct ip6_frag *fhdr = NULL;
   register u_int16_t caplen = ((struct pcap_pkthdr *)pptrs->pkthdr)->caplen;
-  u_int16_t len = 0, plen = ntohs(((struct ip6_hdr *)pptrs->iph_ptr)->ip6_plen);
+  u_int16_t plen = ntohs(((struct ip6_hdr *)pptrs->iph_ptr)->ip6_plen);
   u_int16_t off = pptrs->iph_ptr-pptrs->packet_ptr, off_l4;
   u_int32_t advance;
-  u_int8_t nh, fragmented = 0;
+  u_int8_t nh;
   u_char *ptr = pptrs->iph_ptr;
   int ret = TRUE;
 
@@ -303,8 +370,8 @@ int ip6_handler(register struct packet_ptrs *pptrs)
         off += UDPHdrSz;
       }
       else if (pptrs->l4_proto == IPPROTO_TCP) {
-        ptr += ((struct my_tcphdr *)pptrs->tlh_ptr)->th_off << 2;
-        off += ((struct my_tcphdr *)pptrs->tlh_ptr)->th_off << 2;
+        ptr += ((struct pm_tcphdr *)pptrs->tlh_ptr)->th_off << 2;
+        off += ((struct pm_tcphdr *)pptrs->tlh_ptr)->th_off << 2;
       }
       if (off < caplen) pptrs->payload_ptr = ptr;
     }
@@ -322,10 +389,10 @@ int ip6_handler(register struct packet_ptrs *pptrs)
 			config.name, caplen, off_l4+TCPFlagOff+1);
           return FALSE;
         }
-        if (((struct my_tcphdr *)pptrs->tlh_ptr)->th_flags & TH_SYN) pptrs->tcp_flags |= TH_SYN;
-        if (((struct my_tcphdr *)pptrs->tlh_ptr)->th_flags & TH_FIN) pptrs->tcp_flags |= TH_FIN;
-        if (((struct my_tcphdr *)pptrs->tlh_ptr)->th_flags & TH_RST) pptrs->tcp_flags |= TH_RST;
-        if (((struct my_tcphdr *)pptrs->tlh_ptr)->th_flags & TH_ACK && pptrs->tcp_flags) pptrs->tcp_flags |= TH_ACK;
+        if (((struct pm_tcphdr *)pptrs->tlh_ptr)->th_flags & TH_SYN) pptrs->tcp_flags |= TH_SYN;
+        if (((struct pm_tcphdr *)pptrs->tlh_ptr)->th_flags & TH_FIN) pptrs->tcp_flags |= TH_FIN;
+        if (((struct pm_tcphdr *)pptrs->tlh_ptr)->th_flags & TH_RST) pptrs->tcp_flags |= TH_RST;
+        if (((struct pm_tcphdr *)pptrs->tlh_ptr)->th_flags & TH_ACK && pptrs->tcp_flags) pptrs->tcp_flags |= TH_ACK;
       }
 
       ip_flow6_handler(pptrs);
@@ -334,7 +401,7 @@ int ip6_handler(register struct packet_ptrs *pptrs)
     /* XXX: optimize/short circuit here! */
     pptrs->tcp_flags = FALSE;
     if (pptrs->l4_proto == IPPROTO_TCP && off_l4+TCPFlagOff+1 <= caplen)
-      pptrs->tcp_flags = ((struct my_tcphdr *)pptrs->tlh_ptr)->th_flags;
+      pptrs->tcp_flags = ((struct pm_tcphdr *)pptrs->tlh_ptr)->th_flags;
   }
 
   quit:
@@ -344,7 +411,7 @@ int ip6_handler(register struct packet_ptrs *pptrs)
 
 int PM_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_id_t *tag2)
 {
-  int x, j;
+  int x;
   pm_id_t ret = 0;
 
   if (!t) return 0;
@@ -406,8 +473,8 @@ void compute_once()
   PtLabelTSz = sizeof(pt_label_t);
   ChBufHdrSz = sizeof(struct ch_buf_hdr);
   CharPtrSz = sizeof(char *);
-  IP4HdrSz = sizeof(struct my_iphdr);
-  MyTLHdrSz = sizeof(struct my_tlhdr);
+  IP4HdrSz = sizeof(struct pm_iphdr);
+  MyTLHdrSz = sizeof(struct pm_tlhdr);
   TCPFlagOff = 13;
   MyTCPHdrSz = TCPFlagOff+1;
   PptrsSz = sizeof(struct packet_ptrs);
@@ -426,9 +493,8 @@ void tunnel_registry_init()
   if (config.tunnel0) {
     char *tun_string = config.tunnel0, *tun_entry = NULL, *tun_type = NULL;
     int th_index = 0 /* tunnel handler index */, tr_index = 0 /* tunnel registry index */;
-    int ret;
 
-    while (tun_entry = extract_token(&tun_string, ';')) {
+    while ((tun_entry = extract_token(&tun_string, ';'))) {
       tun_type = extract_token(&tun_entry, ',');
 
       for (th_index = 0; strcmp(tunnel_handlers_list[th_index].type, ""); th_index++) {
@@ -463,11 +529,11 @@ int gtp_tunnel_configurator(struct tunnel_handler *th, char *opts)
 int gtp_tunnel_func(register struct packet_ptrs *pptrs)
 {
   register u_int16_t caplen = ((struct pcap_pkthdr *)pptrs->pkthdr)->caplen;
-  struct my_gtphdr_v0 *gtp_hdr_v0 = (struct my_gtphdr_v0 *) pptrs->payload_ptr;
-  struct my_gtphdr_v1 *gtp_hdr_v1 = (struct my_gtphdr_v1 *) pptrs->payload_ptr;
-  struct my_udphdr *udp_hdr = (struct my_udphdr *) pptrs->tlh_ptr;
+  struct pm_gtphdr_v0 *gtp_hdr_v0 = (struct pm_gtphdr_v0 *) pptrs->payload_ptr;
+  struct pm_gtphdr_v1 *gtp_hdr_v1 = (struct pm_gtphdr_v1 *) pptrs->payload_ptr;
+  struct pm_udphdr *udp_hdr = (struct pm_udphdr *) pptrs->tlh_ptr;
   u_int16_t off = pptrs->payload_ptr-pptrs->packet_ptr;
-  u_int16_t gtp_hdr_len, gtp_opt_len, gtp_version;
+  u_int16_t gtp_hdr_len, gtp_version;
   char *ptr = pptrs->payload_ptr;
   int ret, trial;
 
@@ -551,6 +617,20 @@ int gtp_tunnel_func(register struct packet_ptrs *pptrs)
   return ret;
 }
 
+void reset_index_pkt_ptrs(struct packet_ptrs *pptrs)
+{
+  pptrs->pkt_data_ptrs[CUSTOM_PRIMITIVE_PACKET_PTR] = NULL;
+  pptrs->pkt_data_ptrs[CUSTOM_PRIMITIVE_MAC_PTR] = NULL;
+  pptrs->pkt_data_ptrs[CUSTOM_PRIMITIVE_VLAN_PTR] = NULL;
+  pptrs->pkt_data_ptrs[CUSTOM_PRIMITIVE_MPLS_PTR] = NULL;
+  pptrs->pkt_data_ptrs[CUSTOM_PRIMITIVE_L3_PTR] = NULL;
+  pptrs->pkt_data_ptrs[CUSTOM_PRIMITIVE_L4_PTR] = NULL;
+  pptrs->pkt_data_ptrs[CUSTOM_PRIMITIVE_PAYLOAD_PTR] = NULL;
+
+  pptrs->pkt_proto[CUSTOM_PRIMITIVE_L3_PTR] = FALSE;
+  pptrs->pkt_proto[CUSTOM_PRIMITIVE_L4_PTR] = FALSE;
+}
+
 void set_index_pkt_ptrs(struct packet_ptrs *pptrs)
 {
   pptrs->pkt_data_ptrs[CUSTOM_PRIMITIVE_PACKET_PTR] = pptrs->packet_ptr;
@@ -563,4 +643,109 @@ void set_index_pkt_ptrs(struct packet_ptrs *pptrs)
 
   pptrs->pkt_proto[CUSTOM_PRIMITIVE_L3_PTR] = pptrs->l3_proto;
   pptrs->pkt_proto[CUSTOM_PRIMITIVE_L4_PTR] = pptrs->l4_proto;
+}
+
+ssize_t recvfrom_savefile(struct pcap_device *device, void **buf, struct sockaddr *src_addr, struct timeval **ts, int *round, struct packet_ptrs *savefile_pptrs)
+{
+  ssize_t ret = 0;
+  int pcap_ret;
+
+  read_packet:
+  pcap_ret = pcap_next_ex(device->dev_desc, &savefile_pptrs->pkthdr, (const u_char **)&savefile_pptrs->packet_ptr);
+
+  if (pcap_ret == 1 /* all good */) device->errors = FALSE;
+  else if (pcap_ret == -1 /* failed reading next packet */) {
+    device->errors++;
+    if (device->errors == PCAP_SAVEFILE_MAX_ERRORS) {
+      Log(LOG_ERR, "ERROR ( %s/core ): pcap_ext_ex() max errors reached (%u). Exiting.\n", config.name, PCAP_SAVEFILE_MAX_ERRORS);
+      exit(1);
+    }
+    else {
+      Log(LOG_WARNING, "WARN ( %s/core ): pcap_ext_ex() failed: %s. Skipping packet.\n", config.name, pcap_geterr(device->dev_desc));
+      return 0;
+    }
+  }
+  else if (pcap_ret == -2 /* last packet in a pcap_savefile */) {
+    pcap_close(device->dev_desc);
+
+    if (config.pcap_sf_replay < 0 ||
+	(config.pcap_sf_replay > 0 && (*round) < config.pcap_sf_replay)) {
+      (*round)++;
+      open_pcap_savefile(device, config.pcap_savefile);
+      if (config.pcap_sf_delay) sleep(config.pcap_sf_delay);
+
+      goto read_packet;
+    }
+
+    if (config.pcap_sf_wait) {
+      fill_pipe_buffer();
+      Log(LOG_INFO, "INFO ( %s/core ): finished reading PCAP capture file\n", config.name);
+      wait(NULL);
+    }
+    else stop_all_childs();
+  }
+  else {
+    Log(LOG_ERR, "ERROR ( %s/core ): unexpected return code from pcap_next_ex(). Exiting.\n", config.name);
+    exit(1);
+  }
+
+  (*device->data->handler)(savefile_pptrs->pkthdr, savefile_pptrs);
+  if (savefile_pptrs->iph_ptr) {
+    (*savefile_pptrs->l3_handler)(savefile_pptrs);
+    if (savefile_pptrs->payload_ptr) {
+      if (ts) (*ts) = &savefile_pptrs->pkthdr->ts; 
+      (*buf) = savefile_pptrs->payload_ptr;
+      ret = savefile_pptrs->pkthdr->caplen - (savefile_pptrs->payload_ptr - savefile_pptrs->packet_ptr);
+
+      if (savefile_pptrs->l4_proto == IPPROTO_UDP) {
+	if (savefile_pptrs->l3_proto == ETHERTYPE_IP) {
+	  raw_to_sa((struct sockaddr *)src_addr, (char *) &((struct pm_iphdr *)savefile_pptrs->iph_ptr)->ip_src.s_addr,
+		    (u_int16_t) ((struct pm_udphdr *)savefile_pptrs->tlh_ptr)->uh_sport, AF_INET);
+	}
+#if defined ENABLE_IPV6
+	else if (savefile_pptrs->l3_proto == ETHERTYPE_IPV6) {
+	  raw_to_sa((struct sockaddr *)src_addr, (char *) &((struct ip6_hdr *)savefile_pptrs->iph_ptr)->ip6_src,
+		    (u_int16_t) ((struct pm_udphdr *)savefile_pptrs->tlh_ptr)->uh_sport, AF_INET6);
+	}
+#endif
+      }
+    }
+  }
+
+  return ret;
+}
+
+ssize_t recvfrom_rawip(char *buf, size_t len, struct sockaddr *src_addr, struct packet_ptrs *local_pptrs)
+{
+  ssize_t ret = 0;
+
+  local_pptrs->packet_ptr = buf;
+  local_pptrs->pkthdr->caplen = len;
+
+  raw_handler(local_pptrs->pkthdr, local_pptrs);
+
+  if (local_pptrs->iph_ptr) {
+    (*local_pptrs->l3_handler)(local_pptrs);
+    if (local_pptrs->payload_ptr) {
+      ret = local_pptrs->pkthdr->caplen - (local_pptrs->payload_ptr - local_pptrs->packet_ptr);
+
+      if (local_pptrs->l4_proto == IPPROTO_UDP) {
+        if (local_pptrs->l3_proto == ETHERTYPE_IP) {
+          raw_to_sa((struct sockaddr *)src_addr, (char *) &((struct pm_iphdr *)local_pptrs->iph_ptr)->ip_src.s_addr,
+                    (u_int16_t) ((struct pm_udphdr *)local_pptrs->tlh_ptr)->uh_sport, AF_INET);
+        }
+#if defined ENABLE_IPV6
+        else if (local_pptrs->l3_proto == ETHERTYPE_IPV6) {
+          raw_to_sa((struct sockaddr *)src_addr, (char *) &((struct ip6_hdr *)local_pptrs->iph_ptr)->ip6_src,
+                    (u_int16_t) ((struct pm_udphdr *)local_pptrs->tlh_ptr)->uh_sport, AF_INET6);
+        }
+#endif
+      }
+
+      /* last action: cut L3 and L4 off the packet */
+      memmove(buf, local_pptrs->payload_ptr, ret);
+    }
+  }
+
+  return ret;
 }

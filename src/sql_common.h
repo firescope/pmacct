@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -98,6 +98,7 @@ struct insert_data {
   int pending_accumulators;
   int num_primitives;
   int dyn_table;
+  int dyn_table_time_only;
   char dyn_table_name[SRVBUFLEN];
   int recover;
   int locks;
@@ -234,7 +235,7 @@ EXT void count_out_iface_handler(const struct db_cache *, struct insert_data *, 
 EXT void count_src_nmask_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
 EXT void count_dst_nmask_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
 EXT void count_sampling_rate_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
-EXT void count_pkt_len_distrib_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
+EXT void count_sampling_direction_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
 EXT void MY_count_ip_proto_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
 EXT void PG_count_ip_proto_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
 EXT void count_timestamp_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
@@ -273,6 +274,7 @@ EXT void count_timestamp_max_handler(const struct db_cache *, struct insert_data
 EXT void PG_copy_count_timestamp_max_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
 EXT void count_export_proto_seqno_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
 EXT void count_export_proto_version_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
+EXT void count_export_proto_sysid_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
 EXT void count_timestamp_max_residual_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
 EXT void count_custom_primitives_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
 EXT void fake_mac_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
@@ -301,6 +303,12 @@ EXT void count_dst_host_country_handler(const struct db_cache *, struct insert_d
 #if defined (WITH_GEOIPV2)
 EXT void count_src_host_pocode_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
 EXT void count_dst_host_pocode_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
+EXT void count_src_host_coords_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
+EXT void count_dst_host_coords_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
+#endif
+
+#if defined (WITH_NDPI)
+EXT void count_ndpi_class_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
 #endif
 
 EXT void count_counters_setclause_handler(const struct db_cache *, struct insert_data *, int, char **, char **);
@@ -328,7 +336,7 @@ EXT void sql_init_refresh_deadline(time_t *);
 EXT void sql_link_backend_descriptors(struct BE_descs *, struct DBdesc *, struct DBdesc *);
 EXT void sql_cache_modulo(struct primitives_ptrs *, struct insert_data *);
 EXT int sql_cache_flush(struct db_cache *[], int, struct insert_data *, int);
-EXT int sql_cache_flush_pending(struct db_cache *[], int, struct insert_data *);
+EXT void sql_cache_flush_pending(struct db_cache *[], int, struct insert_data *);
 EXT void sql_cache_handle_flush_event(struct insert_data *, time_t *, struct ports_table *);
 EXT void sql_cache_insert(struct primitives_ptrs *, struct insert_data *);
 EXT struct db_cache *sql_cache_search(struct primitives_ptrs *, time_t);
@@ -336,6 +344,7 @@ EXT int sql_trigger_exec(char *);
 EXT void sql_db_ok(struct DBdesc *);
 EXT void sql_db_fail(struct DBdesc *);
 EXT void sql_db_errmsg(struct DBdesc *);
+EXT void sql_db_warnmsg(struct DBdesc *);
 EXT int sql_query(struct BE_descs *, struct db_cache *, struct insert_data *);
 EXT void sql_exit_gracefully(int);
 EXT int sql_evaluate_primitives(int);
@@ -394,7 +403,7 @@ EXT int glob_num_primitives; /* last resort for signal handling */
 EXT int glob_basetime; /* last resort for signal handling */
 EXT time_t glob_new_basetime; /* last resort for signal handling */
 EXT time_t glob_committed_basetime; /* last resort for signal handling */
-EXT int glob_dyn_table; /* last resort for signal handling */
+EXT int glob_dyn_table, glob_dyn_table_time_only; /* last resort for signal handling */
 EXT int glob_timeslot; /* last resort for sql handlers */
 
 EXT struct sqlfunc_cb_registry sqlfunc_cbr; 

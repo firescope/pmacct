@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -38,7 +38,17 @@ EXT int tee_recvs_map_tag_handler(char *, struct id_entry *, char *, struct plug
 EXT int tee_recvs_map_balance_alg_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
 EXT int tee_recvs_map_src_port_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
 
-EXT void tee_recvs_map_validate(char *, struct plugin_requests *);
+#ifdef WITH_KAFKA
+EXT int tee_recvs_map_kafka_broker_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
+EXT int tee_recvs_map_kafka_topic_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
+#endif
+
+#ifdef WITH_ZMQ
+EXT int tee_recvs_map_zmq_address_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
+EXT int tee_recvs_map_zmq_topic_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
+#endif
+
+EXT void tee_recvs_map_validate(char *, int, struct plugin_requests *);
 
 /* global variables */
 

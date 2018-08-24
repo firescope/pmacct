@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2014 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -23,6 +23,7 @@
 
 /* includes */
 #include "pmacct.h"
+#include "addr.h"
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
 #include "ip_flow.h"
@@ -104,7 +105,7 @@ void evaluate_tcp_flags(struct timeval *now, struct packet_ptrs *pptrs, struct i
        reverse one and c) that cur_seqno == syn_seqno+1 holds */
     if (fp->tcp_flags[idx] & TH_SYN && fp->tcp_flags[rev] & TH_SYN &&
 	fp->tcp_flags[rev] & TH_ACK) {
-      if (ntohl(((struct my_tcphdr *)pptrs->tlh_ptr)->th_seq) == fp->last_tcp_seq+1) {
+      if (ntohl(((struct pm_tcphdr *)pptrs->tlh_ptr)->th_seq) == fp->last_tcp_seq+1) {
 	/* The flow successfully entered the ESTABLISHED state: clearing flags */
 	fp->tcp_flags[idx] = FALSE;
 	fp->tcp_flags[rev] = FALSE;
@@ -115,7 +116,7 @@ void evaluate_tcp_flags(struct timeval *now, struct packet_ptrs *pptrs, struct i
       if (pptrs->tcp_flags & TH_SYN) {
 	fp->tcp_flags[idx] = TH_SYN;
 	if (pptrs->tcp_flags & TH_ACK) fp->tcp_flags[idx] |= TH_ACK;
-	else fp->last_tcp_seq = ntohl(((struct my_tcphdr *)pptrs->tlh_ptr)->th_seq);
+	else fp->last_tcp_seq = ntohl(((struct pm_tcphdr *)pptrs->tlh_ptr)->th_seq);
       }
 
       if (pptrs->tcp_flags & TH_FIN || pptrs->tcp_flags & TH_RST) {
@@ -137,10 +138,10 @@ void clear_tcp_flow_cmn(struct ip_flow_common *fp, unsigned int idx)
 
 void find_flow(struct timeval *now, struct packet_ptrs *pptrs)
 {
-  struct my_iphdr my_iph;
-  struct my_tcphdr my_tlh;
-  struct my_iphdr *iphp = &my_iph;
-  struct my_tlhdr *tlhp = (struct my_tlhdr *) &my_tlh;
+  struct pm_iphdr my_iph;
+  struct pm_tcphdr my_tlh;
+  struct pm_iphdr *iphp = &my_iph;
+  struct pm_tlhdr *tlhp = (struct pm_tlhdr *) &my_tlh;
   struct ip_flow *fp, *candidate = NULL, *last_seen = NULL;
   unsigned int idx, bucket;
 
@@ -183,7 +184,7 @@ void find_flow(struct timeval *now, struct packet_ptrs *pptrs)
 }
 
 void create_flow(struct timeval *now, struct ip_flow *fp, u_int8_t is_candidate, unsigned int bucket, struct packet_ptrs *pptrs, 
-		 struct my_iphdr *iphp, struct my_tlhdr *tlhp, unsigned int idx)
+		 struct pm_iphdr *iphp, struct pm_tlhdr *tlhp, unsigned int idx)
 {
   struct ip_flow *newf;
 
@@ -497,9 +498,9 @@ unsigned int normalize_flow6(struct in6_addr *saddr, struct in6_addr *daddr,
 void find_flow6(struct timeval *now, struct packet_ptrs *pptrs)
 {
   struct ip6_hdr my_iph;
-  struct my_tcphdr my_tlh;
+  struct pm_tcphdr my_tlh;
   struct ip6_hdr *iphp = &my_iph;
-  struct my_tlhdr *tlhp = (struct my_tlhdr *) &my_tlh;
+  struct pm_tlhdr *tlhp = (struct pm_tlhdr *) &my_tlh;
   struct ip_flow6 *fp, *candidate = NULL, *last_seen = NULL;
   unsigned int idx, bucket;
 
@@ -537,13 +538,12 @@ void find_flow6(struct timeval *now, struct packet_ptrs *pptrs)
     last_seen = fp;
   }
 
-  create:
   if (candidate) create_flow6(now, candidate, TRUE, bucket, pptrs, iphp, tlhp, idx);
   else create_flow6(now, last_seen, FALSE, bucket, pptrs, iphp, tlhp, idx);
 }
 
 void create_flow6(struct timeval *now, struct ip_flow6 *fp, u_int8_t is_candidate, unsigned int bucket,
-	          struct packet_ptrs *pptrs, struct ip6_hdr *iphp, struct my_tlhdr *tlhp, unsigned int idx)
+	          struct packet_ptrs *pptrs, struct ip6_hdr *iphp, struct pm_tlhdr *tlhp, unsigned int idx)
 {
   struct ip_flow6 *newf;
 

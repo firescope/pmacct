@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2014 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -22,6 +22,7 @@
 #define __CONNTRACK_C
 
 #include "pmacct.h"
+#include "addr.h"
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
 #include "ip_flow.h"
@@ -79,8 +80,8 @@ void conntrack_ftp_helper(time_t now, struct packet_ptrs *pptrs)
       *end = ',';
 
       if (pptrs->l3_proto == ETHERTYPE_IP) insert_conntrack_ipv4(now,
-			((struct my_iphdr *) pptrs->iph_ptr)->ip_src.s_addr,
-                        ((struct my_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
+			((struct pm_iphdr *) pptrs->iph_ptr)->ip_src.s_addr,
+                        ((struct pm_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
                         port[0]*256+port[1], 0, IPPROTO_TCP, pptrs->class,
 			NULL, CONNTRACK_GENERIC_LIFETIME);
 #if defined ENABLE_IPV6
@@ -114,8 +115,8 @@ void conntrack_ftp_helper(time_t now, struct packet_ptrs *pptrs)
       *end = ',';
 
       if (pptrs->l3_proto == ETHERTYPE_IP) insert_conntrack_ipv4(now,
-			((struct my_iphdr *) pptrs->iph_ptr)->ip_src.s_addr,
-			((struct my_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
+			((struct pm_iphdr *) pptrs->iph_ptr)->ip_src.s_addr,
+			((struct pm_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
 			port[0]*256+port[1], 0, IPPROTO_TCP, pptrs->class,
 			NULL, CONNTRACK_GENERIC_LIFETIME);
 #if defined ENABLE_IPV6
@@ -147,8 +148,8 @@ void conntrack_ftp_helper(time_t now, struct packet_ptrs *pptrs)
       *end = '|';
 
       if (pptrs->l3_proto == ETHERTYPE_IP) insert_conntrack_ipv4(now,
-			((struct my_iphdr *) pptrs->iph_ptr)->ip_src.s_addr,
-                        ((struct my_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
+			((struct pm_iphdr *) pptrs->iph_ptr)->ip_src.s_addr,
+                        ((struct pm_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
                         port[0], 0, IPPROTO_TCP, pptrs->class, NULL,
 			CONNTRACK_GENERIC_LIFETIME);
 #if defined ENABLE_IPV6
@@ -180,8 +181,8 @@ void conntrack_ftp_helper(time_t now, struct packet_ptrs *pptrs)
       *end = '|';
 
       if (pptrs->l3_proto == ETHERTYPE_IP) insert_conntrack_ipv4(now,
-		        ((struct my_iphdr *) pptrs->iph_ptr)->ip_src.s_addr,
-                        ((struct my_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
+		        ((struct pm_iphdr *) pptrs->iph_ptr)->ip_src.s_addr,
+                        ((struct pm_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
                         port[0], 0, IPPROTO_TCP, pptrs->class, NULL,
 			CONNTRACK_GENERIC_LIFETIME);
 #if defined ENABLE_IPV6
@@ -220,7 +221,7 @@ void conntrack_rtsp_helper(time_t now, struct packet_ptrs *pptrs)
 
       /* Then, we need to look into the Transport: line */
       if ( !strncmp(start, "Transport:", 10) ) {
-	if ( ptr = strchr(start, '\r') ) end = ptr;
+	if ((ptr = strchr(start, '\r'))) end = ptr;
 	ptr = strchr(start, ':');
 	ptr++;
 
@@ -240,7 +241,7 @@ void conntrack_rtsp_helper(time_t now, struct packet_ptrs *pptrs)
 
 	    /* We have reached the client_port info; let's handle it meaningfully:
 	       we expect either a single port or a range of ports (lo-hi) */ 
-	    if ( ss_sep = strchr(ss_start, '-') ) {
+	    if ((ss_sep = strchr(ss_start, '-'))) {
 	      *ss_sep = '\0'; 
 	      port[0] = atoi(ss_start);
 	      *ss_sep = '-';
@@ -254,8 +255,8 @@ void conntrack_rtsp_helper(time_t now, struct packet_ptrs *pptrs)
 
 	    for (x = port[0]; x <= port[1]; x++) { 
 	      if (pptrs->l3_proto == ETHERTYPE_IP) insert_conntrack_ipv4(now,
-			((struct my_iphdr *) pptrs->iph_ptr)->ip_src.s_addr,
-			((struct my_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
+			((struct pm_iphdr *) pptrs->iph_ptr)->ip_src.s_addr,
+			((struct pm_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
 			x, 0, IPPROTO_UDP, pptrs->class, NULL, CONNTRACK_GENERIC_LIFETIME);
 #if defined ENABLE_IPV6
 	      else if (pptrs->l3_proto == ETHERTYPE_IPV6) insert_conntrack_ipv6(now,
@@ -277,7 +278,7 @@ void conntrack_sip_helper(time_t now, struct packet_ptrs *pptrs)
 {
   char *start = NULL, *end = NULL, *ptr;
   u_int16_t port;
-  int x = 0, len;
+  int len;
 
   if (!pptrs->payload_ptr) return;
   len = strlen(pptrs->payload_ptr);
@@ -312,8 +313,8 @@ void conntrack_sip_helper(time_t now, struct packet_ptrs *pptrs)
     *ptr = ' ';
 
     if (pptrs->l3_proto == ETHERTYPE_IP) insert_conntrack_ipv4(now,
-			((struct my_iphdr *) pptrs->iph_ptr)->ip_src.s_addr,
-			((struct my_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
+			((struct pm_iphdr *) pptrs->iph_ptr)->ip_src.s_addr,
+			((struct pm_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
 			port, 0, IPPROTO_UDP, pptrs->class, NULL,
 			CONNTRACK_GENERIC_LIFETIME);
 #if defined ENABLE_IPV6
@@ -392,8 +393,8 @@ void search_conntrack(struct ip_flow_common *fp, struct packet_ptrs *pptrs, unsi
 void search_conntrack_ipv4(struct ip_flow_common *fp, struct packet_ptrs *pptrs, unsigned int idx)
 {
   struct conntrack_ipv4 *ct_elem = conntrack_ipv4_table, *aux = NULL;
-  struct my_iphdr *iphp = (struct my_iphdr *)pptrs->iph_ptr;
-  struct my_tlhdr *tlhp = (struct my_tlhdr *)pptrs->tlh_ptr;
+  struct pm_iphdr *iphp = (struct pm_iphdr *)pptrs->iph_ptr;
+  struct pm_tlhdr *tlhp = (struct pm_tlhdr *)pptrs->tlh_ptr;
 
   if (!conntrack_ipv4_table) return;
 
@@ -486,7 +487,7 @@ void search_conntrack_ipv6(struct ip_flow_common *fp, struct packet_ptrs *pptrs,
 {
   struct conntrack_ipv6 *ct_elem = conntrack_ipv6_table, *aux = NULL;
   struct ip6_hdr *iphp = (struct ip6_hdr *)pptrs->iph_ptr;
-  struct my_tlhdr *tlhp = (struct my_tlhdr *)pptrs->tlh_ptr;
+  struct pm_tlhdr *tlhp = (struct pm_tlhdr *)pptrs->tlh_ptr;
 
   if (!conntrack_ipv6_table) return;
 

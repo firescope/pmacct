@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -60,7 +60,6 @@
 thread_pool_t *isis_pool;
 
 /* Functions */
-#if defined ENABLE_THREADS
 void nfacctd_isis_wrapper()
 {
   /* initialize threads pool */
@@ -71,7 +70,6 @@ void nfacctd_isis_wrapper()
   /* giving a kick to the BGP thread */
   send_to_pool(isis_pool, skinny_isis_daemon, NULL);
 }
-#endif
 
 void skinny_isis_daemon()
 {
@@ -346,6 +344,7 @@ void isis_sll_handler(const struct pcap_pkthdr *h, register struct packet_ptrs *
 
 int iso_handler(register struct packet_ptrs *pptrs)
 {
+  return FALSE;
 }
 
 void isis_srcdst_lookup(struct packet_ptrs *pptrs)
@@ -371,7 +370,7 @@ void isis_srcdst_lookup(struct packet_ptrs *pptrs)
 
     if (pptrs->l3_proto == ETHERTYPE_IP) {
       if (!pptrs->igp_src) {
-	memcpy(&pref4, &((struct my_iphdr *)pptrs->iph_ptr)->ip_src, sizeof(struct in_addr));
+	memcpy(&pref4, &((struct pm_iphdr *)pptrs->iph_ptr)->ip_src, sizeof(struct in_addr));
 	result = route_node_match_ipv4(area->route_table[level-1], &pref4);
 
 	if (result) {
@@ -385,7 +384,7 @@ void isis_srcdst_lookup(struct packet_ptrs *pptrs)
       }
 
       if (!pptrs->igp_dst) {
-	memcpy(&pref4, &((struct my_iphdr *)pptrs->iph_ptr)->ip_dst, sizeof(struct in_addr));
+	memcpy(&pref4, &((struct pm_iphdr *)pptrs->iph_ptr)->ip_dst, sizeof(struct in_addr));
 	result = route_node_match_ipv4(area->route_table[level-1], &pref4);
 
 	if (result) {
@@ -482,7 +481,7 @@ int igp_daemon_map_adj_metric_handler(char *filename, struct id_entry *e, char *
     return TRUE;
   }
 
-  while (token = extract_token(&str_ptr, ';')) {
+  while ((token = extract_token(&str_ptr, ';'))) {
     if (idx >= MAX_IGP_MAP_ELEM) {
       Log(LOG_ERR, "ERROR ( %s ): maximum number of elements (%u) per adj_metric violated. ", filename, MAX_IGP_MAP_ELEM);
       return TRUE;
@@ -533,7 +532,7 @@ int igp_daemon_map_reach_metric_handler(char *filename, struct id_entry *e, char
     return TRUE;
   }
 
-  while (token = extract_token(&str_ptr, ';')) {
+  while ((token = extract_token(&str_ptr, ';'))) {
     if (idx >= MAX_IGP_MAP_ELEM) {
       Log(LOG_ERR, "ERROR ( %s ): maximum number of elements (%u) per reach_metric violated. ", filename, MAX_IGP_MAP_ELEM);
       return TRUE;
@@ -585,7 +584,7 @@ int igp_daemon_map_reach6_metric_handler(char *filename, struct id_entry *e, cha
     return TRUE;
   }
 
-  while (token = extract_token(&str_ptr, ';')) {
+  while ((token = extract_token(&str_ptr, ';'))) {
     if (idx >= MAX_IGP_MAP_ELEM) {
       Log(LOG_ERR, "ERROR ( %s ): maximum number of elements (%u) per reach6_metric violated. ", filename, MAX_IGP_MAP_ELEM);
       return TRUE;

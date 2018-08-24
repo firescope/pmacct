@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -40,6 +40,9 @@ EXT void compose_json_tag(json_t *, struct chained_cache *);
 EXT void compose_json_tag2(json_t *, struct chained_cache *);
 EXT void compose_json_label(json_t *, struct chained_cache *);
 EXT void compose_json_class(json_t *, struct chained_cache *);
+#if defined (WITH_NDPI)
+EXT void compose_json_ndpi_class(json_t *, struct chained_cache *);
+#endif
 EXT void compose_json_src_mac(json_t *, struct chained_cache *);
 EXT void compose_json_dst_mac(json_t *, struct chained_cache *);
 EXT void compose_json_vlan(json_t *, struct chained_cache *);
@@ -83,12 +86,14 @@ EXT void compose_json_src_host_country(json_t *, struct chained_cache *);
 EXT void compose_json_dst_host_country(json_t *, struct chained_cache *);
 EXT void compose_json_src_host_pocode(json_t *, struct chained_cache *);
 EXT void compose_json_dst_host_pocode(json_t *, struct chained_cache *);
+EXT void compose_json_src_host_coords(json_t *, struct chained_cache *);
+EXT void compose_json_dst_host_coords(json_t *, struct chained_cache *);
 #endif
 EXT void compose_json_tcp_flags(json_t *, struct chained_cache *);
 EXT void compose_json_proto(json_t *, struct chained_cache *);
 EXT void compose_json_tos(json_t *, struct chained_cache *);
 EXT void compose_json_sampling_rate(json_t *, struct chained_cache *);
-EXT void compose_json_pkt_len_distrib(json_t *, struct chained_cache *);
+EXT void compose_json_sampling_direction(json_t *, struct chained_cache *);
 EXT void compose_json_post_nat_src_host(json_t *, struct chained_cache *);
 EXT void compose_json_post_nat_dst_host(json_t *, struct chained_cache *);
 EXT void compose_json_post_nat_src_port(json_t *, struct chained_cache *);
@@ -107,6 +112,7 @@ EXT void compose_json_timestamp_arrival(json_t *, struct chained_cache *);
 EXT void compose_json_timestamp_stitching(json_t *, struct chained_cache *);
 EXT void compose_json_export_proto_seqno(json_t *, struct chained_cache *);
 EXT void compose_json_export_proto_version(json_t *, struct chained_cache *);
+EXT void compose_json_export_proto_sysid(json_t *, struct chained_cache *);
 EXT void compose_json_custom_primitives(json_t *, struct chained_cache *);
 EXT void compose_json_history(json_t *, struct chained_cache *);
 EXT void compose_json_flows(json_t *, struct chained_cache *);

@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -65,9 +65,9 @@
 #include <signal.h>
 #include <syslog.h>
 #include <sys/resource.h>
-#include <search.h>
 #include <dirent.h>
 #include <limits.h>
+#include "pmsearch.h"
 
 #include <sys/mman.h>
 #if !defined (MAP_ANONYMOUS)
@@ -90,7 +90,11 @@
 #endif
 
 #if defined (WITH_NDPI)
-#include <libndpi/ndpi_main.h>
+#include <ndpi_main.h>
+#endif
+
+#if defined (WITH_ZMQ)
+#include <zmq.h>
 #endif
 
 #include "pmacct-build.h"
@@ -227,7 +231,6 @@ typedef struct {
 #include "network.h"
 #include "pretag.h"
 #include "cfg.h"
-#include "util.h"
 #include "xflow_status.h"
 #include "log.h"
 #include "once.h"
@@ -251,11 +254,32 @@ typedef struct {
 #endif
 
 /* structures */
+struct pcap_interface {
+  u_int32_t ifindex;
+  char ifname[IFNAMSIZ];
+  int direction;
+};
+
+struct pcap_interfaces {
+  struct pcap_interface *list;
+  int num;
+};
+
 struct pcap_device {
+  char str[IFNAMSIZ];
+  u_int32_t id;
   pcap_t *dev_desc;
   int link_type;
   int active;
+  int errors; /* error count when reading from a savefile */
+  int fd;
   struct _devices_struct *data; 
+  struct pcap_interface *pcap_if;
+};
+
+struct pcap_devices {
+  struct pcap_device list[PCAP_MAX_INTERFACES];
+  int num;
 };
 
 struct pcap_callback_data {
@@ -316,6 +340,8 @@ struct child_ctl2 {
 	x.end = x.base+sizeof(x.base); \
 	x.ptr = x.base;
 
+#include "util.h"
+
 /* prototypes */
 void startup_handle_falling_child();
 void handle_falling_child();
@@ -324,6 +350,18 @@ void my_sigint_handler();
 void reload();
 void push_stats();
 void reload_maps();
+#if (!defined __PMACCTD_C)
+#define EXT extern
+#else
+#define EXT
+#endif
+EXT void pm_pcap_device_initialize(struct pcap_devices *);
+EXT void pm_pcap_device_copy_all(struct pcap_devices *, struct pcap_devices *);
+EXT void pm_pcap_device_copy_entry(struct pcap_devices *, struct pcap_devices *, int);
+EXT int pm_pcap_device_getindex_byifname(struct pcap_devices *, char *);
+EXT pcap_t *pm_pcap_open(const char *, int, int, int, int, int, char *);
+EXT int pm_pcap_add_interface(struct pcap_device *, char *, struct pcap_interface *, int);
+#undef EXT
 
 #if (!defined __LL_C)
 #define EXT extern
@@ -358,7 +396,10 @@ EXT void tunnel_registry_init();
 EXT void pcap_cb(u_char *, const struct pcap_pkthdr *, const u_char *);
 EXT int PM_find_id(struct id_table *, struct packet_ptrs *, pm_id_t *, pm_id_t *);
 EXT void compute_once();
+EXT void reset_index_pkt_ptrs(struct packet_ptrs *);
 EXT void set_index_pkt_ptrs(struct packet_ptrs *);
+EXT ssize_t recvfrom_savefile(struct pcap_device *, void **, struct sockaddr *, struct timeval **, int *, struct packet_ptrs *);
+EXT ssize_t recvfrom_rawip(char *, size_t, struct sockaddr *, struct packet_ptrs *);
 #undef EXT
 
 #ifndef HAVE_STRLCPY
@@ -390,8 +431,11 @@ initsetproctitle(int, char**, char**);
 #endif
 EXT struct host_addr mcast_groups[MAX_MCAST_GROUPS];
 EXT int reload_map, reload_map_exec_plugins, reload_geoipv2_file;
-EXT int reload_map_bgp_thread, reload_log_bgp_thread, reload_log_bmp_thread;
-EXT int reload_log_sf_cnt, reload_log_telemetry_thread;
+EXT int reload_map_bgp_thread, reload_log_bgp_thread;
+EXT int reload_map_bmp_thread, reload_log_bmp_thread;
+EXT int reload_map_telemetry_thread, reload_log_telemetry_thread;
+EXT int reload_map_pmacctd;
+EXT int reload_log_sf_cnt;
 EXT int data_plugins, tee_plugins;
 EXT struct timeval reload_map_tstamp;
 EXT struct child_ctl2 dump_writers;
@@ -400,7 +444,8 @@ EXT struct configuration config; /* global configuration structure */
 EXT struct plugins_list_entry *plugins_list; /* linked list of each plugin configuration */
 EXT pid_t failed_plugins[MAX_N_PLUGINS]; /* plugins failed during startup phase */
 EXT u_char dummy_tlhdr[16];
-EXT pcap_t *glob_pcapt;
+EXT struct pcap_devices device, bkp_device;
+EXT struct pcap_interfaces pcap_if_map, bkp_pcap_if_map;
 EXT struct pcap_stat ps;
 #undef EXT
 #endif /* _PMACCT_H_ */

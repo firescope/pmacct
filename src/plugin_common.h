@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -33,6 +33,7 @@
 /* defines */
 #define DEFAULT_PLUGIN_COMMON_REFRESH_TIME 60 
 #define DEFAULT_PLUGIN_COMMON_WRITERS_NO 10
+#define DEFAULT_PLUGIN_COMMON_RECV_BUDGET 100
 
 #define AVERAGE_CHAIN_LEN 10
 #define PRINT_CACHE_ENTRIES 16411
@@ -88,14 +89,6 @@ struct p_table_rr {
 };
 #endif
 
-#ifndef P_BROKER_TIMERS
-#define P_BROKER_TIMERS
-struct p_broker_timers {
-  time_t last_fail;
-  int retry_interval;
-};
-#endif
-
 #if (!defined __PLUGIN_COMMON_EXPORT)
 
 #include "preprocess.h"
@@ -127,19 +120,12 @@ EXT void P_exit_now(int);
 EXT int P_trigger_exec(char *);
 EXT void primptrs_set_all_from_chained_cache(struct primitives_ptrs *, struct chained_cache *);
 EXT void P_handle_table_dyn_rr(char *, int, char *, struct p_table_rr *);
-EXT void P_handle_table_dyn_strings(char *, int, char *, struct chained_cache *);
-
-EXT void P_broker_timers_set_last_fail(struct p_broker_timers *, time_t);
-EXT void P_broker_timers_set_retry_interval(struct p_broker_timers *, int);
-EXT void P_broker_timers_unset_last_fail(struct p_broker_timers *);
-EXT time_t P_broker_timers_get_last_fail(struct p_broker_timers *);
-EXT int P_broker_timers_get_retry_interval(struct p_broker_timers *);
 
 EXT void P_init_historical_acct(time_t);
 EXT void P_init_refresh_deadline(time_t *, int, int, char *);
 EXT void P_eval_historical_acct(struct timeval *, struct timeval *, time_t);
 EXT int P_cmp_historical_acct(struct timeval *, struct timeval *);
-EXT int P_test_zero_elem(struct chained_cache *);
+EXT void P_update_time_reference(struct insert_data *);
 
 /* global vars */
 EXT void (*insert_func)(struct primitives_ptrs *, struct insert_data *); /* pointer to INSERT function */
@@ -157,7 +143,7 @@ EXT void (*basetime_eval)(struct timeval *, struct timeval *, time_t);
 EXT int (*basetime_cmp)(struct timeval *, struct timeval *);
 EXT struct timeval basetime, ibasetime, new_basetime;
 EXT time_t timeslot;
-EXT int dyn_table;
+EXT int dyn_table, dyn_table_time_only;
 
 #ifdef WITH_AVRO
 EXT avro_schema_t avro_acct_schema;

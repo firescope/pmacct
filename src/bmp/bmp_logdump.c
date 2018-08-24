@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -68,13 +68,17 @@ int bmp_log_msg(struct bgp_peer *peer, struct bmp_data *bdata, void *log_data, u
     json_object_set_new_nocheck(obj, "seq", json_integer((json_int_t)log_seq));
 
     if (etype == BGP_LOGDUMP_ET_LOG) {
-      compose_timestamp(tstamp_str, SRVBUFLEN, &bdata->tstamp, TRUE, config.timestamps_since_epoch);
+      compose_timestamp(tstamp_str, SRVBUFLEN, &bdata->tstamp, TRUE,
+			config.timestamps_since_epoch, config.timestamps_rfc3339,
+			config.timestamps_utc);
       json_object_set_new_nocheck(obj, "timestamp", json_string(tstamp_str));
     }
     else if (etype == BGP_LOGDUMP_ET_DUMP) {
       json_object_set_new_nocheck(obj, "timestamp", json_string(bms->dump.tstamp_str));
 
-      compose_timestamp(tstamp_str, SRVBUFLEN, &bdata->tstamp, TRUE, config.timestamps_since_epoch);
+      compose_timestamp(tstamp_str, SRVBUFLEN, &bdata->tstamp, TRUE,
+			config.timestamps_since_epoch, config.timestamps_rfc3339,
+			config.timestamps_utc);
       json_object_set_new_nocheck(obj, "event_timestamp", json_string(tstamp_str));
     }
 
@@ -148,7 +152,13 @@ int bmp_log_msg_stats(struct bgp_peer *peer, struct bmp_data *bdata, struct bmp_
 
   json_object_set_new_nocheck(obj, "peer_type", json_integer((json_int_t)bdata->peer_type));
 
-  json_object_set_new_nocheck(obj, "is_post", json_integer((json_int_t)bdata->is_post));
+  if (bdata->peer_type == BMP_PEER_TYPE_LOC_RIB) {
+    json_object_set_new_nocheck(obj, "is_filtered", json_integer((json_int_t)bdata->is_filtered));
+  }
+  else { 
+    json_object_set_new_nocheck(obj, "is_post", json_integer((json_int_t)bdata->is_post));
+    json_object_set_new_nocheck(obj, "is_out", json_integer((json_int_t)bdata->is_out));
+  }
 
   json_object_set_new_nocheck(obj, "counter_type", json_integer((json_int_t)blstats->cnt_type));
 
@@ -156,6 +166,11 @@ int bmp_log_msg_stats(struct bgp_peer *peer, struct bmp_data *bdata, struct bmp_
     json_object_set_new_nocheck(obj, "counter_type_str", json_string(bmp_stats_cnt_types[blstats->cnt_type]));
   else
     json_object_set_new_nocheck(obj, "counter_type_str", json_string("Unknown"));
+
+  if (blstats->cnt_type == BMP_STATS_TYPE9 || blstats->cnt_type == BMP_STATS_TYPE10) {
+    json_object_set_new_nocheck(obj, "afi", json_integer((json_int_t)blstats->cnt_afi));
+    json_object_set_new_nocheck(obj, "safi", json_integer((json_int_t)blstats->cnt_safi));
+  }
 
   if (blstats->got_data) json_object_set_new_nocheck(obj, "counter_value", json_integer((json_int_t)blstats->cnt_data));
 #endif
@@ -236,7 +251,16 @@ int bmp_log_msg_peer_up(struct bgp_peer *peer, struct bmp_data *bdata, struct bm
 
   json_object_set_new_nocheck(obj, "peer_type", json_integer((json_int_t)bdata->peer_type));
 
-  json_object_set_new_nocheck(obj, "is_post", json_integer((json_int_t)bdata->is_post));
+  if (bdata->peer_type <= BMP_PEER_TYPE_MAX)
+    json_object_set_new_nocheck(obj, "peer_type_str", json_string(bmp_peer_types[bdata->peer_type]));
+
+  if (bdata->peer_type == BMP_PEER_TYPE_LOC_RIB) {
+    json_object_set_new_nocheck(obj, "is_filtered", json_integer((json_int_t)bdata->is_filtered));
+  }
+  else {
+    json_object_set_new_nocheck(obj, "is_post", json_integer((json_int_t)bdata->is_post));
+    json_object_set_new_nocheck(obj, "is_out", json_integer((json_int_t)bdata->is_out));
+  }
 
   json_object_set_new_nocheck(obj, "bgp_id", json_string(inet_ntoa(bdata->bgp_id.address.ipv4)));
 
@@ -270,9 +294,13 @@ int bmp_log_msg_peer_down(struct bgp_peer *peer, struct bmp_data *bdata, struct 
 
   json_object_set_new_nocheck(obj, "peer_type", json_integer((json_int_t)bdata->peer_type));
 
-  json_object_set_new_nocheck(obj, "is_post", json_integer((json_int_t)bdata->is_post));
+  if (bdata->peer_type <= BMP_PEER_TYPE_MAX)
+    json_object_set_new_nocheck(obj, "peer_type_str", json_string(bmp_peer_types[bdata->peer_type]));
 
   json_object_set_new_nocheck(obj, "reason_type", json_integer((json_int_t)blpd->reason));
+
+  if (blpd->reason <= BMP_PEER_DOWN_MAX)
+    json_object_set_new_nocheck(obj, "reason_str", json_string(bmp_peer_down_reason_types[blpd->reason]));
 
   if (blpd->reason == BMP_PEER_DOWN_LOC_CODE)
     json_object_set_new_nocheck(obj, "reason_loc_code", json_integer((json_int_t)blpd->loc_code));
@@ -357,7 +385,7 @@ void bmp_dump_se_ll_append(struct bgp_peer *peer, struct bmp_data *bdata, void *
     }
   }
 
-  se_ll_elem->rec.seq = bms->log_seq;;
+  se_ll_elem->rec.seq = bgp_peer_log_seq_get(&bms->log_seq);
   se_ll_elem->rec.se_type = log_type;
   se_ll_elem->next = NULL; /* pedantic */
 
@@ -410,7 +438,7 @@ void bmp_handle_dump_event()
   safi_t safi;
   pid_t dumper_pid;
   time_t start;
-  u_int64_t dump_elems;
+  u_int64_t dump_elems, dump_seqno;
 
   struct bgp_peer *peer, *saved_peer;
   struct bmp_peer *bmpp, *saved_bmpp;
@@ -420,6 +448,10 @@ void bmp_handle_dump_event()
   /* pre-flight check */
   if (!bms->dump_backend_methods || !config.bmp_dump_refresh_time)
     return;
+
+  /* Sequencing the dump event */
+  dump_seqno = bgp_peer_log_seq_get(&bms->log_seq);
+  bgp_peer_log_seq_increment(&bms->log_seq);
 
   switch (ret = fork()) {
   case 0: /* Child */
@@ -431,6 +463,7 @@ void bmp_handle_dump_event()
     memset(last_filename, 0, sizeof(last_filename));
     memset(current_filename, 0, sizeof(current_filename));
     fd_buf = malloc(OUTPUT_FILE_BUFSZ);
+    bgp_peer_log_seq_set(&bms->log_seq, dump_seqno);
 
 #ifdef WITH_RABBITMQ
     if (config.bmp_dump_amqp_routing_key) {
@@ -463,13 +496,13 @@ void bmp_handle_dump_event()
         if (config.bmp_dump_amqp_routing_key) bgp_peer_log_dynname(current_filename, SRVBUFLEN, config.bmp_dump_amqp_routing_key, peer);
         if (config.bmp_dump_kafka_topic) bgp_peer_log_dynname(current_filename, SRVBUFLEN, config.bmp_dump_kafka_topic, peer);
 
-        strftime_same(current_filename, SRVBUFLEN, tmpbuf, &bms->dump.tstamp.tv_sec);
+        pm_strftime_same(current_filename, SRVBUFLEN, tmpbuf, &bms->dump.tstamp.tv_sec, config.timestamps_utc);
 
         /*
-	  we close last_filename and open current_filename in case they differ;
-	  we are safe with this approach until $peer_src_ip is the only variable
-	  supported as part of bmp_dump_file configuration directive.
-	*/
+	   we close last_filename and open current_filename in case they differ;
+	   we are safe with this approach until time and BMP peer (IP, port) are
+	   the only variables supported as part of bmp_dump_file.
+        */
         if (config.bmp_dump_file) {
           if (strcmp(last_filename, current_filename)) {
 	    if (saved_peer && saved_peer->log && strlen(last_filename)) {
@@ -507,7 +540,7 @@ void bmp_handle_dump_event()
         }
 #endif
 
-	bgp_peer_dump_init(peer, config.bmp_dump_output, FUNC_TYPE_BMP);
+	bgp_peer_dump_init(peer, config.bmp_dump_output, FUNC_TYPE_BMP, TRUE);
 	inter_domain_routing_db = bgp_select_routing_db(FUNC_TYPE_BMP);
         dump_elems = 0;
 
@@ -529,11 +562,14 @@ void bmp_handle_dump_event()
 
                   if (local_bmpp && (&local_bmpp->self == peer)) {
 		    char peer_str[] = "peer_ip", *saved_peer_str = bms->peer_str;
+		    char peer_port_str[] = "peer_tcp_port", *saved_peer_port_str = bms->peer_port_str;
 
 		    ri->peer->log = peer->log;
 		    bms->peer_str = peer_str;
-                    bgp_peer_log_msg(node, ri, afi, safi, event_type, config.bmp_dump_output, BGP_LOG_TYPE_MISC);
+		    bms->peer_port_str = peer_port_str;
+                    bgp_peer_log_msg(node, ri, afi, safi, event_type, config.bmp_dump_output, NULL, BGP_LOG_TYPE_MISC);
 		    bms->peer_str = saved_peer_str;
+		    bms->peer_port_str = saved_peer_port_str;
                     dump_elems++;
                   }
                 }
@@ -574,7 +610,7 @@ void bmp_handle_dump_event()
 	saved_peer = peer;
 	saved_bmpp = bmpp;
         strlcpy(last_filename, current_filename, SRVBUFLEN);
-        bgp_peer_dump_close(peer, NULL, config.bmp_dump_output, FUNC_TYPE_BMP);
+        bgp_peer_dump_close(peer, NULL, config.bmp_dump_output, FUNC_TYPE_BMP, TRUE);
         tables_num++;
       }
     }

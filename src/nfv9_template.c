@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -41,24 +41,29 @@ struct template_cache_entry *handle_template(struct template_hdr_v9 *hdr, struct
 
   /* 0 NetFlow v9, 2 IPFIX */
   if (tpl_type == 0 || tpl_type == 2) {
-    if (tpl = find_template(hdr->template_id, (struct host_addr *) pptrs->f_agent, tpl_type, sid))
+    if ((tpl = find_template(hdr->template_id, (struct sockaddr *) pptrs->f_agent, tpl_type, sid)))
       tpl = refresh_template(hdr, tpl, pptrs, tpl_type, sid, pens, version, len, seq);
     else tpl = insert_template(hdr, pptrs, tpl_type, sid, pens, version, len, seq);
   }
   /* 1 NetFlow v9, 3 IPFIX */
   else if (tpl_type == 1 || tpl_type == 3) {
-    if (tpl = find_template(hdr->template_id, (struct host_addr *) pptrs->f_agent, tpl_type, sid))
-      tpl = refresh_opt_template(hdr, tpl, pptrs, tpl_type, sid, version, len, seq);
-    else tpl = insert_opt_template(hdr, pptrs, tpl_type, sid, version, len, seq);
+    if ((tpl = find_template(hdr->template_id, (struct sockaddr *) pptrs->f_agent, tpl_type, sid)))
+      tpl = refresh_opt_template(hdr, tpl, pptrs, tpl_type, sid, pens, version, len, seq);
+    else tpl = insert_opt_template(hdr, pptrs, tpl_type, sid, pens, version, len, seq);
   }
 
   return tpl;
 }
 
-struct template_cache_entry *find_template(u_int16_t id, struct host_addr *agent, u_int16_t tpl_type, u_int32_t sid)
+u_int16_t modulo_template(u_int16_t template_id, struct sockaddr *agent, u_int16_t buckets)
+{
+  return hash_status_table(ntohs(template_id), agent, buckets);
+}
+
+struct template_cache_entry *find_template(u_int16_t id, struct sockaddr *agent, u_int16_t tpl_type, u_int32_t sid)
 {
   struct template_cache_entry *ptr;
-  u_int16_t modulo = (ntohs(id)%tpl_cache.num);
+  u_int16_t modulo = modulo_template(id, agent, tpl_cache.num);
 
   ptr = tpl_cache.c[modulo];
 
@@ -77,8 +82,8 @@ struct template_cache_entry *insert_template(struct template_hdr_v9 *hdr, struct
 {
   struct template_cache_entry *ptr, *prevptr = NULL;
   struct template_field_v9 *field;
-  u_int16_t modulo = (ntohs(hdr->template_id)%tpl_cache.num), count;
-  u_int16_t num = ntohs(hdr->num), type, port, off;
+  u_int16_t modulo = modulo_template(hdr->template_id, (struct sockaddr *) pptrs->f_agent, tpl_cache.num);
+  u_int16_t num = ntohs(hdr->num), type, port, off, count;
   u_int32_t *pen;
   u_int8_t ipfix_ebit;
   u_char *tpl;
@@ -92,7 +97,7 @@ struct template_cache_entry *insert_template(struct template_hdr_v9 *hdr, struct
 
   ptr = malloc(sizeof(struct template_cache_entry));
   if (!ptr) {
-    Log(LOG_ERR, "ERROR ( %s/core ): Unable to allocate enough memory for a new Template Cache Entry.\n", config.name);
+    Log(LOG_ERR, "ERROR ( %s/core ): insert_template(): unable to allocate new Data Template Cache Entry.\n", config.name);
     return NULL;
   }
 
@@ -112,9 +117,17 @@ struct template_cache_entry *insert_template(struct template_hdr_v9 *hdr, struct
   field = (struct template_field_v9 *)tpl;
 
   while (count < num) {
+    if (count >= TPL_LIST_ENTRIES) {
+      notify_malf_packet(LOG_INFO, "INFO: insert_template(): unable to read Data Template (too long)",
+			 (struct sockaddr *) pptrs->f_agent, seq);
+      xflow_tot_bad_datagrams++;
+      free(ptr);
+      return NULL;
+    }
+
     if (off >= len) {
-      notify_malf_packet(LOG_INFO, "INFO: unable to read next Template Flowset (malformed template)",
-                        (struct sockaddr *) pptrs->f_agent, seq);
+      notify_malf_packet(LOG_INFO, "INFO: insert_template(): unable to read Data Template (malformed)",
+			 (struct sockaddr *) pptrs->f_agent, seq);
       xflow_tot_bad_datagrams++;
       free(ptr);
       return NULL;
@@ -213,9 +226,14 @@ void load_templates_from_file(char *path)
   int line = 1;
   u_int16_t modulo;
 
+#if defined ENABLE_IPV6
+  struct sockaddr_storage agent;
+#else
+  struct sockaddr agent;
+#endif
+
   if (!tmp_file) {
-    Log(LOG_ERR, "ERROR ( %s/core ): [%s] load_templates_from_file(): unable to fopen(). File skipped.\n",
-               config.name, path);
+    Log(LOG_ERR, "ERROR ( %s/core ): [%s] load_templates_from_file(): unable to fopen(). File skipped.\n", config.name, path);
     return;
   }
 
@@ -226,12 +244,15 @@ void load_templates_from_file(char *path)
       Log(LOG_WARNING, "WARN ( %s/core ): [%s:%u] %s\n", config.name, path, line, errbuf);
     }
     else {
+      addr_to_sa((struct sockaddr *) &agent, &tpl->agent, 0);
+
       /* We assume the cache is empty when templates are loaded */
-      if (find_template(tpl->template_id, &tpl->agent, tpl->template_type, tpl->source_id))
-        Log(LOG_DEBUG, "WARN ( %s/core ): Template %u already exists in cache. Skipping\n",
-                config.name, tpl->template_id);
+      if (find_template(tpl->template_id, (struct sockaddr *) &agent, tpl->template_type, tpl->source_id)) {
+	Log(LOG_WARNING, "WARN ( %s/core ): load_templates_from_file(): template %u already cached. Skipping.\n",
+	    config.name, tpl->template_id);
+      }
       else {
-        modulo = (ntohs(tpl->template_id)%tpl_cache.num);
+        modulo = modulo_template(tpl->template_id, (struct sockaddr *) &agent, tpl_cache.num);
         ptr = tpl_cache.c[modulo];
 
         while (ptr) {
@@ -242,7 +263,8 @@ void load_templates_from_file(char *path)
         if (prev_ptr) prev_ptr->next = tpl;
         else tpl_cache.c[modulo] = tpl;
 
-        Log(LOG_DEBUG, "DEBUG ( %s/core ): Loaded template %u into cache.\n", config.name, tpl->template_id);
+        Log(LOG_DEBUG, "DEBUG ( %s/core ): load_templates_from_file(): loaded template %u into cache.\n",
+	    config.name, tpl->template_id);
       }
     }
 
@@ -263,8 +285,8 @@ void update_template_in_file(struct template_cache_entry *tpl, char *path)
   u_int32_t src_id;
 
   if (!tmp_file) {
-    Log(LOG_WARNING, "WARN ( %s/core ): [%s] update_template_in_file(): unable to fopen(). Update skipped.\n",
-               config.name, path);
+    Log(LOG_WARNING, "WARN ( %s/core ): [%s] update_template_in_file(): unable to fopen(). File skipped.\n",
+	config.name, path);
     return;
   }
 
@@ -277,82 +299,70 @@ void update_template_in_file(struct template_cache_entry *tpl, char *path)
 
     if (!json_obj) {
       Log(LOG_WARNING, "WARN ( %s/core ): [%s] update_template_in_file(): json_loads() error: %s. Line skipped.\n",
-              config.name, path, json_err.text);
+	  config.name, path, json_err.text);
       continue;
     }
     else {
       if (!json_is_object(json_obj)) {
         Log(LOG_WARNING, "WARN ( %s/core ): [%s] update_template_in_file(): json_is_object() failed. Line skipped.\n",
-                config.name, path);
-        continue;
+	    config.name, path);
+        goto next_line;
       }
       else {
         json_t *json_tpl_id = json_object_get(json_obj, "template_id");
         if (json_tpl_id == NULL) {
           Log(LOG_WARNING, "WARN ( %s/core ): [%s] update_template_in_file(): template ID null. Line skipped.\n",
-                  config.name, path);
-          continue;
+	      config.name, path);
+          goto next_line;
         }
-        else {
-          tpl_id = json_integer_value(json_tpl_id);
-        }
-
-        free(json_tpl_id);
+        else tpl_id = json_integer_value(json_tpl_id);
 
         json_t *json_agent = json_object_get(json_obj, "agent");
         if (json_agent == NULL) {
           Log(LOG_WARNING, "WARN ( %s/core ): [%s] update_template_in_file(): agent null. Line skipped.\n",
-                  config.name, path);
-          continue;
+	      config.name, path);
+          goto next_line;
         }
-        else {
-          addr = json_string_value(json_agent);
-        }
-
-        free(json_agent);
+        else addr = json_string_value(json_agent);
 
         json_t *json_src_id = json_object_get(json_obj, "source_id");
         if (json_src_id == NULL) {
           Log(LOG_WARNING, "WARN ( %s/core ): [%s] update_template_in_file(): source ID null. Line skipped.\n",
-                  config.name, path);
-          continue;
+	      config.name, path);
+          goto next_line;
         }
-        else {
-          src_id = json_integer_value(json_src_id);
-        }
-
-        free(json_src_id);
+        else src_id = json_integer_value(json_src_id);
 
         json_t *json_tpl_type = json_object_get(json_obj, "template_type");
         if (json_tpl_type == NULL) {
           Log(LOG_WARNING, "WARN ( %s/core ): [%s] update_template_in_file(): template type null. Line skipped.\n",
-                  config.name, path);
-          continue;
+	      config.name, path);
+          goto next_line;
         }
-        else {
-          tpl_type = json_integer_value(json_tpl_type);
-        }
-
-        free(json_tpl_type);
+        else tpl_type = json_integer_value(json_tpl_type);
       }
 
       addr_to_str(tpl_agent_str, &tpl->agent);
       if (tpl_id == tpl->template_id && tpl_type == tpl->template_type
               && src_id == tpl->source_id && !strcmp(addr, tpl_agent_str)) {
         tpl_found = TRUE;
+	json_decref(json_obj);
         break;
       }
     }
+
+    next_line:
+    json_decref(json_obj);
     line++;
   }
 
   if (!tpl_found)
     Log(LOG_WARNING, "WARN ( %s/core ): [%s] update_template_in_file(): Template %u not found.\n",
-            config.name, path, tpl->template_id);
+	config.name, path, tpl->template_id);
   else {
     if (delete_line_from_file(line, path) != 0) {
       Log(LOG_WARNING, "WARN ( %s/core ): [%s] update_template_in_file(): Error deleting old template. New version not saved.\n",
-              config.name, path);
+	  config.name, path);
     }
     else {
       save_template(tpl, path);
@@ -366,10 +376,8 @@ void save_template(struct template_cache_entry *tpl, char *file)
 {
   FILE *tpl_file = open_output_file(config.nfacctd_templates_file, "a", TRUE);
   u_int16_t field_idx;
-  u_int8_t idx;
-  char *fmt;
   char ip_addr[INET6_ADDRSTRLEN];
-  json_t *root = json_object(), *agent_obj;
+  json_t *root = json_object();
   json_t *list_array, *tpl_array;
 
   addr_to_str(ip_addr, &tpl->agent);
@@ -417,7 +425,7 @@ void save_template(struct template_cache_entry *tpl, char *file)
       }
       else if (tpl->list[field_idx].type == TPL_TYPE_EXT_DB) {
         struct utpl_field *ext_db_ptr = (struct utpl_field *) tpl->list[field_idx].ptr;
-        u_int16_t ext_db_modulo = (ext_db_ptr->type%TPL_EXT_DB_ENTRIES);
+        u_int16_t ext_db_modulo = (ext_db_ptr->type % TPL_EXT_DB_ENTRIES);
 
         /* Where in tpl->ext_db[ext_db_modulo].ie
            to insert the utpl_field when deserializing */
@@ -474,7 +482,7 @@ void save_template(struct template_cache_entry *tpl, char *file)
 
   if (root) {
       write_and_free_json(tpl_file, root);
-      Log(LOG_DEBUG, "DEBUG ( %s/core ): Saved template %u into file.\n", config.name, tpl->template_id);
+      Log(LOG_DEBUG, "DEBUG ( %s/core ): save_template(): saved template %u into file.\n", config.name, tpl->template_id);
   }
 
   close_output_file(tpl_file);
@@ -483,7 +491,6 @@ void save_template(struct template_cache_entry *tpl, char *file)
 struct template_cache_entry *nfacctd_offline_read_json_template(char *buf, char *errbuf, int errlen)
 {
   struct template_cache_entry *ret = NULL;
-  u_int16_t field_idx;
 
   json_error_t json_err;
   json_t *json_obj = NULL, *json_tpl_id = NULL, *json_src_id = NULL, *json_tpl_type = NULL;
@@ -680,7 +687,7 @@ struct template_cache_entry *nfacctd_offline_read_json_template(char *buf, char 
               }
               else ie_idx = json_integer_value(json_utpl_member);
 
-              modulo = (utpl.type%TPL_EXT_DB_ENTRIES);
+              modulo = (utpl.type % TPL_EXT_DB_ENTRIES);
               memcpy(&ret->ext_db[modulo].ie[ie_idx], &utpl, sizeof(struct utpl_field));
               ret->list[idx].ptr = (char *) &ret->ext_db[modulo].ie[ie_idx];
             }
@@ -799,9 +806,16 @@ struct template_cache_entry *refresh_template(struct template_hdr_v9 *hdr, struc
   field = (struct template_field_v9 *)ptr;
 
   while (count < num) {
+    if (count >= TPL_LIST_ENTRIES) {
+      notify_malf_packet(LOG_INFO, "INFO: refresh_template(): unable to read Data Template (too long)",
+			 (struct sockaddr *) pptrs->f_agent, seq);
+      xflow_tot_bad_datagrams++;
+      return NULL;
+    }
+
     if (off >= len) {
-      notify_malf_packet(LOG_INFO, "INFO: unable to read next Template Flowset (malformed template)",
-                        (struct sockaddr *) pptrs->f_agent, seq);
+      notify_malf_packet(LOG_INFO, "INFO: refresh_template(): unable to read Data Template (malformed)",
+                         (struct sockaddr *) pptrs->f_agent, seq);
       xflow_tot_bad_datagrams++;
       memcpy(tpl, &backup, sizeof(struct template_cache_entry));
       return NULL;
@@ -887,7 +901,7 @@ void log_template_header(struct template_cache_entry *tpl, struct packet_ptrs *p
 {
   struct host_addr a;
   u_char agent_addr[50];
-  u_int16_t agent_port, count, size;
+  u_int16_t agent_port;
 
   sa_to_addr((struct sockaddr *)pptrs->f_agent, &a, &agent_port);
   addr_to_str(agent_addr, &a);
@@ -896,14 +910,8 @@ void log_template_header(struct template_cache_entry *tpl, struct packet_ptrs *p
   Log(LOG_DEBUG, "DEBUG ( %s/core ): NfV%u template type : %s\n", config.name, version, ( tpl->template_type == 0 || tpl->template_type == 2 ) ? "flow" : "options");
   Log(LOG_DEBUG, "DEBUG ( %s/core ): NfV%u template ID   : %u\n", config.name, version, ntohs(tpl->template_id));
 
-  if ( tpl->template_type == 0 || tpl->template_type == 2 ) {
-    Log(LOG_DEBUG, "DEBUG ( %s/core ): -------------------------------------------------------------\n", config.name);
-    Log(LOG_DEBUG, "DEBUG ( %s/core ): |    pen     |         field type         | offset |  size  |\n", config.name);
-  }
-  else {
-    Log(LOG_DEBUG, "DEBUG ( %s/core ): ------------------------------------------------\n", config.name);
-    Log(LOG_DEBUG, "DEBUG ( %s/core ): |         field type         | offset |  size  |\n", config.name);
-  }
+  Log(LOG_DEBUG, "DEBUG ( %s/core ): -------------------------------------------------------------\n", config.name);
+  Log(LOG_DEBUG, "DEBUG ( %s/core ): |    pen     |         field type         | offset |  size  |\n", config.name);
 }
 
 void log_template_field(u_int8_t vlen, u_int32_t *pen, u_int16_t type, u_int16_t off, u_int16_t len, u_int8_t version)
@@ -930,20 +938,20 @@ void log_template_field(u_int8_t vlen, u_int32_t *pen, u_int16_t type, u_int16_t
   }
 }
 
-void log_opt_template_field(u_int16_t type, u_int16_t off, u_int16_t len, u_int8_t version)
+void log_opt_template_field(u_int8_t vlen, u_int32_t *pen, u_int16_t type, u_int16_t off, u_int16_t len, u_int8_t version)
 {
-  if (type <= MAX_OPT_TPL_DESC_LIST && strlen(opt_tpl_desc_list[type]))
-    Log(LOG_DEBUG, "DEBUG ( %s/core ): | %-18s [%-5u] | %6u | %6u |\n", config.name, opt_tpl_desc_list[type], type, off, len);
-  else
-    Log(LOG_DEBUG, "DEBUG ( %s/core ): | %-18u [%-5u] | %6u | %6u |\n", config.name, type, type, off, len);
+  if (!pen) {
+    if (type <= MAX_OPT_TPL_DESC_LIST && strlen(opt_tpl_desc_list[type]))
+      Log(LOG_DEBUG, "DEBUG ( %s/core ): | %-10u | %-18s [%-5u] | %6u | %6u |\n", config.name, 0, opt_tpl_desc_list[type], type, off, len);
+    else
+      Log(LOG_DEBUG, "DEBUG ( %s/core ): | %-10u | %-18u [%-5u] | %6u | %6u |\n", config.name, 0, type, type, off, len);
+  }
+  else Log(LOG_DEBUG, "DEBUG ( %s/core ): | %-10u | %-18u [%-5u] | %6u | %6u |\n", config.name, ntohl(*pen), type, type, off, len);
 }
 
 void log_template_footer(struct template_cache_entry *tpl, u_int16_t size, u_int8_t version)
 {
-  if ( tpl->template_type == 0 || tpl->template_type == 2 )
-    Log(LOG_DEBUG, "DEBUG ( %s/core ): -------------------------------------------------------------\n", config.name);
-  else 
-    Log(LOG_DEBUG, "DEBUG ( %s/core ): ------------------------------------------------\n", config.name);
+  Log(LOG_DEBUG, "DEBUG ( %s/core ): -------------------------------------------------------------\n", config.name);
 
   if (!size)
     Log(LOG_DEBUG, "DEBUG ( %s/core ): Netflow V9/IPFIX record size : %s\n", config.name, "tbd");
@@ -953,25 +961,27 @@ void log_template_footer(struct template_cache_entry *tpl, u_int16_t size, u_int
 }
 
 struct template_cache_entry *insert_opt_template(void *hdr, struct packet_ptrs *pptrs, u_int16_t tpl_type,
-							u_int32_t sid, u_int8_t version, u_int16_t len, u_int32_t seq)
+							u_int32_t sid, u_int16_t *pens, u_int8_t version, u_int16_t len, u_int32_t seq)
 {
   struct options_template_hdr_v9 *hdr_v9 = (struct options_template_hdr_v9 *) hdr;
   struct options_template_hdr_ipfix *hdr_v10 = (struct options_template_hdr_ipfix *) hdr;
   struct template_cache_entry *ptr, *prevptr = NULL;
   struct template_field_v9 *field;
   u_int16_t modulo, count, slen, olen, type, port, tid, off;
+  u_int32_t *pen;
+  u_int8_t ipfix_ebit;
   u_char *tpl;
 
   /* NetFlow v9 */
   if (tpl_type == 1) {
-    modulo = ntohs(hdr_v9->template_id)%tpl_cache.num;
+    modulo = modulo_template(hdr_v9->template_id, (struct sockaddr *) pptrs->f_agent, tpl_cache.num);
     tid = hdr_v9->template_id;
     slen = ntohs(hdr_v9->scope_len)/sizeof(struct template_field_v9);
     olen = ntohs(hdr_v9->option_len)/sizeof(struct template_field_v9);
   }
   /* IPFIX */
   else if (tpl_type == 3) {
-    modulo = ntohs(hdr_v10->template_id)%tpl_cache.num;
+    modulo = modulo_template(hdr_v10->template_id, (struct sockaddr *) pptrs->f_agent, tpl_cache.num);
     tid = hdr_v10->template_id;
     slen = ntohs(hdr_v10->scope_count);
     olen = ntohs(hdr_v10->option_count)-slen;
@@ -986,7 +996,7 @@ struct template_cache_entry *insert_opt_template(void *hdr, struct packet_ptrs *
 
   ptr = malloc(sizeof(struct template_cache_entry));
   if (!ptr) {
-    Log(LOG_ERR, "ERROR ( %s/core ): Unable to allocate enough memory for a new Options Template Cache Entry.\n", config.name);
+    Log(LOG_ERR, "ERROR ( %s/core ): insert_opt_template(): unable to allocate new Options Template Cache Entry.\n", config.name);
     return NULL;
   }
 
@@ -1008,25 +1018,64 @@ struct template_cache_entry *insert_opt_template(void *hdr, struct packet_ptrs *
 
   while (count) {
     if (off >= len) {
-      notify_malf_packet(LOG_INFO, "INFO: unable to read next Options Template Flowset (malformed template)",
-                        (struct sockaddr *) pptrs->f_agent, seq);
+      notify_malf_packet(LOG_INFO, "INFO: insert_opt_template(): unable to read Options Template Flowset (malformed)",
+			 (struct sockaddr *) pptrs->f_agent, seq);
       xflow_tot_bad_datagrams++;
       free(ptr);
       return NULL;
     }
 
+    pen = NULL;
+    ipfix_ebit = FALSE;
     type = ntohs(field->type);
-    log_opt_template_field(type, ptr->len, ntohs(field->len), version);
-    if (type < NF9_MAX_DEFINED_FIELD) { 
+
+    if (type & IPFIX_TPL_EBIT && version == 10) {
+      ipfix_ebit = TRUE;
+      type ^= IPFIX_TPL_EBIT;
+      if (pens) (*pens)++;
+      pen = (u_int32_t *) field;
+      pen++;
+    }
+
+    log_opt_template_field(FALSE, pen, type, ptr->len, ntohs(field->len), version);
+    if (type < NF9_MAX_DEFINED_FIELD && !pen) { 
       ptr->tpl[type].off = ptr->len;
       ptr->tpl[type].len = ntohs(field->len);
       ptr->len += ptr->tpl[type].len;
     }
-    else ptr->len += ntohs(field->len);
+    else {
+      u_int8_t repeat_id = 0;
+      struct utpl_field *ext_db_ptr = ext_db_get_next_ie(ptr, type, &repeat_id);
+
+      if (ext_db_ptr) {
+        if (pen) ext_db_ptr->pen = ntohl(*pen);
+        ext_db_ptr->type = type;
+        ext_db_ptr->off = ptr->len;
+        ext_db_ptr->tpl_len = ntohs(field->len);
+        ext_db_ptr->repeat_id = repeat_id;
+        ext_db_ptr->len = ext_db_ptr->tpl_len;
+      }
+
+      if (count >= TPL_LIST_ENTRIES) {
+	notify_malf_packet(LOG_INFO, "INFO: insert_opt_template(): unable to read Options Template (too long)",
+			   (struct sockaddr *) pptrs->f_agent, seq);
+	xflow_tot_bad_datagrams++;
+	free(ptr);
+	return NULL;
+      }
+
+      ptr->list[count].ptr = (char *) ext_db_ptr;
+      ptr->list[count].type = TPL_TYPE_EXT_DB;
+      ptr->len += ext_db_ptr->len;
+    }
 
     count--;
-    field++;
     off += NfTplFieldV9Sz;
+    if (ipfix_ebit) {
+      field++; /* skip 32-bits ahead */
+      off += sizeof(u_int32_t);
+    }
+    field++;
   }
 
   if (prevptr) prevptr->next = ptr;
@@ -1043,13 +1092,15 @@ struct template_cache_entry *insert_opt_template(void *hdr, struct packet_ptrs *
 }
 
 struct template_cache_entry *refresh_opt_template(void *hdr, struct template_cache_entry *tpl, struct packet_ptrs *pptrs, u_int16_t tpl_type,
-							u_int32_t sid, u_int8_t version, u_int16_t len, u_int32_t seq)
+							u_int32_t sid, u_int16_t *pens, u_int8_t version, u_int16_t len, u_int32_t seq)
 {
   struct options_template_hdr_v9 *hdr_v9 = (struct options_template_hdr_v9 *) hdr;
   struct options_template_hdr_ipfix *hdr_v10 = (struct options_template_hdr_ipfix *) hdr;
   struct template_cache_entry backup, *next;
   struct template_field_v9 *field;
   u_int16_t slen, olen, count, type, port, tid, off;
+  u_int32_t *pen;
+  u_int8_t ipfix_ebit;
   u_char *ptr;
 
   /* NetFlow v9 */
@@ -1086,25 +1137,62 @@ struct template_cache_entry *refresh_opt_template(void *hdr, struct template_cac
 
   while (count) {
     if (off >= len) {
-      notify_malf_packet(LOG_INFO, "INFO: unable to read next Options Template Flowset (malformed template)",
-                        (struct sockaddr *) pptrs->f_agent, seq);
+      notify_malf_packet(LOG_INFO, "INFO: refresh_opt_template(): unable to read Options Template Flowset (malformed)",
+			 (struct sockaddr *) pptrs->f_agent, seq);
       xflow_tot_bad_datagrams++;
       memcpy(tpl, &backup, sizeof(struct template_cache_entry));
       return NULL;
     }
 
+    pen = NULL;
+    ipfix_ebit = FALSE;
     type = ntohs(field->type);
-    log_opt_template_field(type, tpl->len, ntohs(field->len), version);
-    if (type < NF9_MAX_DEFINED_FIELD) {
+
+    if (type & IPFIX_TPL_EBIT && version == 10) {
+      ipfix_ebit = TRUE;
+      type ^= IPFIX_TPL_EBIT;
+      if (pens) (*pens)++;
+      pen = (u_int32_t *) field; pen++;
+    }
+
+    log_opt_template_field(FALSE, pen, type, tpl->len, ntohs(field->len), version);
+    if (type < NF9_MAX_DEFINED_FIELD && !pen) {
       tpl->tpl[type].off = tpl->len;
       tpl->tpl[type].len = ntohs(field->len);
       tpl->len += tpl->tpl[type].len;
     }
-    else tpl->len += ntohs(field->len);
+    else {
+      u_int8_t repeat_id = 0;
+      struct utpl_field *ext_db_ptr = ext_db_get_next_ie(tpl, type, &repeat_id);
+
+      if (ext_db_ptr) {
+        if (pen) ext_db_ptr->pen = ntohl(*pen);
+        ext_db_ptr->type = type;
+        ext_db_ptr->off = tpl->len;
+        ext_db_ptr->tpl_len = ntohs(field->len);
+        ext_db_ptr->repeat_id = repeat_id;
+        ext_db_ptr->len = ext_db_ptr->tpl_len;
+      }
+
+      if (count >= TPL_LIST_ENTRIES) {
+	notify_malf_packet(LOG_INFO, "INFO: refresh_opt_template: unable to read Options Template (too long)",
+			   (struct sockaddr *) pptrs->f_agent, seq);
+	xflow_tot_bad_datagrams++;
+	return NULL;
+      }
+
+      tpl->list[count].ptr = (char *) ext_db_ptr;
+      tpl->list[count].type = TPL_TYPE_EXT_DB;
+      tpl->len += ext_db_ptr->len;
+    }
 
     count--;
-    field++;
     off += NfTplFieldV9Sz;
+    if (ipfix_ebit) {
+      field++; /* skip 32-bits ahead */
+      off += sizeof(u_int32_t);
+    }
+    field++;
   }
 
   log_template_footer(tpl, tpl->len, version);
@@ -1186,7 +1274,7 @@ u_int8_t get_ipfix_vlen(char *base, u_int16_t *len)
 
 struct utpl_field *ext_db_get_ie(struct template_cache_entry *ptr, u_int32_t pen, u_int16_t type, u_int8_t repeat_id)
 {
-  u_int16_t ie_idx, ext_db_modulo = (type%TPL_EXT_DB_ENTRIES);
+  u_int16_t ie_idx, ext_db_modulo = (type % TPL_EXT_DB_ENTRIES);
   struct utpl_field *ext_db_ptr = NULL;
 
   for (ie_idx = 0; ie_idx < IES_PER_TPL_EXT_DB_ENTRY; ie_idx++) {
@@ -1203,7 +1291,7 @@ struct utpl_field *ext_db_get_ie(struct template_cache_entry *ptr, u_int32_t pen
 
 struct utpl_field *ext_db_get_next_ie(struct template_cache_entry *ptr, u_int16_t type, u_int8_t *repeat_id)
 {
-  u_int16_t ie_idx, ext_db_modulo = (type%TPL_EXT_DB_ENTRIES);
+  u_int16_t ie_idx, ext_db_modulo = (type % TPL_EXT_DB_ENTRIES);
   struct utpl_field *ext_db_ptr = NULL;
 
   (*repeat_id) = 0;

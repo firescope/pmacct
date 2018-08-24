@@ -41,7 +41,7 @@ struct channels_list_entry channels_list[MAX_N_PLUGINS]; /* communication channe
 /* Functions */
 void usage_daemon(char *prog_name)
 {
-  printf("%s (%s)\n", PMBMPD_USAGE_HEADER, PMACCT_BUILD);
+  printf("%s %s (%s)\n", PMBMPD_USAGE_HEADER, PMACCT_VERSION, PMACCT_BUILD);
   printf("Usage: %s [ -D | -d ] [ -L IP address ] [ -l port ] ]\n", prog_name);
   printf("       %s [ -f config_file ]\n", prog_name);
   printf("       %s [ -h ]\n", prog_name);
@@ -66,11 +66,6 @@ void usage_daemon(char *prog_name)
   printf("For suggestions, critics, bugs, contact me: %s.\n", MANTAINER);
 }
 
-void compute_once()
-{
-  /* popular sizeof()'s here */
-}
-
 int main(int argc,char **argv, char **envp)
 {
   struct plugins_list_entry *list;
@@ -87,7 +82,6 @@ int main(int argc,char **argv, char **envp)
 #endif
 
   umask(077);
-  compute_once();
 
   memset(cfg_cmdline, 0, sizeof(cfg_cmdline));
   memset(&config, 0, sizeof(struct configuration));

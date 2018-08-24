@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -152,11 +152,24 @@ void my_sigint_handler(int signum)
   Log(LOG_INFO, "INFO ( %s/%s ): OK, Exiting ...\n", config.name, config.type);
 
   if (config.acct_type == ACCT_PM && !config.uacctd_group /* XXX */) {
-    if (config.dev) {
-      if (pcap_stats(glob_pcapt, &ps) < 0) printf("\npcap_stats: %s\n", pcap_geterr(glob_pcapt));
-      printf("\n");
-      printf("%u packets received by filter\n", ps.ps_recv);
-      printf("%u packets dropped by kernel\n", ps.ps_drop);
+    int device_idx;
+
+    if (config.pcap_if) {
+      printf("NOTICE ( %s/%s ): +++\n", config.name, config.type);
+
+      for (device_idx = 0; device_idx < device.num; device_idx++) {
+        if (pcap_stats(device.list[device_idx].dev_desc, &ps) < 0) {
+	  printf("INFO ( %s/%s ): [%s,%u] error='pcap_stats(): %s'\n",
+		config.name, config.type, device.list[device_idx].str,
+		device.list[device_idx].id,
+		pcap_geterr(device.list[device_idx].dev_desc));
+	}
+        printf("NOTICE ( %s/%s ): [%s,%u] received_packets=%u dropped_packets=%u\n",
+		config.name, config.type, device.list[device_idx].str,
+		device.list[device_idx].id, ps.ps_recv, ps.ps_drop);
+      }
+
+      printf("NOTICE ( %s/%s ): ---\n", config.name, config.type);
     }
   }
 
@@ -197,13 +210,23 @@ void push_stats()
   time_t now = time(NULL);
 
   if (config.acct_type == ACCT_PM) {
-    if (config.dev) {
-      if (pcap_stats(glob_pcapt, &ps) < 0) Log(LOG_INFO, "INFO ( %s/%s ): pcap_stats: %s\n",
-						config.name, config.type, pcap_geterr(glob_pcapt));
-      Log(LOG_NOTICE, "NOTICE ( %s/%s ): %s: (%u) %u packets received by filter\n",
-		config.name, config.type, config.dev, now, ps.ps_recv);
-      Log(LOG_NOTICE, "NOTICE ( %s/%s ): %s: (%u) %u packets dropped by kernel\n",
-		config.name, config.type, config.dev, now, ps.ps_drop);
+    int device_idx;
+
+    if (config.pcap_if) {
+      Log(LOG_NOTICE, "NOTICE ( %s/%s ): +++\n", config.name, config.type);
+
+      for (device_idx = 0; device_idx < device.num; device_idx++) {
+	if (pcap_stats(device.list[device_idx].dev_desc, &ps) < 0) {
+	  Log(LOG_INFO, "INFO ( %s/%s ): stats [%s,%u] time=%u error='pcap_stats(): %s'\n",
+		config.name, config.type, device.list[device_idx].str, device.list[device_idx].id,
+		now, pcap_geterr(device.list[device_idx].dev_desc));
+	}
+	Log(LOG_NOTICE, "NOTICE ( %s/%s ): stats [%s,%u] time=%u received_packets=%u dropped_packets=%u\n",
+		config.name, config.type, device.list[device_idx].str, device.list[device_idx].id,
+		now, ps.ps_recv, ps.ps_drop);
+      }
+
+      Log(LOG_NOTICE, "NOTICE ( %s/%s ): ---\n", config.name, config.type);
     }
   }
   else if (config.acct_type == ACCT_NF || config.acct_type == ACCT_SF)
@@ -224,6 +247,8 @@ void reload_maps()
     reload_map_bgp_thread = TRUE;
     reload_map_exec_plugins = TRUE;
     reload_geoipv2_file = TRUE;
+
+    if (config.acct_type == ACCT_PM) reload_map_pmacctd = TRUE;
   }
   
   signal(SIGUSR2, reload_maps);

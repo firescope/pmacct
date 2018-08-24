@@ -1,19 +1,19 @@
 pmacct [IP traffic accounting : BGP : BMP : IGP : Streaming Telemetry]
-pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 
 
 TABLE OF CONTENTS:
-I.	Plugins included with pmacct distribution
+I.	Daemons and plugins included with pmacct distribution
 II.	Configuring pmacct for compilation and installing
-III.	Brief SQL (MySQL, PostgreSQL, SQLite 3.x) and noSQL (MongoDB) setup examples
+III.	Brief SQL (MySQL, PostgreSQL, SQLite 3.x) setup examples
 IV.	Running the libpcap-based daemon (pmacctd)
 V.	Running the NetFlow/IPFIX and sFlow daemons (nfacctd/sfacctd)
 VI.	Running the NFLOG-based daemon (uacctd)
-VII.	Running the pmacct client (pmacct)
+VII.	Running the pmacct IMT client (pmacct)
 VIII.	Running the RabbitMQ/AMQP plugin
 IX.	Running the Kafka plugin
 X.	Internal buffering and queueing
-XI.	Quickstart guide to packet/stream classifiers
+XI.	Quickstart guide to packet classification
 XII.	Quickstart guide to setup a NetFlow/IPFIX agent/probe 
 XIII.	Quickstart guide to setup a sFlow agent/probe 
 XIV.	Quickstart guide to setup the BGP daemon
@@ -27,67 +27,119 @@ XXI.	Using pmacct as traffic/event logger
 XXII.	Miscellaneous notes and troubleshooting tips
 
 
-I. Plugins included with pmacct distribution
-Given its open and pluggable architecture, pmacct is easily extensible with new
-plugins. Here is a list of plugins included in the official pmacct distribution:
+I. Daemons and plugins included with pmacct distribution
+All traffic accounting daemons can print statistics to stdout, keep them in
+memory tables, store persistently to open-source RDBMS (MySQL, PostgreSQL,
+Sqlite 3) or to noSQL databates (ie. BerkeleyDB) and to flat-files, and
+publish to AMQP and Kafka brokers (typically to insert in ElasticSearch,
+InfluxDB, Druid, ClickHouse and, more in general, all backends which are not
+natively supported by pmacct). BGP, BMP and Streaming Telemetry daemons can
+publish control and infrastructure planes to AMQP and Kafka brokers. This is
+a list of the daemons included in the pmacct distribution: 
 
-'memory':  data is stored in a memory table and can be fetched via the pmacct
-	   command-line client tool, 'pmacct'. This plugin also allows easily to
-	   inject data into 3rd party tools like GNUplot, RRDtool or a Net-SNMP
-	   server. The plugin is good for prototype solutions and smaller-scale
-	   environments. This plugin is compiled in by default.
-'mysql':   a working MySQL installation can be used for data storage. This
-	   plugin can be compiled using the --enable-mysql switch. 
-'pgsql':   a working PostgreSQL installation can be used for data storage. This
-	   plugin can be compiled using the --enable-pgsql switch.
-'sqlite3': a working SQLite 3.x or BerkeleyDB 5.x (compiled in with the SQLite
-	   API) installation can be used for data storage. This plugin can be
-	   compiled using the --enable-sqlite3 switch.
-'print':   data is printed at regular intervals to flat-files or standard output
-	   in tab-spaced, CSV and JSON formats. This plugin is compiled in by
-	   default.
-'mongodb': a working MongoDB installation can be used for data storage. It is
-	   required to install the MongoDB API C driver. This plugin can be
-	   compiled using the --enable-mongodb switch.
-'amqp':    data is sent to a RabbitMQ message exchange, running AMQP protocol,
-	   for delivery to consumer applications or tools. Popular consumers
-	   are ElasticSearch, InfluxDB and Cassandra. This plugin can be compiled
-	   using the --enable-rabbitmq switch.
-'kafka':   data is sent to a Kafka broker for delivery to consumer applications
-	   or tools. Popular consumers are ElasticSearch, InfluxDB and Cassandra.
-	   This plugin can be compiled using the --enable-kafka switch.
-'tee':	   applies to nfacctd and sfacctd daemons only. It's a featureful packet
-	   replicator for NetFlow/IPFIX/sFlow data. This plugin is compiled in by
-	   default.
-'nfprobe': applies to pmacctd and uacctd daemons only. Exports collected data via
-	   NetFlow v5/v9 or IPFIX. This plugin is compiled in by default.
-'sfprobe': applies to pmacctd and uacctd daemons only. Exports collected data via
-	   sFlow v5. This plugin is compiled in by default.
+pmacctd		libpcap-based accounting daemon: it captures packets from one
+		or multiple interfaces it is bound to. Other than acting as a
+		collector, this daemon can also export statistics via NetFlow,
+		IPFIX and sFlow protocols. 
+nfacctd		NetFlow/IPFIX accounting daemon: it listens for NetFlow v5/v9
+		and IPFIX packets on one or more interfaces (IPv4 and IPv6).
+		Other than acting as a collector, this daemon can also
+		replicate to 3rd party collectors.
+sfacctd         sFlow accounting daemon; it listens for sFlow packets v2, v4
+		and v5 on one or more interfaces (both IPv4 and IPv6). Other
+		than acting as a collector, this daemon can also replicate to
+		3rd party collectors.
+uacctd		Linux Netlink NFLOG accounting daemon; it captures packets by
+		leveraging a NFLOG multicast group - and works only on Linux.
+		Other than acting as a collector, this daemon can also export
+		statistics via NetFlow, IPFIX and sFlow protocols.
+pmtelemetryd	Standalone Streaming Telemetry collector daemon; listens for
+		telemetry data binding to a TCP or UDP port and logs real-time
+		and/or dumps at regular time-intervals to configured backends.
+pmbgpd		Standalone BGP collector daemon; acts as a passive iBGP or
+		eBGP neighbor and maintains per-peer RIBs; can log real-time
+		and/or dump at regular time-intervals BGP data to configured
+		backends.
+pmbmpd		Standalone BMP collector daemon; can log real-time and/or dump
+		at regular time-intervals BMP/BGP data to configured backends.
+pmacct  	commandline pmacct client; it allows to retrieve data from a
+		memory table plugin; it can perform queries over data or do
+		bulk data retrieval. Output is formatted, CSV or JSON format.
+		suitable for data injection in 3rd party tools like RRDtool,
+		Gnuplot or SNMP server among the others.
+
+Given its open and pluggable architecture, pmacct is easily extensible with new
+plugins. Here is a list of traffic accounting plugins included in the official
+pmacct distribution:
+
+memory		data is stored in a memory table and can be fetched via the
+		pmacct command-line client tool, 'pmacct'. This plugin also
+		implements a push model and allows easily to inject data into
+		3rd party tools. The plugin is recommended for prototyping and
+		smaller-scale environments and is compiled in by default.
+mysql		a working MySQL/MariaDB installation can be used for data
+		storage. This plugin can be compiled using the --enable-mysql
+		switch. 
+pgsql		a working PostgreSQL installation can be used for data storage.
+		This plugin can be compiled using the --enable-pgsql switch.
+sqlite3		a working SQLite 3.x or BerkeleyDB 5.x (compiled in with the
+		SQLite API) installation can be used for data storage. This
+		plugin can be compiled using the --enable-sqlite3 switch.
+print		data is printed at regular intervals to flat-files or standard
+		output in tab-spaced, CSV and JSON formats. This plugin is
+		compiled in by default.
+amqp		data is sent to a RabbitMQ broker, running AMQP protocol, for
+		delivery to consumer applications or tools. Popular consumers
+		are ElasticSearch, InfluxDB, Druid and ClickHouse. This plugin
+		can be compiled using the --enable-rabbitmq switch.
+kafka		data is sent to a Kafka broker for delivery to consumer
+		applications or tools. Popular consumers are ElasticSearch,
+		InfluxDB, Druid and ClickHouse. This plugin can be compiled
+		using the --enable-kafka switch.
+tee		applies to nfacctd and sfacctd daemons only. It's a featureful
+		packet replicator for NetFlow/IPFIX/sFlow data. This plugin is
+		compiled in by default.
+nfprobe		applies to pmacctd and uacctd daemons only. Exports collected
+		data via NetFlow v5/v9 or IPFIX. This plugin is compiled in by
+		default.
+sfprobe		applies to pmacctd and uacctd daemons only. Exports collected
+		data via sFlow v5. This plugin is compiled in by default.
 
 
 II. Configuring pmacct for compilation and installing
-The simplest way to configure the package for compilation is to let the configure
-script to probe default headers and libraries for you. A first round of guessing
-is done via pkg-config then, for some libraries, "typical" default locations
-are checked, ie. /usr/local/lib. Switches you are likely to want enabled are
+The simplest way to configure the package for compilation is to download the
+latest stable released tarball from http://www.pmacct.net/ and let the configure
+script to probe default headers and libraries for you. The only dependency that
+pmacct brings is libpcap library and headers: libpcap-dev (or libpcap-devel) or
+(self-compiled) equivalent must be installed on the system. Then, a first round
+of guessing is done via pkg-config then, for some libraries, "typical" default
+locations are checked, ie. /usr/local/lib. Switches one likely wants enabled are
 already set so, ie. 64 bits counters and multi-threading (pre- requisite for
 the BGP, BMP, and IGP daemon codes); the full list of switches enabled by default
 are marked as 'default: yes' in the "./configure --help" output. SQL plugins, AMQP
-and Kafka support are all disabled by defaulf instead. A few examples will follow;
+and Kafka support are all disabled by default instead. A few examples will follow;
 to get the list of available switches, you can use the following command-line:
 
 shell> ./configure --help
 
-Examples on how to enable the support for (1) MySQL, (2) PostgreSQL, (3) SQLite,
-(4) MongoDB and any (5) mixed compilation:
+Examples on how to enable support for (1) MySQL, (2) PostgreSQL and (3) SQLite:
 
-(1) shell> ./configure --enable-mysql
-(2) shell> ./configure --enable-pgsql
-(3) shell> ./configure --enable-sqlite3
-(4) shell> ./configure --enable-mongodb
-(5) shell> ./configure --enable-mysql --enable-pgsql
+(1) libmysqlclient-dev package or (self-compiled) equivalent being installed:
+    shell> ./configure --enable-mysql
 
-Then to compile and install simply typing:
+(2) libpq-dev package or (self-compiled) equivalent being installed:
+    shell> ./configure --enable-pgsql
+
+(3) libsqlite3-dev package or (self-compiled) equivalent being installed:
+    shell> ./configure --enable-sqlite3
+
+If cloning the GitHub repository ( https://github.com/pmacct/pmacct ) instead,
+the configure script has to be generated, resulting in one extra step than the
+process just described. Please refer to the Building section of the README.md
+document for instruction about cloning the repo, generate the configure script
+along with the required installed packages.
+
+Then compile and install simply typing:
 
 shell> make; make install
 
@@ -100,6 +152,20 @@ shell> export PGSQL_LIBS="-L/usr/local/postgresql/lib -lpq"
 shell> export PGSQL_CFLAGS="-I/usr/local/postgresql/include"
 shell> ./configure --enable-pgsql
 
+If the library does actually support pkg-config but the .pc pkg-config file
+is in some non-standard location, this can be supplied as follows:
+
+shell> export PKG_CONFIG_PATH=/usr/local/postgresql/pkgconfig/
+shell> ./configure --enable-pgsql
+
+Special case is to compile pmacct with MySQL support but MySQL is installed
+in some non-default location. MySQL brings the mysql_config tool that works
+similarly to pkg-config. Make sure the tool is on the path so that it can be
+executed by the configure script, ie.:
+
+shell> export PATH=$PATH:/usr/local/mysql/bin
+shell> ./configure --enable-mysql
+
 By default all tools - flow, BGP, BMP and Streaming Telemetry - are compiled.
 Specific tool sets can be disabled. For example, to compile only flow tools
 (ie. no pmbgpd, pmbmpd, pmtelemetryd) the following command-line can be used:
@@ -107,16 +173,67 @@ Specific tool sets can be disabled. For example, to compile only flow tools
 shell> ./configure --disable-bgp-bins --disable-bmp-bins --disable-st-bins
 
 Once daemons are installed you can check:
-* how to instrument each daemon via its usage help page: 
+* Basic instrumenting of each daemon via its help page, ie.: 
   shell> pmacctd -h
-* review version and build details:
+* Review daemon version and build details, ie.:
   shell> sfacctd -V
-* supported traffic aggregation primitives by the daemon, and their description:
+* Check supported traffic aggregation primitives and their description, ie.:
   shell> nfacctd -a
+
+IIa. Compiling pmacct with JSON support
+JSON encoding is supported via the Jansson library (http://www.digip.org/jansson/
+and https://github.com/akheron/jansson); a library version >= 2.5 is required. To
+compile pmacct with JSON support simply do: 
+
+shell> ./configure --enable-jansson
+
+However should you have installed Jansson in the /usr/local/jansson directory
+and pkg-config is unable to help, you can supply this non-default location as
+follows (assuming you are running the bash shell):
+
+shell> export JANSSON_LIBS="-L/usr/local/jansson/lib -ljansson"
+shell> export JANSSON_CFLAGS="-I/usr/local/jansson/include"
+shell> ./configure --enable-jansson
+
+IIb. Compiling pmacct with Apache Avro support
+Apache Avro encoding is supported via libavro library (http://avro.apache.org/
+and https://avro.apache.org/docs/1.8.1/api/c/index.html); to compile pmacct with
+Apache Avro support simply do:
+
+shell> ./configure --enable-avro
+
+However should you have installed libavro in the /usr/local/avro directory
+and pkg-config is unable to help, you can supply this non-default location as
+follows (assuming you are running the bash shell):
+
+shell> export AVRO_LIBS="-L/usr/local/avro/lib -lavro"
+shell> export AVRO_CFLAGS="-I/usr/local/avro/include"
+shell> ./configure --enable-rabbitmq --enable-avro
+
+IIc. Compiling pmacct against a own libpcap library
+Compiling against a downloaded libpcap library may be wanted for several
+reasons including the version packaged with the Operating System is too
+old, a custom libpcap library needs to be compiled (ie. with support for
+PF_RING) or static linking is wanted.
+
+Once libpcap is downloaded, if static linking is wanted (ideal for example
+for distributing pmacct without external dependencies), the library can be
+configured for comipiling:
+
+shell> ./configure --disable-shared
+
+pmacct should be pointed to the own libpcap library when configuring for
+compiling: 
+
+shell> ./configure --with-pcap-libs=/path/to/libpcap-x.y.z --with-pcap-includes=/path/to/libpcap-x.y.z
+
+Once pmacct is compiled, it can be confirmed that the right library was
+picked by doing, for example, a 'pmacctd -V' and seeing the version of
+libpcap matches with the supplied version.
 
 
 III. Brief SQL and noSQL setup examples
-RDBMS require a table schema to manage data. pmacct offers two options: use one
+RDBMS require a table schema to store data. pmacct offers two options: use one
 of the few pre-determined table schemas available (sections IIIa, b and c) or
 compose a custom schema to fit your needs (section IIId). If you are blind to
 SQL the former approach is recommended, although it can pose scalability issues
@@ -125,18 +242,20 @@ go. Scripts for setting up RDBMS are located in the 'sql/' tree of the pmacct
 distribution tarball. For further guidance read the relevant README files in
 such directory. One of the crucial concepts to deal with, when using default
 table schemas, is table versioning: please read more about this topic in the
-FAQS document (Q16). 
+FAQS document (Q17). 
 
 IIIa. MySQL examples 
 shell> cd sql/
 
 - To create v1 tables:
+
 shell> mysql -u root -p < pmacct-create-db_v1.mysql
 shell> mysql -u root -p < pmacct-grant-db.mysql
 
 Data will be available in 'acct' table of 'pmacct' DB.
 
 - To create v2 tables:
+
 shell> mysql -u root -p < pmacct-create-db_v2.mysql
 shell> mysql -u root -p < pmacct-grant-db.mysql
 
@@ -148,14 +267,17 @@ IIIb. PostgreSQL examples
 Which user has to execute the following two scripts and how to autenticate with the
 PostgreSQL server depends upon your current configuration. Keep in mind that both
 scripts need postgres superuser permissions to execute some commands successfully:
+
 shell> cp -p *.pgsql /tmp
 shell> su - postgres
 
 To create v1 tables:
+
 shell> psql -d template1 -f /tmp/pmacct-create-db.pgsql
 shell> psql -d pmacct -f /tmp/pmacct-create-table_v1.pgsql
 
 To create v2 tables:
+
 shell> psql -d template1 -f /tmp/pmacct-create-db.pgsql
 shell> psql -d pmacct -f /tmp/pmacct-create-table_v2.pgsql
 
@@ -173,12 +295,14 @@ IIIc. SQLite examples
 shell> cd sql/
 
 - To create v1 tables:
+
 shell> sqlite3 /tmp/pmacct.db < pmacct-create-table.sqlite3 
 
 Data will be available in 'acct' table of '/tmp/pmacct.db' DB. Of course, you can change
 the database filename basing on your preferences.  
 
 - To create v2 tables:
+
 shell> sqlite3 /tmp/pmacct.db < pmacct-create-table_v2.sqlite3 
 
 Data will be available in 'acct_v2' table of '/tmp/pmacct.db' DB.
@@ -206,7 +330,7 @@ CREATE TABLE <table_name> (
 	packets INT UNSIGNED NOT NULL,
 	bytes BIGINT UNSIGNED NOT NULL,
 	stamp_inserted DATETIME NOT NULL,
-	stamp_updated DATETIME,
+	stamp_updated DATETIME
 );
 
 2) Indexing: primary key (of your choice, this is only an example) plus
@@ -250,21 +374,20 @@ To grant default pmacct user permission to write into the database look at the
 file sql/pmacct-grant-db.mysql
 
 IIIe. Historical accounting
-Enabling historical accounting allows to aggregate data over time (ie. 5 mins, hourly,
-daily) in a flexible and fully configurable way. Timestamps are lodged into two fields:
-'stamp_inserted' which represents the basetime of the timeslot and 'stamp_updated' which
-says when a given timeslot was updated for the last time. Following there is a pretty
-standard configuration fragment to slice data into nicely aligned (or rounded-off) 5
-minutes timeslots:
+Enabling historical accounting allows to aggregate data in time-bins (ie. 5 mins, hour,
+day, etc.) in a flexible and fully configurable way. Two timestamps are available: the
+'stamp_inserted' field, representing the basetime of the time-bin, and 'stamp_updated',
+the last time the time-bin was updated. Following a pretty standard config fragment to
+slice data into nicely aligned (or rounded-off) 5 minutes time-bins:
 
 sql_history: 5m 
 sql_history_roundoff: m
 
 IIIf. INSERTs-only 
-UPDATE queries are demanding in terms of resources; this is why, even if they are 
-supported by pmacct, a savy approach is to cache data for longer times in memory and
-write them off once per timeslot (sql_history): this produces a much lighter INSERTs-
-only environemnt. This is an example based on 5 minutes timeslots:
+UPDATE queries are expensive; this is why, even if they are supported by pmacct, a
+savy approach would be to cache data for longer times in memory and write them off
+once per time-bin (sql_history): this results into a much lighter INSERTs-only setup.
+This is an example based on 5 minutes time-bins:
 
 sql_refresh_time: 300
 sql_history: 5m
@@ -275,47 +398,31 @@ Note that sql_refresh_time is always expressed in seconds. An alternative approa
 for cases where sql_refresh_time must be kept shorter than sql_history (for example
 because a) of long sql_history periods, ie. hours or days, and/or because b) near
 real-time data feed is a requirement) is to set up a synthetic auto-increment 'id'
-field: it successfully prevents duplicates but comes at the expenses of GROUP BY
-queries when retrieving data.
+field: it successfully prevents duplicates but comes at the expenses of GROUP BYs
+when querying data.
 
-IIIg. MongoDB examples 
-MongoDB if a document-oriented noSQL database. Defining feature of document-oriented
-databases is that they are schemaless hence this section will only need to focus on a
-simple configuration with historical accounting support:
-
-...
-plugins: mongodb
-aggregate: ...
-mongo_history: 5m
-mongo_history_roundoff: m
-mongo_refresh_time: 300
-mongo_table: pmacct.acct
-...
-
-MongoDB release >= 2.2.0 is recommended. Installation of the MongoDB C driver 0.8,
-also referred as legacy, is required. Version 0.9 of the driver and laters (also
-referred as current) is not supported (yet). The legacy driver can be downloaded
-at the following URL: https://github.com/mongodb/mongo-c-driver-legacy .
- 
 
 IV. Running the libpcap-based daemon (pmacctd) 
-All deamons including pmacctd can be run with commandline options, using a config
-file or a mix of the two. Sample configuration files are in examples/ tree. Note also 
-that most of the new features are available only as configuration directives. To be
-aware of the existing configuration directives, please read the CONFIG-KEYS document. 
+All deamons including pmacctd can be run with commandline options, using a
+config file or a mix of the two. Sample configuration files are in examples/
+tree. Note also  that most of the new features are available only as config
+directives. To be aware of the existing configuration directives, please
+read the CONFIG-KEYS document. 
 
 Show all available pmacctd commandline switches:
+
 shell> pmacctd -h
 
-Run pmacctd reading configuration from a specified file (see examples/ tree for a brief
-list of some commonly useed keys; divert your eyes to CONFIG-KEYS for the full list).
-This example applies to all daemons:
+Run pmacctd reading configuration from a specified file (see examples/ tree
+for a brief list of some commonly useed keys; divert your eyes to CONFIG-KEYS
+for the full list). This example applies to all daemons:
+
 shell> pmacctd -f pmacctd.conf
 
-Daemonize the process; listen on eth0; aggregate data by src_host/dst_host; write to a
-MySQL server; limit traffic matching only source ip network 10.0.0.0/16; note that
-filters work the same as tcpdump. So, refer to libpcap/tcpdump man pages for examples
-and further reading. 
+Daemonize the process; listen on eth0; aggregate data by src_host/dst_host;
+write to a MySQL server; filter in only traffic with source prefix 10.0.0.0/16;
+note that filters work the same as tcpdump so you can refer to libpcap/tcpdump
+man pages for examples and further reading about the supported filtering syntax. 
 
 shell> pmacctd -D -c src_host,dst_host -i eth0 -P mysql src net 10.0.0.0/16
 
@@ -324,12 +431,12 @@ Or written the configuration way:
 daemonize: true
 plugins: mysql
 aggregate: src_host, dst_host
-interface: eth0
+pcap_interface: eth0
 pcap_filter: src net 10.0.0.0/16
 ! ...
 
-Print collected traffic data aggregated by src_host/dst_host over the screen; refresh
-data every 30 seconds and listen on eth0. 
+Print collected traffic data aggregated by src_host/dst_host over the screen;
+refresh data every 30 seconds and listen on eth0. 
 
 shell> pmacctd -P print -r 30 -i eth0 -c src_host,dst_host
 
@@ -338,14 +445,34 @@ Or written the configuration way:
 plugins: print
 print_refresh_time: 30
 aggregate: src_host, dst_host
-interface: eth0
+pcap_interface: eth0
 ! ...
 
-Daemonize the process; let pmacct aggregate traffic in order to show in vs out traffic
-for network 192.168.0.0/16; send data to a PostgreSQL server. This configuration is not
-possible via commandline switches; the corresponding configuration follows: 
+Print collected traffic data aggregated by src_host/dst_host over the screen;
+refresh data every 30 seconds and listen on eth0 and eth1, listed in the file
+pointed by pcap_interfaces_map (see 'examples/pcap_interfaces.map.example' for
+more advanced uses of the map):
 
 !
+plugins: print
+print_refresh_time: 30
+aggregate: src_host, dst_host
+pcap_interfaces_map: /path/to/pcap_interfaces.map
+! ...
+
+Then in /path/to/pcap_interfaces.map:
+
+!
+ifname=eth0
+ifname=eth1
+! ...
+
+Daemonize the process; let pmacct aggregate traffic in order to show in vs out
+traffic for network 192.168.0.0/16; send data to a PostgreSQL server. This
+configuration is not possible via commandline switches; the corresponding
+configuration follows: 
+
+! 
 daemonize: true
 plugins: pgsql[in], pgsql[out]
 aggregate[in]: dst_host
@@ -356,8 +483,8 @@ sql_table[in]: acct_in
 sql_table[out]: acct_out
 ! ...
 
-The previous example looks nice! But how to make data historical ? Simple enough, let's
-suppose you want to split traffic by hour and write data into the DB every 60 seconds. 
+And now enabling historical accounting. Split traffic by hour and write
+to the database every 60 seconds:
 
 !
 daemonize: true
@@ -373,10 +500,11 @@ sql_history: 1h
 sql_history_roundoff: h
 ! ...
 
-Let's now translate the same example in the memory plugin world. It's use is valuable
-expecially when it's required to feed bytes/packets/flows counters to external programs.
-Examples about the client program will follow later in this document. Now, note that
-each memory table need its own pipe file in order to get correctly contacted by the
+Let's now translate the same example in the memory plugin world. One of
+the use-cases for this plugin is when feeding 3rd party tools with bytes/
+packets/flows counters. Examples how to query the memory table with the
+'pmacct' client tool will follow later in this document. Now, note that
+each memory table need its own pipe file in order to get queried by the
 client:
 
 !
@@ -390,17 +518,20 @@ imt_path[in]: /tmp/pmacct_in.pipe
 imt_path[out]: /tmp/pmacct_out.pipe
 ! ...
 
-As a further note, check the CONFIG-KEYS document about more imt_* directives as they
-will support in the task of fine tuning the size and boundaries of memory tables, if
-default values are not ok for your setup. 
+As a further note, check CONFIG-KEYS document about more imt_* directives
+as they will support in the task of fine tuning the size and boundaries
+of memory tables, if default values are not ok for your setup. 
 
-Now, fire multiple instances of pmacctd, each on a different interface; again, because
-each instance will have its own memory table, it will require its own pipe file for
-client queries aswell (as explained in the previous examples):
+Now, fire multiple instances of pmacctd, each on a different interface;
+again, because each instance will have its own memory table, it will
+require its own pipe file for client queries aswell (as explained in the
+previous examples):
+
 shell> pmacctd -D -i eth0 -m 8 -s 65535 -p /tmp/pipe.eth0 
 shell> pmacctd -D -i ppp0 -m 0 -s 32768 -p /tmp/pipe.ppp0 
 
 Run pmacctd logging what happens to syslog and using "local2" facility:
+
 shell> pmacctd -c src_host,dst_host -S local2
 
 NOTE: superuser privileges are needed to execute pmacctd correctly. 
@@ -408,21 +539,23 @@ NOTE: superuser privileges are needed to execute pmacctd correctly.
 
 V. Running the NetFlow/IPFIX and sFlow daemons (nfacctd/sfacctd) 
 All examples about pmacctd are also valid for nfacctd and sfacctd with the exception
-of directives that apply exclusively to libpcap. If you've skipped examples in the
+of directives that apply exclusively to libpcap. If you have skipped examples in the
 previous section, please read them before continuing. All config keys available are
 in the CONFIG-KEYS document. Some examples:
 
-Run nfacctd reading configuration from a specified file.
+Run nfacctd reading configuration from a specified file:
+
 shell> nfacctd -f nfacctd.conf
 
 Daemonize the process; aggregate data by sum_host (by host, summing inbound + outbound
 traffic); write to a local MySQL server. Listen on port 5678 for incoming Netflow
-datagrams (from one or multiple NetFlow agents). Let's make pmacct refresh data each
-two minutes and let's make data historical, divided into timeslots of 10 minutes each.
-Finally, let's make use of a SQL table, version 4.
+datagrams (from one or multiple NetFlow agents):
+
 shell> nfacctd -D -c sum_host -P mysql -l 5678 
 
-And now written the configuration way:
+Let's now configure pmacct to insert data in MySQL every two minutes, enable historical
+accounting with 10 minutes time-bins and make use of a SQL table version 4:
+
 !
 daemonize: true
 plugins: mysql
@@ -478,18 +611,136 @@ name=vrf_id_ingress     field_type=234  len=4   semantics=u_int
 name=vrf_id_egress      field_type=235  len=4   semantics=u_int
 name=vrf_name           field_type=236  len=32  semantics=str
 
+Vb. Examples configuring NetFlow v9/IPFIX export
+
+Example to configure NetFlow v9 export on a Cisco running IOS/IOS-XE:
+
+ip flow-cache timeout active 1
+ip flow-cache mpls label-positions 1
+!
+ip flow-export source Loopback0
+ip flow-export version 9 bgp-nexthop
+ip flow-export template timeout-rate 1
+ip flow-export template refresh-rate 4
+ip flow-export destination X.X.X.X 2100
+!
+interface GigabitEthernet0/0
+ ip address Y.Y.Y.Y Z.Z.Z.Z
+ ip flow ingress
+
+Example to configure NetFlow v9 export on a Cisco running IOS-XR:
+
+sampler-map NFACCTD-SMP
+ random 1 out-of 10
+!
+flow monitor-map NFACCTD-MON
+ record ipv4
+ exporter NFACCTD-EXP
+!
+flow exporter-map NFACCTD-EXP
+ version v9 
+ transport udp 2100
+ destination X.X.X.X
+!
+interface GigabitEthernet0/0/0/1
+ ipv4 address Y.Y.Y.Y Z.Z.Z.Z
+ flow ipv4 monitor NFACCTD-MON sampler NFACCTD-SMP ingress
+
+Example to configure IPFIX export on a Juniper:
+
+services {
+  flow-monitoring {
+    version-ipfix {
+      template ipv4 {
+	flow-active-timeout 60;
+	flow-inactive-timeout 70;
+	template-refresh-rate seconds 30;
+	option-refresh-rate seconds 30;
+	ipv4-template;
+      }
+    }
+  }
+}
+
+chassis {
+  fpc 0 {
+    sampling-instance s1;
+  }
+}
+
+forwarding-options {
+  sampling {
+    instance {
+      s1 {
+	input {
+	  rate 10;
+	}
+	family inet {
+	  output {
+	    flow-server X.X.X.X {
+	      port 2100;
+	      version-ipfix {
+		template {
+		  ipv4;
+		}
+	      }
+	    }
+	    inline-jflow {
+	      source-address Y.Y.Y.Y;
+	    }
+	  }
+	}
+      }
+    }
+  }
+}
+
+Example to configure NetFlow v9 export on a Huawei:
+
+ip netstream timeout active 1
+ip netstream timeout inactive 5
+ip netstream mpls-aware label-and-ip
+ip netstream export version 9 origin-as bgp-nexthop
+ip netstream export index-switch 32
+ip netstream export template timeout-rate 1
+ip netstream sampler fix-packets 1000 inbound
+ip netstream export source Y.Y.Y.Y
+ip netstream export host X.X.X.X 2100
+
+ipv6 netstream timeout active 1
+ipv6 netstream timeout inactive 5
+ipv6 netstream mpls-aware label-and-ip
+ipv6 netstream export version 9 origin-as bgp-nexthop
+ipv6 netstream export index-switch 32
+ipv6 netstream export template timeout-rate 1
+ipv6 netstream sampler fix-packets 1000 inbound
+
+interface Eth-Trunk1.100
+  ip netstream inbound
+  ipv6 netstream inbound
+
+Contribution of further configuration examples for Cisco and Juniper devices
+and/or other relevant vendors is more than welcome.
+
+
 VI. Running the NFLOG-based daemon (uacctd)
 All examples about pmacctd are also valid for uacctd with the exception of directives
-that apply exclusively to libpcap. If you've skipped examples in section 'IV', please
-read them before continuing. All configuration keys available are in the CONFIG-KEYS
-document.
+that apply exclusively to libpcap. If you've skipped examples in the "Running the
+libpcap-based daemon (pmacctd)" section, please read them before continuing. All
+configuration keys available are in the CONFIG-KEYS document.
 
 The daemon depends on the package libnetfilter-log-dev (in Debian/Ubuntu or equivalent
-in the prefered Linux distribution). The Linux NFLOG infrastructure requires a couple
-parameters in order to work properly: the NFLOG multicast group (uacctd_group) to
-which captured packets have to be sent to and the Netlink buffer size (uacctd_nl_size).
-The default buffer settings (128KB) typically works OK for small environments. The
-traffic is captured with an iptables rule. For example in one of the following ways:
+in the preferred Linux distribution). The support for NFLOG is disabled by default and
+should be enabled as follows:
+
+shell> ./configure --enable-nflog
+
+NFLOG_CFLAGS and NFLOG_LIBS can be used if includes and library are not in default
+locations. The Linux NFLOG infrastructure requires a couple parameters in order to
+work properly: the NFLOG multicast group (uacctd_group) to which captured packets
+have to be sent to and the Netlink buffer size (uacctd_nl_size). The default buffer
+settings (128KB) typically works OK for small environments. The traffic is captured
+with an iptables rule. For example in one of the following ways:
 
 * iptables -t mangle -I POSTROUTING -j NFLOG --nflog-group 5
 * iptables -t raw -I PREROUTING -j NFLOG --nflog-group 5 
@@ -501,6 +752,7 @@ iptables setting has to match with the "uacctd_group" uacctd one.
 A couple examples follow:
 
 Run uacctd reading configuration from a specified file.
+
 shell> uacctd -f uacctd.conf
 
 Daemonize the process; aggregate data by sum_host (by host, summing inbound + outbound
@@ -508,6 +760,7 @@ traffic); write to a local MySQL server. Listen on NFLOG multicast group #5. Let
 pmacct divide data into historical time-bins of 5 minutes. Let's disable UPDATE queries
 and hence align refresh time with the timeslot length. Finally, let's make use of a SQL
 table, version 4:
+
 !
 uacctd_group: 5
 daemonize: true
@@ -520,26 +773,31 @@ sql_table_version: 4
 sql_dont_try_update: true
 ! ...
 
-VII. Running the pmacct client (pmacct)
-The pmacct client is used to retrieve data from memory tables. Requests and answers
-are exchanged via a pipe file: authorization is strictly connected to permissions on
-the pipe file. Note: while writing queries commandline, it may happen to write chars
-with a special meaning for the shell itself (ie. ; or *). Mind to either escape ( \;
-or \* ) them or put in quotes ( " ).
+
+VII. Running the pmacct IMT client (pmacct)
+The 'pmacct' client tool allows to query memory tables. Messaging happens over a UNIX
+pipe file: authorization is strictly connected to permissions of the pipe file. Note:
+while writing queries commandline, it may happen to write chars with a special meaning
+for the shell itself (ie. ; or *). Mind to either escape ( \; or \* ) them or put in
+quotes ( " ).
 
 Show all available pmacct client commandline switches:
+
 shell> pmacct -h
 
 Fetch data stored into the memory table:
+
 shell> pmacct -s 
 
 Match data between source IP 192.168.0.10 and destination IP 192.168.0.3 and return
 a formatted output; display all fields (-a), this way the output is easy to be parsed
 by tools like awk/sed; each unused field will be zero-filled: 
+
 shell> pmacct -c src_host,dst_host -M 192.168.0.10,192.168.0.3 -a
 
 Similar to the previous example; it is requested to reset data for matched entries;
 the server will return the actual counters to the client, then will reset them:
+
 shell> pmacct -c src_host,dst_host -M 192.168.0.10,192.168.0.3 -r
 
 Fetch data for IP address dst_host 10.0.1.200; we also ask for a 'counter only' output
@@ -548,26 +806,31 @@ scripts are in the examples/ tree). Bytes counter will be returned (but the '-n'
 allows also select which counter to display). If multiple entries match the request (ie
 because the query is based on dst_host but the daemon is actually aggregating traffic
 as "src_host, dst_host") their counters will be summed:
+
 shell> pmacct -c dst_host -N 10.0.1.200
 
-Another query; this time let's contact the server listening on pipe file /tmp/pipe.eth0:
+Query the memory table available via pipe file /tmp/pipe.eth0:
+
 shell> pmacct -c sum_port -N 80 -p /tmp/pipe.eth0 
 
 Find all data matching host 192.168.84.133 as either their source or destination address.
 In particular, this example shows how to use wildcards and how to spawn multiple queries
 (each separated by the ';' symbol). Take care to follow the same order when specifying
 the primitive name (-c) and its actual value ('-M' or '-N'):
+
 shell> pmacct -c src_host,dst_host -N "192.168.84.133,*;*,192.168.84.133"
 
 Find all web and smtp traffic; we are interested in have just the total of such traffic
 (for example, to split legal network usage from the total); the output will be a unique
 counter, sum of the partial (coming from each query) values.
+
 shell> pmacct -c src_port,dst_port -N "25,*;*,25;80,*;*,80" -S 
 
 Show traffic between the specified hosts; this aims to be a simple example of a batch
 query; note that as value of both '-N' and '-M' switches it can be supplied a value like:
 'file:/home/paolo/queries.list': actual values will be read from the specified file (and
 they need to be written into it, one per line) instead of commandline:
+
 shell> pmacct -c src_host,dst_host -N "10.0.0.10,10.0.0.1;10.0.0.9,10.0.0.1;10.0.0.8,10.0.0.1"
 shell> pmacct -c src_host,dst_host -N "file:/home/paolo/queries.list"
 
@@ -577,7 +840,8 @@ The Advanced Message Queuing Protocol (AMQP) is an open standard for passing bus
 messages between applications. RabbitMQ is a messaging broker, an intermediary for
 messaging, which implementes AMQP. pmacct RabbitMQ/AMQP plugin is designed to send
 aggregated network traffic data, in JSON or Avro format, through a RabbitMQ server
-to 3rd party applications. Requirements to use the plugin are:
+to 3rd party applications (typically, but not limited to, noSQL databases like
+ElasticSearch, InfluxDB, etc.). Requirements to use the plugin are:
 
 * A working RabbitMQ server: http://www.rabbitmq.com/
 * RabbitMQ C API, rabbitmq-c: https://github.com/alanxz/rabbitmq-c/
@@ -592,21 +856,21 @@ makes use of pkg-config for finding libraries and headers location and checks so
 "typical" default locations, ie. /usr/local/lib and /usr/local/include. So all
 you should do is just:
 
-./configure --enable-rabbitmq --enable-jansson
+shell> ./configure --enable-rabbitmq --enable-jansson
 
 But, for example, should you have installed RabbitMQ in /usr/local/rabbitmq and
 pkg-config is unable to help, you can supply this non-default location as follows 
 (assuming you are running the bash shell):
 
-export RABBITMQ_LIBS="-L/usr/local/rabbitmq/lib -lrabbitmq" 
-export RABBITMQ_CFLAGS="-I/usr/local/rabbitmq/include"
-./configure --enable-rabbitmq --enable-jansson
+shell> export RABBITMQ_LIBS="-L/usr/local/rabbitmq/lib -lrabbitmq" 
+shell> export RABBITMQ_CFLAGS="-I/usr/local/rabbitmq/include"
+shell> ./configure --enable-rabbitmq --enable-jansson
 
-Ditto for the location of the Avro libraries, if using Avro encoding:
+You can check further information on how to compile pmacct with JSON/libjansson
+support in the section "Compiling pmacct with JSON support" of this document.
 
-export AVRO_LIBS="-L/usr/local/avro/lib -lavro"
-export AVRO_CFLAGS="-I/usr/local/avro/include"
-./configure --enable-rabbitmq --enable-avro
+You can check further information on how to compile pmacct with Avro support in
+the section "Compiling pmacct with Apache Avro support" of this document.
 
 Then "make; make install" as usual. Following a configuration snippet showing a
 basic RabbitMQ/AMQP plugin configuration (assumes: RabbitMQ server is available
@@ -627,61 +891,55 @@ amqp_history_roundoff: m
 pmacct will only declare a message exchange and provide a routing key, ie. it
 will not get involved with queues at all. A basic consumer script, in Python,
 is provided as sample to: declare a queue, bind the queue to the exchange and
-show consumed data on the screen. The script is located in the pmacct default
-distribution tarball in: examples/amqp/amqp_receiver.py and requires the pika
-Python module installed. Should this not be available you can read on the
-following page how to get it installed:
+show consumed data on the screen or post to a REST API. The script is located
+in the pmacct default distribution tarball in 'examples/amqp/amqp_receiver.py'
+and requires the 'pika' Python module installed. Should this not be available,
+installation instructions are available at the following page:
 
 http://www.rabbitmq.com/tutorials/tutorial-one-python.html
 
-Improvements to the basic Python script provided and/or examples in different
-languages are very welcome at this stage.
-
 
 IX. Running the Kafka plugin
-Apache Kafka is publish-subscribe messaging rethought as a distributed commit log.
-Its qualities being: fast, scalable, durable and distributed by design. pmacct
-Kafka plugin is designed to send aggregated network traffic data, in JSON or
-Avro format, through a Kafka broker to 3rd party applications. Requirements to
-use the plugin are:
+Apache Kafka is a distributed streaming platform. Its qualities being: fast,
+scalable, durable and distributed by design. pmacct Kafka plugin is designed
+to send aggregated network traffic data, in JSON or Avro format, through a
+Kafka broker to 3rd party applications (typically, but not limited to, noSQL
+databases like ElasticSearch, InfluxDB, etc.). Requirements to use the plugin
+are:
 
 * A working Kafka broker (and Zookeper server): http://kafka.apache.org/
 * Librdkafka: https://github.com/edenhill/librdkafka/
 * Libjansson to cook JSON objects: http://www.digip.org/jansson/
 
-Software combinations that have been tested working are:
-
-* librdkafka 0.9.1, Kafka 0.8.2.2 and Scala 2.9.2
-* librdkafka 0.9.1, Kafka 0.10.0 and Scala 2.11.8
-
 Additionally, the Apache Avro C library (http://avro.apache.org/) needs to be
 installed to be able to send messages packed using Avro (you will also need to
 pass --enable-avro to the configuration script).
 
-Once these elements are installed, pmacct can be configured for compiling. pmacct
-makes use of pkg-config for finding libraries and headers location and checks some
-"typical" default locations, ie. /usr/local/lib and /usr/local/include. So all
-you should do is just:
+Once these elements are installed, pmacct can be configured for compiling.
+pmacct makes use of pkg-config for finding libraries and headers location and
+checks some default locations, ie. /usr/local/lib and /usr/local/include. If
+this is satisfactory, all you should do is just:
 
-./configure --enable-kafka --enable-jansson
+shell> ./configure --enable-kafka --enable-jansson
 
 But, for example, should you have installed Kafka in /usr/local/kafka and pkg-
 config is unable to help, you can supply this non-default location as follows
 (assuming you are running the bash shell):
 
-export KAFKA_LIBS="-L/usr/local/kafka/lib -lrdkafka"
-export KAFKA_CFLAGS="-I/usr/local/kafka/include"
-./configure --enable-kafka --enable-jansson
+shell> export KAFKA_LIBS="-L/usr/local/kafka/lib -lrdkafka"
+shell> export KAFKA_CFLAGS="-I/usr/local/kafka/include"
+shell> ./configure --enable-kafka --enable-jansson
 
-Ditto for the location of the Avro libraries, if using Avro encoding:
+You can check further information on how to compile pmacct with JSON/libjansson
+support in the section "Compiling pmacct with JSON support" of this document.
 
-export AVRO_LIBS="-L/usr/local/avro/lib -lavro"
-export AVRO_CFLAGS="-I/usr/local/avro/include"
-./configure --enable-kafka --enable-avro
+You can check further information on how to compile pmacct with Avro support in
+the section "Compiling pmacct with Apache Avro support" of this document.
 
 Then "make; make install" as usual. Following a configuration snippet showing a
 basic Kafka plugin configuration (assumes: Kafka broker is available at 127.0.0.1
-on port 9092; look all configurable directives up in the CONFIG-KEYS document):
+on port 9092; look all kafka_* configurable directives up in the CONFIG-KEYS
+document):
 
 ! ..
 plugins: kafka
@@ -694,41 +952,90 @@ kafka_history: 5m
 kafka_history_roundoff: m
 ! ..
 
-A basic consumer script, in Python, is provided as sample to: declare a group_id
-and bind it to the topic and show consumed data on the screen. The script is located
-in the pmacct default distribution tarball in: examples/kafka/kafka_consumer.py and
-requires the python-kafka Python module installed. Should this not be available you
-can read on the following page how to get it installed:
+A basic script, in Python, is provided as sample to consume JSON/Avro data from
+a given topic and perform some simple actions (ie. post data to a new Kafka topic,
+post to a URL or print to screen). The script is located in the pmacct distribution
+code in 'examples/kafka/kafka_consumer.py' and requires the confluent-kafka-python
+Python module installed (among the others, check script header). Should this not
+be available you can read on the following page how to get it installed:
 
-http://kafka-python.readthedocs.org/
+https://github.com/confluentinc/confluent-kafka-python
 
-This is a pointer to the quick start guide to Kafka (0.10.0):
+This is a pointer to the quick start guide to Kafka:
 
-http://kafka.apache.org/0100/quickstart.html
+https://kafka.apache.org/quickstart
 
-NOTE: some users have reported troubles getting messages delivered via Kafka with
-the following error messages:
+Some notes:
+1) When using Kafka over a dedicated node or VM, you may have to update the
+default Kafka server configuration. Edit the file named server.properties under
+the config folder of your kafka installation. Uncomment the following parameters:
 
-ERROR ( default/kafka ): Connection failed to Kafka: p_kafka_check_outq_len()
-ERROR ( default/kafka ): Connection failed to Kafka: p_kafka_close()
+* listeners,
+* advertised.listeners,
+* listener.security.protocol.map
 
-It appears these were not related specifically to pmacct but rather to the broader
-enviornment in which Kafka was run. A summary of the conversation, some findings and
-potential leads are captured here online: https://github.com/pmacct/pmacct/issues/34 .
+and configure it according to your Kafka design. Taking a simple example where
+there is one single Kafka node used for both Zookeeper and Kafka and this node
+is using and ip address like 172.16.2.1. Those three parameters will look like
+this:
+
+listeners=PLAINTEXT://172.16.2.1:9092
+advertised.listeners=PLAINTEXT://172.16.2.1:9092
+listener.security.protocol.map=PLAINTEXT:PLAINTEXT,SSL:SSL,SASL_PLAINTEXT:SASL_PLAINTEXT,SASL_SSL:SASL_SSL
+
+2) When the amount of data published to Kafka is substantial, ie. in the order
+of thousands of entries per second, batching is needed in order to avoid every
+single entry originating a produce call to Kafka. Two strategies are being
+available: a) pmacct batching via the kafka_multi_values feature or b) librdkafka
+batching via, as per the lib documentation, "The two most important configuration
+properties for performance tuning [are]:
+
+* batch.num.messages : the minimum number of messages to wait for to accumulate
+  in the local queue before sending off a message set.
+* queue.buffering.max.ms : how long to wait for batch.num.messages to fill up
+  in the local queue."
+
+Also, intuitively, queue.buffering.max.messages, the "Maximum number of messages
+allowed on the producer queue", should be kept greater than the batch.num.messages.
+These knobs can all be supplied to librdkafka through pmacct via a file pointed
+by kafka_config_file, as global settings, ie.:
+ 
+global, queue.buffering.max.messages, 8000000
+global, batch.num.messages, 100000
+
+3) Configuring statistics.interval.ms to a positive value in kafka_config_file
+will make librdkafka log plenty of internal metrics - as documented at the
+following wiki page: https://github.com/edenhill/librdkafka/wiki/Statistics
+For example:
+
+global, statistics.interval.ms, 60000
+
+4) The SSL support in librdkafka is completely configuration based, meaning
+it can be enabled via the kafka_config_file. More info is available at the
+page: https://github.com/edenhill/librdkafka/wiki/Using-SSL-with-librdkafka 
+For example, quoting the librdkafka page:
+
+global, security.protocol, ssl
+global, ssl.ca.location, ca-cert
+global, ssl.certificate.location, client_?????_client.pem
+global, ssl.key.location, client_?????_client.key
+global, ssl.key.password, abcdefgh
+
+5) When integrating pmacct with the PNDA framework ( http://www.pnda.io/ ), a
+guide on how to make the two communicate has been written-up and published at
+this URL: https://github.com/jbotello7381/pmacct_to_pnda.io . 
 
 
 X. Internal buffering and queueing
 Two options are provided for internal buffering and queueing: 1) a home-grown circular
 queue implementation available since day one of pmacct (configured via plugin_pipe_size
-and documented in docs/INTERNALS) and 2) use a RabbitMQ or Kafka broker for queueing
-purposes (configured via plugin_pipe_amqp and plugin_pipe_amqp_* or plugin_pipe_kafka
-and plugin_pipe_kafka_* directives).
+and documented in docs/INTERNALS) and 2) a ZeroMQ queue (configured via plugin_pipe_zmq
+and plugin_pipe_zmq_* directives).
 
-For a quick comparison: while relying on a RabbitMQ or Kafka broker for queueing does
-introduce an external dependency (ie. rabbitmq-c library, RabbitMQ server, etc.), it
-reduces the amount of fine tuning needed by the home-grown queue implementation, for
-example trial and error tasks like determine a value for plugin_pipe_size and find a
-viable ratio among plugin_pipe_size and plugin_buffer_size. 
+For a quick comparison: while relying on a ZeroMQ queue does introduce an external
+dependency, ie. libzmq, it reduces the amount of trial and error needed to fine
+tune plugin_buffer_size and plugin_pipe_size directives needed by the home-grown
+queue implementation.
 
 The home-grown cicular queue has no external dependencies and is configured, for
 example, as:
@@ -741,125 +1048,137 @@ For more information about the home-grown circular queue, consult plugin_buffer_
 and plugin_pipe_size entries in CONFIG-KEYS and docs/INTERNALS "Communications between
 core process and plugins" chapter. 
 
-The RabbitMQ queue has the same dependencies as the AMQP plugin; consult the "Running
-the RabbitMQ/AMQP plugin" chapter in this document for where to download the required
-packages/libraries and how to compile pmacct against these. When plugin_pipe_amqp is
-set to true, following is how data exchange via a RabbitMQ broker is configured under
-default settings:
+ZeroMQ, from 0MQ The Guide, "looks like an embeddable networking library but acts like
+a concurrency framework. It gives you sockets that carry atomic messages across various
+transports like in-process, inter-process, TCP, and multicast. You can connect sockets
+N-to-N with patterns like fan-out, pub-sub, task distribution, and request-reply. It's
+fast enough to be the fabric for clustered products. Its asynchronous I/O model gives
+you scalable multicore applications, built as asynchronous message-processing tasks.
+[ .. ]". pmacct integrates ZeroMQ using a pub-sub queue architecture, using ephemeral
+TCP ports and implementing plain authentication (username and password, auto-generated
+at runtime).
+
+The only requirement to use a ZeroMQ queue is to have the latest available stable
+release of libzmq installed on the system (http://zeromq.org/intro:get-the-software ,
+https://github.com/zeromq/libzmq/releases). Once this is installed, pmacct can be
+configured for compiling. pmacct makes use of pkg-config for finding libraries and
+headers location and checks some "typical" default locations, ie. /usr/local/lib and
+/usr/local/include. So all you should do is just:
+
+shell> ./configure --enable-zmq
+
+But, for example, should you have installed ZeroMQ in /usr/local/zeromq and should also
+pkg-config be unable to help, the non-default location can be supplied as follows (bash
+shell assumed):
+
+shell> export ZMQ_LIBS="-L/usr/local/zeromq/lib -lzmq"
+shell> export ZMQ_CFLAGS="-I/usr/local/zeromq/include"
+shell> ./configure --enable-zmq
+
+Then "make; make install" as usual. Following a configuration snippet showing how easy
+is to leverage ZeroMQ for queueing (see CONFIG-KEYS for all ZeroMQ-related options):
 
 plugins: print[blabla]
-plugin_buffer_size[blabla]: 10240
-!
-plugin_pipe_amqp[blabla]: true
-plugin_pipe_amqp_user[blabla]: guest
-plugin_pipe_amqp_passwd[blabla]: guest
-plugin_pipe_amqp_exchange[blabla]: pmacct
-plugin_pipe_amqp_host[blabla]: localhost
-plugin_pipe_amqp_vhost[blabla]: "/"
-plugin_pipe_amqp_routing_key[blabla]: blabla-print
-plugin_pipe_amqp_retry[blabla]: 60
+plugin_pipe_zmq[blabla]: true 
+plugin_pipe_zmq_profile[blabla]: micro
 
-The Kafka queue has the same dependencies as the Kafka plugin; consult the "Running
-the Kafka plugin" chapter in this document for where to download the required
-packages/libraries and how to compile pmacct against these. When plugin_pipe_kafka is
-set to true, following is how data exchange via a Kafka broker is configured under
-default settings:
-
-plugins: print[blabla]
-plugin_buffer_size[blabla]: 10240
-!
-plugin_pipe_kafka[blabla]: true
-plugin_pipe_kafka_topic[blabla]: pmacct.blabla-print
-plugin_pipe_kafka_retry[blabla]: 60
+Please review the standard buffer profiles, plugin_pipe_zmq_profile, in CONFIG-KEYS;
+Q21 of FAQS describes how to estimate the amount of flows/samples per second of your
+deployment.
 
 
-XI. Quickstart guide to packet classifiers
-The current approach for a packet classification engine is fully extensible: patterns
-are based on regular expressions (RE), must be placed into a common directory and have
-a .pat file extension. Patterns for well-known protocols are available and are just a
-click away. Furthermore, you can write your own patterns (and share them with the
-L7-filter project's community). Below the quickstarter guide:
+XI. Quickstart guide to packet classification
+Packet classification is a feature available for pmacctd (libpcap-based daemon),
+uacctd (NFLOG-based daemon), NetFlow v9/IPFIX IE 315 (dataLinkFrameSection) and
+the sFlow v5 raw header sample. The current approach is to leverage the popular
+free, open-source nDPI library. To enable the feature please follow these
+steps:
 
-a) download pmacct
-shell> wget http://www.pmacct.net/pmacct-x.y.z.tar.gz 
+1) Download pmacct from its webpage (http://www.pmacct.net/) or from its GitHub
+   repository (https://github.com/pmacct/pmacct).
 
-b) compile pmacct
-shell> cd pmacct-x.y.z; ./configure && make && make install 
+2) Download nDPI from its GitHub repository (https://github.com/ntop/nDPI).
+   pmacct code is tested against the latest stable version of the nDPI library
+   and hence that is the recommended download. 
 
-c-1) download regular expression (RE) classifiers as-you-need them: you just need to
-     point your browser to http://l7-filter.sourceforge.net/protocols/ then:
+3) Configure for compiling, compile and install the downloaded nDPI library, ie.
+   inside the nDPI directory:
 
-     shell> cd /path/to/classifiers/
-     shell> wget http://l7-filter.sourceforge.net/layer7-protocols/protocols/[ protocol ].pat 
+   shell> ./autogen.sh; ./configure; make; make install 
 
-c-2) download all the RE classifiers available: you just need to point your browser to
-     http://sourceforge.net/projects/l7-filter (and take to the latest L7-protocol
-     definitions tarball). Pay attention to remove potential catch-all patterns which
-     might be part of the downloaded package (ie. unknown.pat and unset.pat).
+3b) If using nDPI 2.2, use version >= 2.2.2 since several users have reported
+   issues building previous versions of the 2.2 release.
 
-c-3) download shared object (SO) classifiers (written in C) as-you-need them: you need
-     just to point your browser to http://www.pmacct.net/classification/ , download the
-     available package, extract files and compile things following INSTALL instructions.
-     When everything is finished, install the produced shared objects:
+4) Configure for compiling pmacct with the --enable-ndpi switch. Then compile and
+   install, ie.:
 
-     shell> mv *.so /path/to/classifiers/
+   If downloading a release from http://www.pmacct.net , from inside the pmacct
+   directory:
 
-d-1) build pmacct configuration, a memory table example:
-!
-daemonize: true
-interface: eth0
-aggregate: flows, class
-plugins: memory
-classifiers: /path/to/classifiers/
-snaplen: 700
-!...
+   shell> ./configure --enable-ndpi; make; make install
 
-d-2) build pmacct configuration, a SQL example:
-!
-daemonize: true
-interface: eth0
-aggregate: flows, class
-plugins: mysql 
-classifiers: /path/to/classifiers/
-snaplen: 700
-sql_history: 1h
-sql_history_roundoff: h
-sql_table_version: 5
-sql_aggressive_classification: true
-!...
+   If downloading code from https://github.com/pmacct/pmacct , from inside the
+   pmacct directory:
 
-e) Ok, we are done! Fire the pmacct collector daemon:
+   shell> ./autogen.sh; ./configure --enable-ndpi; make; make install
 
-   shell> pmacctd -f /path/to/configuration/file 
+   If using a nDPI library that is not installed (or not installed in a default
+   location) on the system, then NDPI_LIBS and NDPI_CFLAGS should be set to the
+   location where nDPI headers and dynamic library are lying. Additionally, the
+   configure switch --with-ndpi-static-lib allows to specify the location for the
+   static version of the library:
 
-   You can now play with the SQL or pmacct client; furthermore, you can add/remove/write
-   patterns and load them by restarting the pmacct daemon. If using the memory plugin
-   you can check out the list of loaded plugins with 'pmacct -C'. Don't underestimate
-   the importance of 'snaplen', 'pmacctd_flow_buffer_size', 'pmacctd_flow_buffer_buckets'
-   values; get the time to take a read about them in the CONFIG-KEYS document.
+   shell> NDPI_LIBS=-L/path/to/nDPI/src/lib/.libs  
+   shell> NDPI_CFLAGS=-I/path/to/nDPI/src/include
+   shell> export NDPI_LIBS NDPI_CFLAGS
+   shell> ./configure --enable-ndpi --with-ndpi-static-lib=/path/to/nDPI/src/lib/.libs
+   shell> make; make install
+
+5) Configure pmacct. The following sample configuration is based on pmacctd and
+   the print plugin with formatted output to stdout: 
+
+   daemonize: true
+   pcap_interface: eth0
+   snaplen: 700
+   !
+   plugins: print
+   !
+   aggregate: src_host, dst_host, src_port, dst_port, proto, tos, class
+
+   What enables packet classification is the use of the 'class' primitive as part
+   of the supplied aggregation method. Further classification-related options, 
+   such as timers, attempts, etc., are documented in the CONFIG-KEYS document
+   (classifier_* directives). 
+
+6) Execute pmacct as:
+
+   shell> pmacctd -f /path/to/pmacctd.conf
 
 
 XII. Quickstart guide to setup a NetFlow/IPFIX agent/probe
 pmacct is able to export traffic data through both NetFlow and sFlow protocols. This
 section covers NetFlow/IPFIX and next one covers sFlow. While NetFlow v5 is fixed by
-nature, v9 adds flexibility allowing to transport custom informations (for example,
-classification information or custom tags to remote collectors). Below the guide:
+nature, v9 adds (to v5) flexibility allowing to transport custom information (ie.
+classification information or custom tags to remote collectors) and IPFIX adds (to
+v9) the chance to transport private information (PEN) and variable-length elements.
+Below the configuration guide:
 
 a) usual initial steps: download pmacct, unpack it, compile it.
 
 b) build NetFlow probe configuration, using pmacctd:
-!
-daemonize: true
-interface: eth0
-aggregate: src_host, dst_host, src_port, dst_port, proto, tos
-plugins: nfprobe
-nfprobe_receiver: 1.2.3.4:2100
-nfprobe_version: 9
-! nfprobe_engine: 1:1
-! nfprobe_timeouts: tcp=120:maxlife=3600
-!
-! networks_file: /path/to/networks.lst
-!...
+
+   !
+   daemonize: true
+   pcap_interface: eth0
+   aggregate: src_host, dst_host, src_port, dst_port, proto, tos
+   plugins: nfprobe
+   nfprobe_receiver: 1.2.3.4:2100
+   nfprobe_version: 9
+   ! nfprobe_engine: 1:1
+   ! nfprobe_timeouts: tcp=120:maxlife=3600
+   !
+   ! networks_file: /path/to/networks.lst
+   !...
 
    This is a basic working configuration. Additional probe features include:
 
@@ -868,26 +1187,26 @@ nfprobe_version: 9
    directive; alternatively, it is possible to generate ASNs from the pmacctd BGP
    thread. The following fragment can be added to the config above:
 
-pmacctd_as: bgp
-bgp_daemon: true
-bgp_daemon_ip: 127.0.0.1
-bgp_agent_map: /path/to/agent_to_peer.map
-bgp_daemon_port: 17917
+   pmacctd_as: bgp
+   bgp_daemon: true
+   bgp_daemon_ip: 127.0.0.1
+   bgp_agent_map: /path/to/bgp_agent.map
+   bgp_daemon_port: 17917
 
    The bgp_daemon_port can be changed from the standard BGP port (179/TCP) in order to
    co-exist with other BGP routing software which might be running on the same host.
    Furthermore, they can safely peer each other by using 127.0.0.1 as bgp_daemon_ip. 
    In pmacctd, bgp_agent_map does the trick of mapping 0.0.0.0 to the IP address of
-   the BGP peer (ie. 127.0.0.1: 'set_tag=127.0.0.1 ip=0.0.0.0'); this setup, while
-   generic, was tested working in conjunction with Quagga 0.99.14. Following a relevant
+   the BGP peer (ie. 127.0.0.1: 'bgp_ip=127.0.0.1 ip=0.0.0.0'); this setup, while
+   generic, was tested working in conjunction with Quagga. Following a relevant
    fragment of the Quagga configuration:
 
-router bgp Y 
- bgp router-id X.X.X.X
- neighbor 127.0.0.1 remote-as Y 
- neighbor 127.0.0.1 port 17917
- neighbor 127.0.0.1 update-source X.X.X.X
-!
+   router bgp Y 
+    bgp router-id X.X.X.X
+    neighbor 127.0.0.1 remote-as Y 
+    neighbor 127.0.0.1 port 17917
+    neighbor 127.0.0.1 update-source X.X.X.X
+   !
 
    NOTE: if configuring a BGP neighbor over localhost via Quagga CLI the following
    message is returned: "% Can not configure the local system as neighbor". This
@@ -896,33 +1215,32 @@ router bgp Y
 
    2) encode flow classification information in NetFlow v9 like Cisco does with its
    NBAR/NetFlow v9 integration. This can be done by introducing the 'class' primitive
-   to the afore mentioned 'aggregate' and add the extra configuration directives:
+   to the afore mentioned 'aggregate' and add the extra configuration directive:
 
-aggregate: class, src_host, dst_host, src_port, dst_port, proto, tos
-classifiers: /path/to/classifiers/
-snaplen: 700
+   aggregate: class, src_host, dst_host, src_port, dst_port, proto, tos
+   snaplen: 700
 
-   Further information on this topic can be found in the section of this document about
-   stream classification.
+   Further information on this topic can be found in the 'Quickstart guide to packet
+   classification' section of this document.
 
    3) add direction (ingress, egress) awareness to measured IP traffic flows. Direction
    can be defined statically (in, out) or inferred dinamically (tag, tag2) via the use
    of the nfprobe_direction directive. Let's look at a dynamic example using tag2;
    first, add the following lines to the daemon configuration:
 
-nfprobe_direction[plugin_name]: tag2
-pre_tag_map: /path/to/pretag.map
+   nfprobe_direction[plugin_name]: tag2
+   pre_tag_map: /path/to/pretag.map
 
    then edit the tag map as follows. A return value of '1' means ingress while '2' is
    translated to egress. It is possible to define L2 and/or L3 addresses to recognize
    flow directions. The 'set_tag2' primitive (tag2) will be used to carry the return
    value:
 
-set_tag2=1 filter='dst host XXX.XXX.XXX.XXX'
-set_tag2=2 filter='src host XXX.XXX.XXX.XXX'
+   set_tag2=1 filter='dst host XXX.XXX.XXX.XXX'
+   set_tag2=2 filter='src host XXX.XXX.XXX.XXX'
 
-set_tag2=1 filter='ether src XX:XX:XX:XX:XX:XX'
-set_tag2=2 filter='ether dst XX:XX:XX:XX:XX:XX'
+   set_tag2=1 filter='ether src XX:XX:XX:XX:XX:XX'
+   set_tag2=2 filter='ether dst XX:XX:XX:XX:XX:XX'
 
    Indeed in such a case, the 'set_tag' primitive (tag) can be leveraged to other uses
    (ie. filter sub-set of the traffic for flow export);
@@ -933,41 +1251,41 @@ set_tag2=2 filter='ether dst XX:XX:XX:XX:XX:XX'
    nfprobe_ifindex directive. Let's look at a dynamic example using tag; first add the
    following lines to the daemon config:
 
-nfprobe_direction[plugin_name]: tag
-nfprobe_ifindex[plugin_name]: tag2
-pre_tag_map: /path/to/pretag.map 
+   nfprobe_direction[plugin_name]: tag
+   nfprobe_ifindex[plugin_name]: tag2
+   pre_tag_map: /path/to/pretag.map 
 
    then edit the tag map as follows:
 
-set_tag=1 filter='dst net XXX.XXX.XXX.XXX/WW' jeq=eval_ifindexes
-set_tag=2 filter='src net XXX.XXX.XXX.XXX/WW' jeq=eval_ifindexes
-set_tag=1 filter='dst net YYY.YYY.YYY.YYY/ZZ' jeq=eval_ifindexes
-set_tag=2 filter='src net YYY.YYY.YYY.YYY/ZZ' jeq=eval_ifindexes
-set_tag=1 filter='ether src YY:YY:YY:YY:YY:YY' jeq=eval_ifindexes
-set_tag=2 filter='ether dst YY:YY:YY:YY:YY:YY' jeq=eval_ifindexes
-set_tag=999 filter='net 0.0.0.0/0'
-!
-set_tag2=100 filter='dst host XXX.XXX.XXX.XXX' label=eval_ifindexes
-set_tag2=100 filter='src host XXX.XXX.XXX.XXX'
-set_tag2=200 filter='dst host YYY.YYY.YYY.YYY'
-set_tag2=200 filter='src host YYY.YYY.YYY.YYY'
-set_tag2=200 filter='ether src YY:YY:YY:YY:YY:YY'
-set_tag2=200 filter='ether dst YY:YY:YY:YY:YY:YY'
+   set_tag=1 filter='dst net XXX.XXX.XXX.XXX/WW' jeq=eval_ifindexes
+   set_tag=2 filter='src net XXX.XXX.XXX.XXX/WW' jeq=eval_ifindexes
+   set_tag=1 filter='dst net YYY.YYY.YYY.YYY/ZZ' jeq=eval_ifindexes
+   set_tag=2 filter='src net YYY.YYY.YYY.YYY/ZZ' jeq=eval_ifindexes
+   set_tag=1 filter='ether src YY:YY:YY:YY:YY:YY' jeq=eval_ifindexes
+   set_tag=2 filter='ether dst YY:YY:YY:YY:YY:YY' jeq=eval_ifindexes
+   set_tag=999 filter='net 0.0.0.0/0'
+   !
+   set_tag2=100 filter='dst host XXX.XXX.XXX.XXX' label=eval_ifindexes
+   set_tag2=100 filter='src host XXX.XXX.XXX.XXX'
+   set_tag2=200 filter='dst host YYY.YYY.YYY.YYY'
+   set_tag2=200 filter='src host YYY.YYY.YYY.YYY'
+   set_tag2=200 filter='ether src YY:YY:YY:YY:YY:YY'
+   set_tag2=200 filter='ether dst YY:YY:YY:YY:YY:YY'
 
-  The set_tag=999 works as a catch all for undefined L2/L3 addresses so
-  to prevent searching further in the map. In the example above direction
-  is set first then, if found, interfaces are set, using the jeq/label
-  pre_tag_map construct.
+   The set_tag=999 works as a catch all for undefined L2/L3 addresses so
+   to prevent searching further in the map. In the example above direction
+   is set first then, if found, interfaces are set, using the jeq/label
+   pre_tag_map construct.
 
 c) build NetFlow collector configuration, using nfacctd:
-!
-daemonize: true
-nfacctd_ip: 1.2.3.4
-nfacctd_port: 2100
-plugins: memory[display]
-aggregate[display]: src_host, dst_host, src_port, dst_port, proto
-!
-! classifiers: /path/to/classifiers
+
+   !
+   daemonize: true
+   nfacctd_ip: 1.2.3.4
+   nfacctd_port: 2100
+   plugins: memory[display]
+   aggregate[display]: src_host, dst_host, src_port, dst_port, proto
+   ! aggregate[display]: class, src_host, dst_host, src_port, dst_port, proto
 
 d) Ok, we are done ! Now fire both daemons:
 
@@ -977,25 +1295,24 @@ d) Ok, we are done ! Now fire both daemons:
 
 XIII. Quickstart guide to setup a sFlow agent/probe
 pmacct can export traffic data via sFlow; such protocol is different from NetFlow/
-IPFIX: in short, it works by exporting portions of sampled packets rather than
-caching and building uni-directional flows as it happens in NetFlow; this not
-stateful approach makes sFlow a light export protocol well-tailored for high-
-speed networks. Furthermore, sFlow v5 can be extended much like NetFlow v9: meaning
-classification information, tags or basic Extended Gateway information (ie. src_as,
-dst_as) can be easily included in the record structure being exported. Below the
-quickstarter guide:
+IPFIX: in short, it works by sampling individual packets (and exporting portions of
+them) instead of caching uni-directional flows as it happens for NetFlow; such a 
+statelss approach makes sFlow a light export protocol well-tailored for high-speed
+networks. Furthermore, sFlow v5 can be extended much like NetFlow v9/IPFIX: meaning
+classification information (if nDPI is compiled in, see 'Quickstart guide to packet
+classification' section of this document), tags and/or basic Extended Gateway info
+(ie. src_as, dst_as) can be easily included in the record structure being exported.
+Here a quickstarter sFlow probe configuration, using pmacctd:
 
-b) build sFlow probe configuration, using pmacctd:
 !
 daemonize: true
-interface: eth0
+pcap_interface: eth0
 plugins: sfprobe
 sampling_rate: 20
 sfprobe_agentsubid: 1402
 sfprobe_receiver: 1.2.3.4:6343
 !
 ! networks_file: /path/to/networks.lst
-! classifiers: /path/to/classifiers/
 ! snaplen: 700
 !...
 
@@ -1003,22 +1320,17 @@ sfprobe_receiver: 1.2.3.4:6343
 XIV. Quickstart guide to setup the BGP daemon
 BGP can be run as a stand-alone collector daemon (pmbgpd, from 1.6.1) or as a
 thread within one of the traffic accounting daemons (ie. nfacctd). The stand-
-alone daemon is suitable for consuming BGP data only, real-time or at regular
-intervals; the thread solution is suitable for correlation of BGP with other
-data sources, ie. NetFlow, IPFIX, sFlow, etc.. The thread implementation idea
-is to receive data-plane information, ie. via NetFlow, sFlow, etc., and control
-plane information, ie. full routing tables via BGP, from edge routers. Per-peer
-BGP RIBs are maintained to ensure local views of the network, a behaviour close
-to that of a BGP route-server. In case of routers with default-only or partial
-BGP views, the default route can be followed up (bgp_default_follow); also it
-might be desirable in certain situations, for example trading-off resources to
-accuracy, to ntirely map one or a set of agents to a BGP peer (bgp_agent_map). 
-
-Pre-requisite is that the pmacct package is configured for compiling with support
-for threads. Nowadays this is the default setting hence the following line will
-do it:
-
-shell> ./configure
+alone daemon is suitable for the Looking-Glass use-case, building BGP xconnects
+and consuming BGP data, real-time or at regular intervals; the thread solution
+is suitable for correlation of BGP with other data sources, ie. NetFlow, IPFIX,
+sFlow, etc. The thread implementation idea is to receive data-plane information,
+ie. via NetFlow, sFlow, etc., and control plane information, ie. full routing
+tables via BGP, from edge routers. Per-peer BGP RIBs are maintained to ensure
+local views of the network, a behaviour close to that of a BGP route-server.
+In case of routers with default-only or partial BGP views, the default route
+can be followed up (bgp_default_follow); also it might be desirable in certain
+situations, for example trading-off resources to accuracy, to map one or a set
+of flow agents to a BGP peer (bgp_agent_map). 
 
 The following configuration snippet shows how to set up a BGP thread (ie. part
 of the NetFlow/IPFIX collector, nfacctd) which will bind to an IP address and
@@ -1061,14 +1373,15 @@ related to the BGP feed(s), bgp_daemon_msglog_* configuration directives can be
 enabled in order to log BGP messaging.
 
 XIVa. Limiting AS-PATH and BGP community attributes length
-AS-PATH and BGP communities can by nature get easily long, when represented as strings.
-Sometimes only a small portion of their content is relevant to the accounting task and
-hence a filtering layer was developed to take special care of these attributes. The
-bgp_aspath_radius cuts the AS-PATH down after a specified amount of hops; whereas the
-bgp_stdcomm_pattern does a simple sub-string matching against standard BGP communities,
-filtering in only those that match (optionally, for better precision, a pre-defined
-number of characters can be wildcarded by employing the '.' symbol, like in regular
-expressions). See a typical usage example below:
+AS-PATH and BGP communities can get easily long when represented as strings.
+Sometimes only a small portion of their content is of interest and hence a
+simple filtering layer was developed in order to take special care of these
+BGP attributes. bgp_aspath_radius cuts the AS-PATH down after a specified
+amount of AS hops; whereas the bgp_stdcomm_pattern does a simple sub-string
+matching against standard BGP communities, filtering in only those that match
+(optionally, for better precision, a pre-defined number of characters can be
+wildcarded by employing the '.' symbol, like in regular expressions). See an
+example below:
 
 bgp_aspath_radius: 3
 bgp_stdcomm_pattern: 12345:
@@ -1103,10 +1416,13 @@ relevant routers via SNMP. In this sense, the bgpPeerTable MIB is a good startin
 point. Alternatively pmacct also offers the option to perform reverse BGP lookups.
 
 NOTES:
-* When mapping, the peer_src_as primitive doesn't really apply to egress NetFlow
-  (or egress sFlow) as it mainly relies on either the input interface index
-  (ifIndex), the source MAC address, a reverse BGP next-hop lookup or a combination
-  of these.
+* When using maps, the peer_src_as primitive should be used with care if egress
+  NetFlow/IPFIX/sFlow is in use as it mainly relies on either the input interface
+  index (ifIndex), the source MAC address, a reverse BGP next-hop lookup or a
+  combination of these. For example, egress NetFlow enabled on edge devices on
+  core interfaces may work as the input ifIndex would still be visible; egress
+  NetFlow enabled on edge devices on edge interfaces may not work as, unless
+  traffic is locally switched, it may be sampled upon exiting the observed netowrk.
 * "Source" MED, local preference, communities and AS-PATH have all been allocated
   aggregation primitives. Each carries its own peculiarities but the general concepts
   highlighed in this chapter apply to these aswell. Check CONFIG-KEYS out for the
@@ -1114,35 +1430,35 @@ NOTES:
   directives.
 
 XIVc. Tracking entities on the own IP address space
-It might happen that not all entities attached to the service provider network are
-running BGP but rather they get IP prefixes redistributed into iBGP (different
-routing protocols, statics, directly connected, etc.). These can be private IP
-addresses or segments of the SP public address space. The common factor to all of
-them is that while being present in iBGP, these prefixes can't be tracked any
-further due to the lack of attributes like AS-PATH or an ASN. To overcome this
-situation the simplest approach is to employ a bgp_peer_src_as_map directive,
-described previously (ie. making use of interface descriptions as a possible way
-to automate the process). Alterntively, the bgp_stdcomm_pattern_to_asn directive
-was developed to fit into this scenario: assuming procedures of a SP are (or can
-be changed) to label every relevant non-BGP speaking entity IP prefixes uniquely
-with a BGP standard community, this directive allows to map the community to a
-peer AS/origin AS couple as per the following example: XXXXX:YYYYY => Peer-AS=XXXXX,
-Origin-AS=YYYYY. 
+It might happen that not all entities connected to the observed network are
+running BGP but rather they get assigned provider IP prefixes redistributed
+into iBGP (different routing protocols, statics, directly connected, etc.).
+These can be private IP addresses or segments of the SP public address space.
+The common factor to all of them is that while being present in iBGP, these
+prefixes can't be distinguished any further due to the lack of attributes like
+AS-PATH or an ASN. One simple solution, although costly, could be to account
+on IP prefixes (other than BGP attributes). Another simple solution, especially
+if the enity is dominated by outbound traffic (ingress in the observed network)
+could be to use a bgp_peer_src_as_map directive, described previously (ie. make
+use of interface descriptions as a possible way to automate the process).
+Alternatively, bgp_stdcomm_pattern_to_asn and bgp_lrgcomm_pattern_to_asn config
+directives were developed to fit in this scenario: assuming procedures of a SP
+are (or can be changed) to label every relevant non-BGP speaking entity IP
+prefixes uniquely with BGP standard communities, this directive then allows to
+map the community to a peer AS/ origin AS couple as per the following example:
+XXXXX:YYYYY => Peer-AS=XXXXX, Origin-AS=YYYYY. 
 
 XIVd. Preparing the router to BGP peer 
-Once the collector is configured and started up the remaining step is to let routers
-to export traffic samples to the collector and BGP peer with it. Configuring the same
-source IP address across both NetFlow and BGP features allows the pmacct collector to
-perform the required correlations. Also, setting the BGP Router ID accordingly allows
-for more clear log messages. It's adviceable to configure the collector at the routers
-as a Route-Reflector (RR) client.
+Once the collector is configured and started up the remaining step is to let
+routers export traffic samples to the collector and BGP peer with it. By
+configuring the same source IP address across both NetFlow and BGP features
+allows the collector to perform the required correlations without further
+configuration. Also, setting the BGP Router ID accordingly allows for more
+clear log messages. On the routers it is adviceable to configure the BGP
+session with the collector as a Route-Reflector (RR) client.
 
-A relevant configuration example for a Cisco router follows:
+A relevant configuration example for a Cisco IOS follows:
 
-ip flow-export source Loopback12345
-ip flow-export version 5
-ip flow-export destination X.X.X.X 2100
-!
 router bgp 12345
  neighbor X.X.X.X remote-as 12345
  neighbor X.X.X.X update-source Loopback12345
@@ -1153,17 +1469,6 @@ router bgp 12345
 
 A relevant configuration example for a Juniper router follows:
 
-forwarding-options {
-    sampling {
-        output {
-            cflowd X.X.X.X {
-                port 2100;
-                source-address Y.Y.Y.Y;
-                version 5;
-            }
-        }
-    }
-}
 protocols bgp {
     group rr-netflow {
         type internal;
@@ -1177,6 +1482,48 @@ protocols bgp {
         }
     }
 }
+
+A relevant configuration example for a IOS XR (Version 5.1.1) router follows:
+
+router bgp 12345
+ address-family ipv4 unicast
+  additional-paths receive
+  additional-paths send
+  maximum-paths ibgp 6
+  additional-paths selection route-policy add_path
+ !
+ af-group af-group-example address-family ipv4 unicast
+  route-reflector-client
+ !
+ session-group ibgp
+  remote-as 12345
+  update-source Loopback0
+ !
+ neighbor-group ibgp-rr-client
+  use session-group ibgp
+  address-family ipv4 unicast
+   use af-group af-group-example
+  !
+ !
+ neighbor X.X.X.X
+  use neighbor-group ibgp-rr-client
+ !
+!
+
+Contribution of further configuration examples for Cisco and Juniper devices
+and/or other relevant vendors is more than welcome. 
+
+In case ipv4 and ipv6 address-families are delivered over two distinct BGP
+sessions, typically one with ipv4 transport and one with ipv6 transport, then,
+since both ipv4 and ipv6 flows (NetFlow, IPFIX, sFlow) are typically delivered
+over a single ipv4 transport, a bgp_agent_map is needed in order to make the
+right correlation (see the 'filter' keyword in the example below). The map is
+defined in the daemon configuration ie. 'bgp_agent_map: /path/to/bgp_agent.map'
+then in the map itself for every router exporting flows and BGP peering the
+following lines should be defined:
+
+bgp_ip=<BGP v4 transport>	ip=<flow v4 transport>	filter='ip  or (vlan and ip)'
+bgp_ip=<BGP v6 transport>	ip=<flow v4 transport>	filter='ip6 or (vlan and ip6)'
 
 XIVe. Example: writing flows augmented by BGP to a MySQL database
 The following setup is a realistic example for collecting an external traffic
@@ -1281,20 +1628,11 @@ enables BGP analytics and BGP event management, for example spot unstable
 routes, trigger alarms on route hijacks, etc. 
 
 Both features export data formatted as JSON messages, hence compiling pmacct
-against libjansson is a requirement. Messages can be written to plain-text files
-or pointed at AMQP or Kafka brokers (in which case compiling against RabbitMQ or
+against libjansson is a requirement. See how to compile pmacct with JSON/
+libjansson support in the section "Compiling pmacct with JSON support" of this
+document. If writing to AMQP or Kafka brokers compiling against RabbitMQ or
 Kafka libraries is required; read more in respectively the "Running the
-RabbitMQ/AMQP plugin" or "Running the Kafka plugin" sections of this document):
-
-shell> ./configure --enable-jansson
-
-But, for example, should you have installed Jansson in /usr/local/jansson and
-pkg-config is unable to help, you can supply this non-default location as
-follows (assuming you are running the bash shell):
-
-shell> export JANSSON_LIBS="-L/usr/local/jansson/lib -ljansson"
-shell> export JANSSON_CFLAGS="-I/usr/local/jansson/include"
-shell> ./configure --enable-jansson
+RabbitMQ/AMQP plugin" or "Running the Kafka plugin" sections of this document.
 
 A basic dump of BGP tables at regular intervals (60 secs) to plain-text files,
 split by BGP peer and time of the day, is configured as follows:
@@ -1327,16 +1665,76 @@ to make the above example work against a RabbitMQ broker.
 A sample of both the BGP msglog and dump formats are captured in the following
 document: docs/MSGLOG_DUMP_FORMATS
 
+XIVg. Example: querying the BGP daemon via the Looking Glass server.
+Starting with release 1.7.1 pmbgpd, the pmacct BGP standalone daemon, includes
+a Looking Glass server to query available BGP RIBs. The server is asyncronous
+and uses ZeroMQ as transport layer to serve incoming queries. The LG server can
+be configured as follows:
 
-XIVg. BGP daemon implementation concluding notes
+bgp_daemon_lg: true
+bgp_daemon_lg_user: pmacct
+bgp_daemon_lg_passwd: arealsmartpwd 
+
+This configuration will enable plain authentication and will make the server
+listen on all interfaces on port 17900/TCP. Following an example of querying
+with the Python client available in 'examples/lg':
+
+Get the list of available BGP peers:
+
+shell> examples/lg/pmbgp.py -g
+{"results": 1, "query_type": 2}
+{"peer_ip_src": "192.168.1.1", "peer_id": "192.168.1.1", "peer_tcp_port": 47248, "peer_as": 65500}
+ 
+Lookup IP prefix 192.168.2.0/24 for BGP peer 192.168.1.1:
+
+shell> examples/lg/pmbgp.py -a 192.168.2.0/24 -r 192.168.1.1
+{"peer_ip_src": "192.168.1.1", "event_type": "lglass", "afi": 1, "safi": 1, "ip_prefix": "192.168.2.0/24", "bgp_nexthop": "192.168.1.254", "as_path": "65500 65501 65502", "comms": "65500:1 65500:100 65500:65500", "origin": 0, "local_pref": 100}
+
+Request/Reply Looking Glass formats are documented in 'docs/LOOKING_GLASS_FORMAT'.
+
+XIVh. Example: BGP Xconnects 
+Starting with release 1.7.1, pmbgpd, the pmacct BGP standalone daemon, includes
+a new BGP xconnect feature to map BGP peers (ie. PE routers) to BGP collectors
+(ie. nfacctd, sfacctd). The aim is to facilitate operations when re-sizing/re-
+balancing the collection infrastructure without impacting (ie. re-configuring)
+BGP peers. A few caveats apply: 1) mapping works only against the IP source
+address and not the BGP Router ID, 2) only 1:1 relationships can be formed
+(ie. this is about cross-connecting, not replication) and 3) only one session
+per BGP peer is supported (ie. multiple BGP agents are running on the same IP
+address or NAT traversal scenarios are not supported [yet]). The feature can
+be configured as follows:
+
+bgp_daemon_xconnect_map: /path/to/bgp_xconnects.map
+
+And the content of the map can be defined as follows:
+
+bgp_dst=10.0.0.1:17901  bgp_src=192.168.0.1
+bgp_dst=10.0.0.1:17902  bgp_src=192.168.0.2
+bgp_dst=10.0.0.1:17910  bgp_src=192.168.10.0/24
+
+Where bgp_dst is the IPv4/IPv6 address and port of the BGP collector to cross-
+connect incoming (bgp_src) BGP session to and bgp_src is compared against the
+IPv4/IPv6 address (not BGP Router ID) of an incoming BGP session from a BGP
+peer. At the collector end one should set tmp_bgp_lookup_compare_ports (read
+more about this knob in CONFIG-KEYS) to true.
+
+In future BMP may be added as a transport for BGP data between pmbgpd and the
+collector (please get in touch if interested). An alternative to the use of
+pmbgpd is NAT/masquerading; in this context, pmbgpd brings the advantage of
+running fully in user-space.
+
+XIVi. BGP daemon implementation concluding notes
 The implementation supports 4-bytes ASN, IPv4, IPv6, VPNv4 and VPNv6 (MP-BGP)
-address families and ADD-PATH (draft-ietf-idr-add-paths); both IPv4 and IPv6
+address families and several IETF drafts and RFCs, ie. ADD-PATH, Shutdown
+Message and Large BGP Communities among the others; IPv4, IPv6 transports for
 BGP sessions are supported. When storing data via SQL, BGP primitives can be
 freely mix-and-matched with other primitives (ie. L2/L3/L4) when customizing
 the SQL table (sql_optimize_clauses: true). Environments making use of BGP
 Multi-Path should make use of ADD-PATH to advertise known paths in which case
 the correct BGP info is linked to traffic data using BGP next-hop (or IP next-
-hop if use_ip_next_hop is set to true) as selector among the paths available.
+hop if use_ip_next_hop is set to true) as selector among the paths available
+(on the assumption that ADD-PATH is used for route diversity; all checked
+implementations seem to tend to not advertise paths with the same next-hop).
 TCP MD5 signature for BGP messages is also supported. For a review of all knobs
 and features see the CONFIG-KEYS document. 
 
@@ -1374,6 +1772,10 @@ id=2	ip=Y.Y.Y.Y:2100,Z.Z.Z.Z:2100
 ! id=1	ip=W.W.W.W:2100			tag=0
 ! id=2	ip=Y.Y.Y.Y:2100,Z.Z.Z.Z:2100	tag=100
 
+Number of tee_receivers map entries (by default 384) can be modified via
+maps_entries. Content can be reloaded at runtime by sending the daemon a
+SIGUSR2 signal (ie. "killall -USR2 nfacctd").
+
 Selective teeing allows to filter which pool of receivers has to receive which
 datagrams. Tags are applied via a pre_tag_map, the one illustrated below applies
 tag 100 to packets exported from agents A.A.A.A, B.B.B.B and C.C.C.C; in case
@@ -1400,24 +1802,24 @@ the same daemon instance. So if in the need of using pmacct for both collecting
 and replicating data, two separate instances must be used (intuitively with the
 replicator instance feeding the collector one).
 
-XVa. Splitting and dissecting sFlow flow samples
-Starting with pmacct 1.6.2, it is possible to perform finer-grained filtering,
-ie. against flow-specific primitives, when replicating. For example: replicate
-flows from or to MAC address X1, X2 .. Xn to receiver Y or replicate flows in
-VLAN W to receiver Z. The feature works by inspecting the original packet and
-dissecting it as needed, the most popular use-case being IXPs replicating flows
-back to the members originating and/or receiving them. Some of the supported
-primitives are: source and destination MAC addresses, input/output interfaces
-ifindex; the full list is available in examples/pretag.map.example (look for
-"sfacctd, nfacctd when in 'tee' mode").
+XVa. Splitting and dissecting data while replicating
+When replicating, it is possible to perform finer-grained filtering, ie.
+against flow-specific primitives. For example: replicate flows from or to MAC
+address X1, X2 .. Xn to receiver Y or replicate flows in VLAN W to receiver
+Z. The feature works by inspecting the original packet and dissecting it as
+needed, one of the most popular use-cases being IXPs replicating flows back
+to the members originating and/or receiving them. From pmacct 1.6.2 the
+feature is available for sFlow; from 1.7.2 the feature is extended to NetFlow
+and IPFIX. Some of the supported primitives are: source and destination MAC
+addresses and input/output interfaces ifindex; the full list is available in
+examples/pretag.map.example (look for "sfacctd when in 'tee' mode" or
+"nfacctd when in 'tee' mode").
 
 The feature is configured just like selective teeing shown in the previous
 section. Incoming packets are tagged with a pre_tag_map and then matched to a
-receiver in tee_receivers. Also, setting tee_dissect_send_full_pkt to true (by
-default false) the original full frame is sent over to the tee plugin. For
-example: replicate flows from/to MAC address XX:XX:XX:XX:XX:XX to receiver Y,
-replicate flows from/to MAC address WW:WW:WW:WW:WW:WW to receiver Z, replicate
-any remaining flows plus original frames to receiver J.
+receiver in tee_receivers. For example: replicate flows from/to MAC address
+XX:XX:XX:XX:XX:XX to receiver Y, flows from/to MAC address WW:WW:WW:WW:WW:WW
+to receiver Z and replicate any remaining (untagged) flows to receiver J.
 
 This is the pre_tag_map map:
 
@@ -1429,11 +1831,11 @@ set_tag=999	ip=0.0.0.0/0
 
 This is the tee_receivers map:
 
-id=100	ip=Y.Y.Y.Y:2100	tag=100
-id=200	ip=Z.Z.Z.Z:2100	tag=200
-id=999	ip=J.J.J.J:2100	tag=999
+id=100		ip=Y.Y.Y.Y:2100	tag=100
+id=200		ip=Z.Z.Z.Z:2100	tag=200
+id=999		ip=J.J.J.J:2100	tag=999
 
-This is the relevant section from sfacctd.conf:
+This is the relevant section from nfacctd/sfacctd configuration:
 
 [ .. ]
 !
@@ -1444,18 +1846,58 @@ plugins: tee[a]
 !
 tee_receivers[a]: /path/to/tee_receivers.lst
 pre_tag_map[a]: /path/to/pretag.map
-tee_dissect_send_full_pkt[a]: true
 
-There are a few restrictions to the feature: 1) only sFlow v5 is supported, ie.
-no NetFlow/IPFIX and no sFlow v2-v4; 2) only sFlow flow samples are supported,
-ie. no counter samples. There are also a few known limitations all boiling down
-to non-contextual replication: 1) once split, flows are not muxed back together,
-ie. in case multiple samples part of the same packet are to be replicated to the
-same receiver; 2) sequence numbers are untouched: the most obvious cases being
-receivers may detect non-contiguous sequencing progressions or false duplicates.
-If you are negatively affected by any of these restrictions or limitations or
-you need other primitives to be supported by this feature, please do get in
-touch.
+Along with dissected flows, it is possible to replicate also the original
+packet as-is. This can be done in a separate 'tee' plugin with no or a
+simple pre_tag_map defined. Extending the example above, we instantiate
+two plugins; 'a' is as per the previous example, 'b' is to replicate full
+packets (as in plain, non-dissected replication):
+
+[ .. ]
+!
+tee_transparent: true
+maps_index: true
+!
+plugins: tee[a], tee[b]
+!
+tee_receivers[a]: /path/to/tee_receivers_a.lst
+pre_tag_map[a]: /path/to/pretag_a.map
+!
+tee_receivers[a]: /path/to/tee_receivers_b.lst
+pre_tag_map[a]: /path/to/pretag_b.map
+
+tee_receivers_a.lst and pretag_a.map are precisely as in the previous
+example. 
+
+This is the pretag_b.map map:
+
+set_tag=100	ip=0.0.0.0/0
+
+This is the tee_receivers_b.map map:
+
+id=100		ip=H.H.H.H:2100	tag=100
+
+Defining a simple pre_tag_map as one where no entries require dissecting
+flows (ie. tagging on source_id, agent_id, ip, etc. keys) and a complex
+pre_tag_map as one that requires dissecting flows (ie. tagging on vlan,
+src_mac, dst_net, etc. keys) this is the table of truth for stopping or
+passing replicated data:
+
+	   no pre_tag_map | simple pre_tag_map | complex pre_tag_map
+			  |		       |
+dissected	no	  |        no	       |         yes
+			  |		       |
+     full	yes	  |	   yes	       |	 no
+
+There are a few restrictions to the feature: 1) for sFlow, only sFlow v5 flow
+samples are supported, ie. no sFlow v2/v4 nor counter samples; 2) for NetFlow/
+IPFIX, templates and option data is broadcasted to configured tee receivers
+(regardless of tags); 3) once split, flows are not muxed back together, ie.
+in case multiple samples part of the same packet are to be replicated to the
+same receiver; 4) sequence numbers are untouched: the most obvious cases being
+receivers may detect non-increasing sequencing or false duplicates. If you are
+negatively affected by any of these restrictions or limitations or you need
+other primitives to be supported by this feature, please get in touch.
 
 
 XVI. Quickstart guide to setup the IS-IS daemon
@@ -1519,18 +1961,28 @@ BMP can be run as a stand-alone collector daemon (pmbmpd, from 1.6.1) or as a
 thread within one of the traffic accounting daemons (ie. nfacctd). The stand-
 alone daemon is suitable for consuming BMP data only, real-time or at regular
 intervals; the thread solution is suitable for correlation of BMP with other
-data sources, ie. NetFlow, IPFIX, sFlow, etc.. The implementation was originally
-based on the draft-ietf-grow-bmp-07 IETF document (whereas the current review is
-against draft-ietf-grow-bmp-17). If unfamiliar with BMP, to quote the IETF
-document: "BMP is intended to provide a more convenient interface for obtaining
-route views for research purpose than the screen-scraping approach in common use
-today. The design goals are to keep BMP simple, useful, easily implemented, and
-minimally service-affecting.". The BMP daemon currently supports BMP data,
-events and stats, ie. initiation, termination, peer up, peer down, stats and
-route monitoring messages. The daemon enables to write BMP messages to files,
-AMQP and Kafka brokers, real-time (msglog) or at regular time intervals (dump).
+data sources, ie. NetFlow, IPFIX, sFlow, etc.. The implementation bases on
+rfc7854 and adds elements from both draft-ietf-grow-bmp-adj-rib-out and
+draft-ietf-grow-bmp-adj-loc-rib IETF documents. If unfamiliar with BMP, to
+quote rfc7854: "BMP is intended to provide a more convenient interface for
+obtaining route views for research purpose than the screen-scraping approach
+in common use today. The design goals are to keep BMP simple, useful, easily
+implemented, and minimally service-affecting.".
+
+The BMP daemon currently supports BMP data, events and stats, ie. initiation,
+termination, peer up, peer down, stats and route monitoring messages (that is
+no route mirroring messages; please get in touch if an implementation is
+wanted in this sense). The daemon enables to write BMP messages to files, AMQP
+and Kafka brokers, real-time (msglog) or at regular time intervals (dump).
 Also, route monitoring messages are saved in a RIB structure for IP prefix
 lookup.
+
+All features export data formatted as JSON messages, hence compiling pmacct
+against libjansson is a requirement. See how to compile pmacct with JSON/
+libjansson support in the section "Compiling pmacct with JSON support" of this
+document. If writing to AMQP or Kafka brokers compiling against RabbitMQ or
+Kafka libraries is required; read more in respectively the "Running the
+RabbitMQ/AMQP plugin" or "Running the Kafka plugin" sections of this document.
 
 Following a simple example on how to configure nfacctd to enable the BMP thread
 to a) log, in real-time, BGP stats, events and routes received via BMP to a
@@ -1568,7 +2020,7 @@ document: docs/MSGLOG_DUMP_FORMATS
 Setting up the stand-alone BMP collector daemon, pmbmpd, is the exact same as
 the configuration above except the 'bmp_daemon: true' line can be skipped.
 
-Following is an example how a Cisco router running IOS/IOS-XE should be
+Following is an example of how a Cisco router running IOS/IOS-XE (15.4(2)T) should be
 configured in order to export BMP data to a collector:
 
 router bgp 64512
@@ -1586,7 +2038,7 @@ router bgp 64512
  neighbor Z.Z.Z.Z remote-as 64514
  neighbor Z.Z.Z.Z bmp-activate all
 
-Following is an example how a Cisco router running IOS-XR should be configured
+Following is an example how a Cisco router running IOS-XR (6.2.1) should be configured
 in order to export BMP data to a collector:
 
 router bgp 64512
@@ -1598,13 +2050,34 @@ router bgp 64512
 !
 bmp server 1
  host X.X.X.X port 1790
+ description -- fretta --
+ update-source GigabitEthernet0/0/0/10
  initial-delay 60
  initial-refresh delay 60
  stats-reporting-period 300
+ initial-refresh delay 10
 !
 
-Any equivalent examples using JunOS and/or any other vendor implementing BMP
-would be much welcome.
+Following is an example how a Juniper router should be configured in order to
+export BMP data to a collector:
+
+routing-options {
+	bmp {
+		station FQDN {
+			connection-mode active;
+       			monitor enable;
+			route-monitoring {
+				pre-policy;
+				post-policy;
+			}
+			station-address X.X.X.X;
+			station-port 1790;
+		}
+	}
+}
+
+Contribution of further configuration examples for Cisco and Juniper devices
+and/or other relevant vendors is more than welcome.
  
 
 XVIII. Quickstart guide to setup Streaming Telemetry collection
@@ -1621,6 +2094,17 @@ NetFlow/IPFIX, etc. for the purpose of data correlation and 2) a new daemon
 pmtelemetryd for standalone consumpton of data. Streaming telemetry data can
 be logged real-time and/or dumped at regular time intervals to flat-files,
 RabbitMQ or Kafka brokers.
+
+All features export data formatted as JSON messages, hence compiling pmacct
+against libjansson is a requirement. See how to compile pmacct with JSON/
+libjansson support in the section "Compiling pmacct with JSON support" of this
+document. If writing to AMQP or Kafka brokers compiling against RabbitMQ or
+Kafka libraries is required; read more in respectively the "Running the
+RabbitMQ/AMQP plugin" or "Running the Kafka plugin" sections of this document.
+Data can be optionally consumed from a ZeroMQ queue, for example to have a
+pre-processor taking care of the GPB (Protobuf or Google Protocol Buffers) 
+de-marshalling and conversion to JSON; read more about (compiling) ZeroMQ in
+the "Internal buffering and queueing" section of this document. 
 
 From a configuration standpoint both the thread (ie. telemetry configured part
 of nfacctd) and the daemon (pmtelemetryd) are configured the same way except the
@@ -1657,17 +2141,30 @@ telemetry_dump_latest_file: /path/to/spool/telemetry-dump-$peer_src_ip.latest
 !
 telemetry_dump_refresh_time: 60
 
+Following is a config example to receive JSON-formatted telemetry data from a
+pre-processor over a ZeroMQ queue:
+
+! Telemetry thread configuration
+! telemetry_daemon: true
+!
+telemetry_daemon_zmq_address: 127.0.0.1:50000
+telemetry_daemon_decoder: json
+!
+telemetry_daemon_msglog_file: /path/to/spool/telemetry-msglog-$peer_src_ip.txt
+! telemetry_daemon_msglog_amqp_routing_key: telemetry-msglog
+! telemetry_daemon_msglog_kafka_topic: telemetry-msglog
+
 A sample of both the Streaming Telemetry msglog and dump formats are captured in
 the following document: docs/MSGLOG_DUMP_FORMATS
 
 
 XIX. Running the print plugin to write to flat-files
-pmacct can also output to files via its 'print' plugin. Dynamic filenames are
+pmacct can also output to files via the 'print' plugin. Dynamic filenames are
 supported. Output is either text-based using JSON, CSV or formatted outputs, or
 binary-based using the Apache Avro file container ('print_output' directive).
 Interval between writes can be configured via the 'print_refresh_time'
-directive. An example follows on how to write to files on a 15 mins basis in
-CSV format:
+directive. An example follows on how to write to files in CSV format, every 15
+minutes and aggregate data in 15 minutes time-bins (print_history):
 
 print_refresh_time: 900
 print_history: 15m
@@ -1682,21 +2179,15 @@ Which, over time, would produce a would produce a series of files as follows:
 -rw-------  1 paolo paolo   1916 Nov 21 00:45 blabla-20111121-0030.txt
 -rw-------  1 paolo paolo   2940 Nov 21 01:00 blabla-20111121-0045.txt
 
-JSON output requires compiling pmacct against Jansson library, which can be
-found at the following URL: http://www.digip.org/jansson/ . pmacct can be
-configured for compilation against the library using the --enable-jansson
-switch. Please refer to the configure script help screen (and/or "Configuring
-pmacct for compilation and installing" section of this document) to supply
-custom locations of Jansson library and/or headers. 
+JSON output requires compiling pmacct against Jansson library. See how to
+compile pmacct with JSON/libjansson support in the section "Compiling pmacct
+with JSON support" of this document.
 
-Avro output requires compiling pmacct against Apache Avro library, which can be
-found at the following URL: http://avro.apache.org/ . pmacct can be configured
-for compilation against the library using the --enable-avro switch. Please
-refer to the configure script help screen (and/or "Configuring pmacct for
-compilation and installing" section of this document) to supply custom
-locations of Avro library and/or headers.
+Avro output requires compiling pmacct against libavro library. See how to
+compile pmacct with Avro support in the section "Compiling pmacct with Apache
+Avro support" of this document.
 
-Splitting data into time bins is supported via print_history directive. When
+Splitting data into time-bins is supported via print_history directive. When
 enabled, time-related variable substitutions of dynamic print_output_file names
 are determined using this value. It is supported to define print_refresh_time
 values shorter than print_history ones by setting print_output_file_append to
@@ -1705,12 +2196,16 @@ disk, ie. due to caching issues, overwrite existing file content). A sample
 config follows:
 
 print_refresh_time: 300
-print_history: 5m
 print_output: csv
 print_output_file: /path/to/%Y/%Y-%m/%Y-%m-%d/file-%Y%m%d-%H%M.txt
 print_history: 15m
 print_history_roundoff: m
 print_output_file_append: true 
+
+Writing to flat-files is also a suitable method to ingest data into 3rd
+party applications (typically, but not limited to, noSQL databases like
+ElasticSearch, InfluxDB, etc.). An example is the pmacct-to-elasticsearch
+project https://github.com/pierky/pmacct-to-elasticsearch . 
 
 
 XX. Quickstart guide to setup GeoIP lookups
@@ -1718,10 +2213,10 @@ pmacct can perform GeoIP country lookups against a Maxmind DB v1 (--enable-geoip
 and against a Maxmind DB v2 (--enable-geoipv2). A v1 database enables resolution
 of src_host_country and dst_host_country primitives only. A v2 database enables
 resolution of presently supported GeoIP-related primitives, ie. src_host_country,
-src_host_pocode, dst_host_country, dst_host_pocode. Pre-requisite for the feature
-to work are: a) a working installed Maxmind GeoIP library and headers and b) a
-Maxmind GeoIP database (freely available). Two steps to quickly start with GeoIP
-lookups in pmacct:
+src_host_pocode, src_host_coords, dst_host_country, dst_host_pocode and
+dst_host_coords. Pre-requisite for the feature to work are: a) a working
+installed Maxmind GeoIP library and headers and b) a Maxmind GeoIP database
+(freely available). Two steps to quickly start with GeoIP lookups in pmacct:
  
 GeoIP v1 (libGeoIP):
 * Have libGeoIP library and headers available to compile against; have a GeoIP
@@ -1730,15 +2225,15 @@ GeoIP v1 (libGeoIP):
 * To compile the pmacct package with support for GeoIP lookups, the code must
   be configured for compilation as follows:
 
-  ./configure --enable-geoip [ ... ]
+  shell> ./configure --enable-geoip [ ... ]
 
   But, for example, should you have installed libGeoIP in /usr/local/geoip and
   pkg-config is unable to help, you can supply this non-default location as
   follows (assuming you are running the bash shell):
 
-  export GEOIP_LIBS="-L/usr/local/geoip/lib -lgeoip"
-  export GEOIP_CFLAGS="-I/usr/local/geoip/include"
-  ./configure --enable-geoip [ ... ]
+  shell> export GEOIP_LIBS="-L/usr/local/geoip/lib -lgeoip"
+  shell> export GEOIP_CFLAGS="-I/usr/local/geoip/include"
+  shell> ./configure --enable-geoip [ ... ]
 
 * Include as part of the pmacct configuration the following fragment:
 
@@ -1756,15 +2251,15 @@ GeoIP v2 (libmaxminddb):
 * To compile the pmacct package with support for GeoIP lookups, the code must
   be configured for compilation as follows:
 
-  ./configure --enable-geoipv2 [ ... ]
+  shell> ./configure --enable-geoipv2 [ ... ]
 
   But, for example, should you have installed libmaxminddb in /usr/local/geoipv2
   and pkg-config is unable to help, you can supply this non-default location
   as follows (assuming you are running the bash shell):
 
-  export GEOIPV2_LIBS="-L/usr/local/geoipv2/lib -lmaxminddb"
-  export GEOIPV2_CFLAGS="-I/usr/local/geoipv2/include"
-  ./configure --enable-geoipv2 [ ... ]
+  shell> export GEOIPV2_LIBS="-L/usr/local/geoipv2/lib -lmaxminddb"
+  shell> export GEOIPV2_CFLAGS="-I/usr/local/geoipv2/include"
+  shell> ./configure --enable-geoipv2 [ ... ]
 
 * Include as part of the pmacct configuration the following fragment:
 
@@ -1780,16 +2275,15 @@ you be interested into any of these, please get in touch.
 
 
 XXI. Using pmacct as traffic/event logger
-pmacct was originally conceived as a traffic aggregator. It is now possible
-to use pmacct as a traffic/event logger as well, such development had been 
-fostered particularly by the use of NetFlow/IPFIX as generic transport,
-see for example Cisco NEL and Cisco NSEL. Key to logging are time-stamping
-primitives, timestamp_start and timestamp_end: the former records the likes
-of libpcap packet timestamp, sFlow sample arrival time, NetFlow observation
-time and flow first switched time; timestamp_end currently only makes sense
-for logging flows via NetFlow. Still, the exact boundary between aggregation
-and logging can be defined via the aggregation method, ie. no assumptions are
-made. An example to log traffic flows follows:
+This use-case has been fostered particularly by the use of NetFlow/IPFIX as
+generic transport, see for example Cisco NEL and Cisco NSEL. Key to logging
+are time-stamping primitives, timestamp_start and timestamp_end: the former
+records the likes of libpcap packet timestamp, sFlow sample arrival time,
+NetFlow observation time and flow first switched time; timestamp_end does
+currently only makes sense for logging flow data via NetFlow/IPFIX. Still,
+the exact boundary between aggregation and logging can be defined via the
+aggregation method, ie. no assumptions are made. An example to log traffic
+flows follows:
 
 ! ...
 !
@@ -1886,13 +2380,52 @@ release), you may be very possibly asked to try one of these first. Finally,
 please refrain to open issues on GitHub if not using master code (use the
 pmacct-discussion mailing list or unicast email instead). 
 
-a) In case of crashes of an any process, regardless if predictable or not, the
+a) Here are recap some popular issues when compiling pmacct or linking it at
+runtime against shared libraries:
+
+  1) /usr/local/sbin/pmacctd: error while loading shared libraries:
+     librabbitmq.so.4: cannot open shared object file: No such file or directory 
+
+     This can happen at runtime and, especially in case of freshly downloaded
+     and compiled libraries, it is a symptom that after installing the shared
+     library, ldconfig was not called. Or alternatively that the directory
+     where the library is located is not inserted in /etc/ld.so.conf or in any
+     files included it includes. When not having super-user privileges, this
+     can be fixed in the own environment setting the LD_LIBRARY_PATH variable.
+
+  2) json_array_foreach(json_list, key, value) {
+                                               ^
+     nfv9_template.c: In function ‘nfacctd_offline_read_json_template’:
+     nfv9_template.c:572:53: error: expected ‘;’ before ‘{’ token
+
+     This can happen at compile time and and is a bit tricky to hint. In this
+     example the function json_array_foreach() is not being recognized, in
+     other words while the library could be located, it does not contain the
+     specific function. This is a symptom that the library version in use is
+     too old. Typical situation is when using a packaged library rather than
+     a freshly downloaded and compiled latest stable release. 
+
+  3) /usr/local/lib/libpcap.so: undefined reference to `pcap_lex'
+     collect2: error: ld returned 1 exit status
+     make[2]: *** [pmacctd] Error 1
+
+     This can happen at compile time and it is a symptom that the needed
+     library could not be located by the linker. This is a symptom that the 
+     library could be in some non-standard location and the linked need an
+     hint. For libpcap --with-pcap-libs knob is available at configure time;
+     for all other libraries the library_LIBS and library_CFLAGS environment
+     variables are available. See examples in the "Configuring pmacct for
+     compilation and installing" section of this document.
+
+b) In case of crashes of an any process, regardless if predictable or not, the
 advice is to run the daemon with "ulimit -c unlimited" so to generate a core
-dump. The file is placed in the directory where the daemon is started so it
-is good to take care of that. pmacct developers will then ask for one or both
-of the following: 1) the core file along with the crashing executable and its
-configuration be made available for further inspection and/or 2) a backtrace
-in GDB obtained via the following two steps:
+dump. The core dump file location, on Linux, is determined by the following
+file: /proc/sys/kernel/core_pattern : if the value is "core", then the file is
+placed in the directory where the daemon is started so it is good to take care
+of that. pmacct developers will then ask for one or both of the following: 1)
+the core file along with the crashing executable and its configuration be made
+available for further inspection and/or 2) a backtrace in GDB obtained via the
+following two steps:
 
 shell> gdb /path/to/executable /path/to/core
 
@@ -1901,19 +2434,29 @@ following command:
 
 gdb> bt
 
+If the dmesg command or system logs reveal a line like the following one:
+
+Jan 01 00:00:00 xxxx kernel: [4075819.569587] nfacctd[51817]: segfault at 10 ip 00007f77f448ad44 sp 00007ffc6974ed70 error 4 ..
+
+In certain cases, ie. if the crash is not inside a shared library, this can
+return useful information for debugging when examined with addr2line; using
+the example above:
+
+shell> addr2line /path/to/nfacctd 00007f77f448ad44
+
 Optionally, especially if the issue can be easily reproduced, the daemon can
-be re-configured for compiling with the --debug flag so to produce extra info
-suitable for troubleshooting. 
+be re-configured for compiling with the --enable-debug flag so to produce
+extra info suitable for troubleshooting. 
 
-b) In case of (suspected) memory leaks, the advice is to: 1) re-compile pmacct
-with "./configure --debug <any other flags already in use>"; --debug sets as
-CFLAGS -O0 -g -Wall where especially -O0 is capital since it disables any code
-optimizations the compiler may introduce; 2) run the resulting daemon under
-valgrind, ie. "valgrind --leak-check=yes <pmacct command-line>". A memory leak
-is confirmed if the amount of "definitely lost" bytes keeps increasing over
-time. 
+c) In case of (suspected) memory leaks, the advice is to: 1) re-compile pmacct
+with "./configure --enable-debug <other flags already in use>"; --enable-debug
+sets as CFLAGS -O0 -g -Wall where especially -O0 is capital since it disables
+any code optimizations the compiler may introduce; 2) run the resulting daemon
+under valgrind, ie. "valgrind --leak-check=yes <pmacct command-line>". A memory
+leak is confirmed if the amount of "definitely lost" bytes keeps increasing
+over time. 
 
-c) In the two cases of nfacctd/sfacctd or nfprobe/sfprobe not showing signs of
+d) In the two cases of nfacctd/sfacctd or nfprobe/sfprobe not showing signs of
 input/output data: 1) check with tcpdump, ie. "tcpdump -i <interface> -n port
 <sfacctd/nfacctd listening port>", that packets are emitted/received. Optionally
 Wireshark (or its commandline counterpart tshark) can be used, in conjunction
@@ -1923,41 +2466,65 @@ between exporters and collector; 2) check firewall settings on the collector
 box, ie. "iptables -L -n" on Linux (disable or do appropriate holes): tcpdump
 may see packets hitting the listening port as, in normal kernel operations, the
 filtering happens after the raw socket (the one used by tcpdump) is served; you
-can additionally certainly check with 3rd party equivalent applications or, say,
-'netcat' that the same behaviour is obtained as with pmacct ones 3) especially
+can also check with 3rd party equivalent tools or netcat, "nc -l -u -p <port>",
+that the same behaviour is obtained as with pmacct; finally, if running on a
+SELinux enabled system, consider that it could be interfering too; 3) especially
 in case of copy/paste of configs or if using a config from a production system
 in lab, disable or double-check values for internal buffering: if set too high
 they will likely retain data internally to the daemon; 4) if multiple interfaces
 are configured on a system, try to disable (at least for a test) rp_filtering.
 See http://tldp.org/HOWTO/Adv-Routing-HOWTO/lartc.kernel.rpf.html for more info
-on RP filtering. To disable RP filtering he value in the rp_filter files in
-/proc must be set to zero; 5) in case aggregate_filter is in use: the feature
-expects a libpcap-style filter as value. BPF filters are sensible to both VLAN
-tags and MPLS labels: if, for example, the traffic is VLAN tagged and the value
-of aggregate_filter is 'src net X.X.X.X/Y', there will be no match for VLAN-
-tagged traffic from src net X.X.X.X/Y; the filter should be re-written as
-'vlan and src net X.X.X.X/Y'.  
+on RP filtering. The value of rp_filter files in /proc must be set to zero in
+order to disable RP filtering. This appears a popular issue when replicating
+flow data with tee_transparent feature enabled (that is, packet spoofing);
+5) in case aggregate_filter is in use: the feature expects a libpcap-style
+filter as value. BPF filters are sensible to both VLAN tags and MPLS labels:
+if, for example, the traffic is VLAN tagged and the value of aggregate_filter
+is 'src net X.X.X.X/Y', there will be no match for VLAN-tagged traffic from src
+net X.X.X.X/Y; the filter should be re-written as 'vlan and src net X.X.X.X/Y';
+6) in case of NetFlow v9/IPFIX collection, two protocols that are template-based,
+the issue may be with templates not being received by nfacctd (in which case by
+enabling debug you may see "Discarded NetFlow v9/IPFIX packet (R: unknown
+template [ .. ]" messages in your logs); you can confirm whether templates are
+being exported/replicated/received with a touch of "tshark -d udp.port==<NFv9/
+IPFIX port>,cflow -R cflow.template_id". 
 
-d) A NetFlow/sFlow packet capture in libpcap format suitable for replay can
-be produced with tcpdump, ie. "tcpdump -i <interface> -n -s 0 -w <output file>
-port <sfacctd/nfacctd listening port>". The output file can be replayed in
-lab with tcpreplay. Before replaying, L2/L3 must be adjusted to reflect the
-lab environment; this can be done with the tcprewrite tool of the tcpreplay
-package, ie.: "tcprewrite --enet-smac=<src MAC address> --enet-dmac=<dst MAC
-address> -S <src IP address rewrite> -D <dst IP address rewrite> --fixcsum
---infile=<input file, ie. output from tcpdump> --outfile=<output file>". Then
-the output file from tcprewrite can be supplied to tcpreplay for the actual
-replay, ie.: "tcpreplay -i <output interface> -x <speed multiplicator> <input
-file>". 
+e) In the case of inconsistent output - inconsistent defined as replaying the
+same set of data, output produced by the daemon differs - of nfacctd/sfacctd:
+1) check the basics: whether another nfacctd/sfacctd is listening on the very
+same port; this is legit behaviour due to behaviour of SO_REUSEPORT, in brief:
+share load among multiple sockets listening on the same port, and SO_REUSEADDR,
+in brief: don't wait for a closing socket to be closed in order to bind a new
+one to the same port, options used on the listening socket; 2) check all tips
+about buffering provided slightly later in this document.
 
-e) Buffering is often an element to tune. While buffering internal to pmacct, 
+f) Replay packets can be needed, for example, to troubleshoot the behaviour
+of one of the pmacct daemons. A capture in libpcap format, suitable for
+replay, can be produced with tcpdump, ie. for NetFlow/IPFIX/sFlow via the
+"tcpdump -i <interface> -n -s 0 -w <output file> port <sfacctd/nfacctd
+listening port>" command-line. The output file can be replayed by using the
+pcap_savefile (-I) and, optionally, the pcap_savefile_wait (-W) directives,
+ie.: "nfacctd -I <pcap savefile> <.. >". For more advanced use-cases, ie.
+loop indefinitely through the pcap file and run it with a speed multiplicator
+in order to stress test the daemon, the tcpreplay tool can be used for the
+purpose. In this case, before replaying NetFlow/IPFIX/sFlow, L2/L3 of
+captured packets must be adjusted to reflect the lab environment; this can
+be done with the tcprewrite tool of the tcpreplay package, ie.: "tcprewrite
+--enet-smac=<src MAC address> --enet-dmac= <dst MAC address> -S <src IP
+address rewrite> -D <dst IP address rewrite> --fixcsum --infile= <input
+file, ie. output from tcpdump> --outfile=<output file>". Then the output
+file from tcprewrite can be supplied to tcpreplay for the actual replay to
+the pmacct daemon, ie.: "tcpreplay -x <speed multiplicator> -i <output
+interface> <input file>". 
+
+g) Buffering is often an element to tune. While buffering internal to pmacct, 
 configured with plugin_buffer_size and plugin_pipe_size, returns warning
 messages in case of data loss and brings solid queueing alterantives like
-RabbitMQ and Kafka, buffering between pmacct and the kernel, configured with
-nfacctd_pipe_size and its equivalents, is more tricky and issues with it can
-only be inferred by symptoms like sequence number checks failing (and only
-for protocols like NetFlow v9/IPFIX supporting this feature). Two commands
-useful to check this kind of buffering on Linux systems are:
+ZeroMQ (plugin_pipe_zmq), buffering between pmacct and the kernel, configured
+with nfacctd_pipe_size and its equivalents, is more tricky and issues with it
+can only be inferred by symptoms like sequence number checks failing (and
+only for protocols like NetFlow v9/IPFIX supporting this feature). Two
+commands useful to check this kind of buffering on Linux systems are:
 1) "cat /proc/net/udp" or "cat /proc/net/udp6" ensuring that "drops" value
 is not increasing and 2) "netstat -s" ensuring, under the section UDP, that
 errors are not increasing (since this command returns system-wide counters,
@@ -1966,3 +2533,26 @@ counter was increasing, verify it does not increase anymore). As suggested
 in CONFIG-KEYS description for the nfacctd_pipe_size configuration directive,
 any lift in the buffering must be also supported by the kernel, adjusting
 /proc/sys/net/core/rmem_max.
+
+h) packet classification using the nDPI library is among the new features of
+pmacct 1.7. As with any major and complex feature, it is expected that not
+everything may work great and smooth at the first round of implementation.
+In this section you will find a few tips on how to help providing meaningful
+report of issues you may be experiencing in this area. 1) Please follow
+guidelines in the section "Quickstart guide to packet classification" of this
+document; 2) avoid generic reporting a-la "it doesn't work" or "there is too
+much unknown traffic" or "i know protocol X is in my traffic mix but it's not
+being classified properly"; 3) it is OK to contact the author directly given
+sensitiveness of data may be involved; 4) it is OK to compare classification
+results achieved with a 3rd party tool also using nDPI for classification; in
+case of different results, show the actual results when reporting the issue
+and please elaborate as much as possible how the comparison was done (ie.
+say how it is being ensured that the two data- sets are the same or as much
+as possible similar); 5) remember that the most effective way troubleshoot
+any issue related to packet classification is by the author being able to
+reproduce the issue or for him to verify first hand the problem: whenever
+possible please share a traffic capture in pcap format or grant remote-access
+to your testbed; 6) excluded from these guidelines are problems related to
+nDPI but unrelated to classification, ie. memory leaks, performance issues,
+crashes, etc. for which you can follow the other guide lines in this
+"Miscellaneous notes and troubleshooting tips" section.

@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -65,7 +65,7 @@ int build_query_server(char *path_ptr)
 
 void process_query_data(int sd, unsigned char *buf, int len, struct extra_primitives *extras, int datasize, int forked)
 {
-  struct acc *acc_elem = 0, tmpbuf;
+  struct acc *acc_elem = 0;
   struct bucket_desc bd;
   struct query_header *q, *uq;
   struct query_entry request;
@@ -475,24 +475,6 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
     }
     if (rb.packed) send(sd, rb.buf, rb.packed, 0); /* send remainder data */
   }
-  else if (q->type & WANT_PKT_LEN_DISTRIB_TABLE) {
-    struct stripped_pkt_len_distrib dummy, real;
-    u_int32_t idx = 0, max = 0;
-
-    for (idx = 0; idx < MAX_PKT_LEN_DISTRIB_BINS && config.pkt_len_distrib_bins[idx]; idx++);
-    max = q->num = idx;
-
-    for (idx = 0; idx < max; idx++) {
-      memset(&real, 0, sizeof(real));
-      strlcpy(real.str, config.pkt_len_distrib_bins[idx], MAX_PKT_LEN_DISTRIB_LEN); 
-      enQueue_elem(sd, &rb, &real, sizeof(struct stripped_pkt_len_distrib), sizeof(struct stripped_pkt_len_distrib));
-    }
-
-    send_pldt_dummy:
-    memset(&dummy, 0, sizeof(dummy));
-    enQueue_elem(sd, &rb, &dummy, sizeof(dummy), sizeof(dummy));
-    if (rb.packed) send(sd, rb.buf, rb.packed, 0); /* send remainder data */
-  }
   else if (q->type & WANT_ERASE_LAST_TSTAMP) {
     enQueue_elem(sd, &rb, &table_reset_stamp, sizeof(table_reset_stamp), sizeof(table_reset_stamp));
     if (rb.packed) send(sd, rb.buf, rb.packed, 0); /* send remainder data */
@@ -553,15 +535,29 @@ void mask_elem(struct pkt_primitives *d1, struct pkt_bgp_primitives *d2, struct 
   if (w & COUNT_CLASS) d1->class = s1->class; 
   if (w2 & COUNT_EXPORT_PROTO_SEQNO) memcpy(&d1->export_proto_seqno, &s1->export_proto_seqno, sizeof(d1->export_proto_seqno));
   if (w2 & COUNT_EXPORT_PROTO_VERSION) memcpy(&d1->export_proto_version, &s1->export_proto_version, sizeof(d1->export_proto_version));
+  if (w2 & COUNT_EXPORT_PROTO_SYSID) memcpy(&d1->export_proto_sysid, &s1->export_proto_sysid, sizeof(d1->export_proto_sysid));
 
 #if defined (WITH_GEOIP) || defined (WITH_GEOIPV2)
   if (w2 & COUNT_SRC_HOST_COUNTRY) memcpy(&d1->src_ip_country, &s1->src_ip_country, sizeof(d1->src_ip_country)); 
   if (w2 & COUNT_DST_HOST_COUNTRY) memcpy(&d1->dst_ip_country, &s1->dst_ip_country, sizeof(d1->dst_ip_country)); 
   if (w2 & COUNT_SRC_HOST_POCODE) memcpy(&d1->src_ip_pocode, &s1->src_ip_pocode, sizeof(d1->src_ip_pocode)); 
-  if (w2 & COUNT_DST_HOST_POCODE) memcpy(&d1->dst_ip_pocode, &s1->dst_ip_pocode, sizeof(d1->dst_ip_pocode)); 
+  if (w2 & COUNT_DST_HOST_POCODE) memcpy(&d1->dst_ip_pocode, &s1->dst_ip_pocode, sizeof(d1->dst_ip_pocode));
+  if (w2 & COUNT_SRC_HOST_COORDS) {
+    memcpy(&d1->src_ip_lat, &s1->src_ip_lat, sizeof(d1->src_ip_lat));
+    memcpy(&d1->src_ip_lon, &s1->src_ip_lon, sizeof(d1->src_ip_lon));
+  }
+  if (w2 & COUNT_DST_HOST_COORDS) {
+    memcpy(&d1->dst_ip_lat, &s1->dst_ip_lat, sizeof(d1->dst_ip_lat));
+    memcpy(&d1->dst_ip_lon, &s1->dst_ip_lon, sizeof(d1->dst_ip_lon));
+  } 
 #endif
+
+#if defined (WITH_NDPI)
+  if (w2 & COUNT_NDPI_CLASS) memcpy(&d1->ndpi_class, &s1->class, sizeof(d1->ndpi_class)); 
+#endif
+
   if (w2 & COUNT_SAMPLING_RATE) d1->sampling_rate = s1->sampling_rate; 
-  if (w2 & COUNT_PKT_LEN_DISTRIB) d1->pkt_len_distrib = s1->pkt_len_distrib; 
+  if (w2 & COUNT_SAMPLING_DIRECTION) memcpy(&d1->sampling_direction, &s1->sampling_direction, sizeof(d1->sampling_direction)); 
 
   if (extras->off_pkt_bgp_primitives && s2) {
     if (w & COUNT_LOCAL_PREF) d2->local_pref = s2->local_pref;

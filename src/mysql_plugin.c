@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -37,8 +37,8 @@ void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   struct pollfd pfd;
   struct insert_data idata;
   time_t refresh_deadline;
-  int timeout, refresh_timeout, amqp_timeout;
-  int ret, num;
+  int refresh_timeout;
+  int ret, num, recv_budget, poll_bypass;
   struct ring *rg = &((struct channels_list_entry *)ptr)->rg;
   struct ch_status *status = ((struct channels_list_entry *)ptr)->status;
   struct plugins_list_entry *plugin_data = ((struct channels_list_entry *)ptr)->plugin;
@@ -55,8 +55,10 @@ void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   struct extra_primitives extras;
   struct primitives_ptrs prim_ptrs;
 
-#ifdef WITH_RABBITMQ
-  struct p_amqp_host *amqp_host = &((struct channels_list_entry *)ptr)->amqp_host;
+#ifdef WITH_ZMQ
+  struct p_zmq_host *zmq_host = &((struct channels_list_entry *)ptr)->zmq_host;
+#else
+  void *zmq_host = NULL;
 #endif
 
   memcpy(&config, cfgptr, sizeof(struct configuration));
@@ -89,13 +91,7 @@ void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   sql_init_triggers(idata.now, &idata);
   sql_init_refresh_deadline(&refresh_deadline);
 
-  if (config.pipe_amqp) {
-    plugin_pipe_amqp_compile_check();
-#ifdef WITH_RABBITMQ
-    pipe_fd = plugin_pipe_amqp_connect_to_consume(amqp_host, plugin_data);
-    amqp_timeout = plugin_pipe_set_retry_timeout(&amqp_host->btimers, pipe_fd);
-#endif
-  }
+  if (config.pipe_zmq) P_zmq_pipe_init(zmq_host, &pipe_fd, &seq);
   else setnonblocking(pipe_fd);
 
   /* setting number of entries in _protocols structure */
@@ -114,15 +110,15 @@ void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   for(;;) {
     poll_again:
     status->wakeup = TRUE;
+    poll_bypass = FALSE;
     calc_refresh_timeout(refresh_deadline, idata.now, &refresh_timeout);
 
     pfd.fd = pipe_fd;
     pfd.events = POLLIN;
-    timeout = MIN(refresh_timeout, (amqp_timeout ? amqp_timeout : INT_MAX));
-    ret = poll(&pfd, (pfd.fd == ERR ? 0 : 1), timeout);
+    ret = poll(&pfd, (pfd.fd == ERR ? 0 : 1), refresh_timeout);
 
     if (ret <= 0) {
-      if (getppid() == 1) {
+      if (getppid() != core_pid) {
         Log(LOG_ERR, "ERROR ( %s/%s ): Core process *seems* gone. Exiting.\n", config.name, config.type);
         exit_plugin(1);
       }
@@ -130,6 +126,7 @@ void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       if (ret < 0) goto poll_again;
     }
 
+    poll_ops:
     idata.now = time(NULL);
 
     if (config.sql_history) {
@@ -145,24 +142,39 @@ void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       }
     }
 
-#ifdef WITH_RABBITMQ
-    if (config.pipe_amqp && pipe_fd == ERR) {
-      if (timeout == amqp_timeout) {
-        pipe_fd = plugin_pipe_amqp_connect_to_consume(amqp_host, plugin_data);
-        amqp_timeout = plugin_pipe_set_retry_timeout(&amqp_host->btimers, pipe_fd);
-      }
-      else amqp_timeout = plugin_pipe_calc_retry_timeout_diff(&amqp_host->btimers, idata.now);
+    /* lazy sql refresh handling */
+    if (idata.now > refresh_deadline) {
+      if (qq_ptr) sql_cache_flush(queries_queue, qq_ptr, &idata, FALSE);
+      sql_cache_handle_flush_event(&idata, &refresh_deadline, &pt);
     }
-#endif
+    else {
+      if (config.sql_trigger_exec) {
+        while (idata.now > idata.triggertime && idata.t_timeslot > 0) {
+          sql_trigger_exec(config.sql_trigger_exec);
+          idata.triggertime += idata.t_timeslot;
+          if (config.sql_trigger_time == COUNT_MONTHLY)
+            idata.t_timeslot = calc_monthly_timeslot(idata.triggertime, config.sql_trigger_time_howmany, ADD);
+        }
+      }
+    }
+
+    recv_budget = 0;
+    if (poll_bypass) {
+      poll_bypass = FALSE;
+      goto read_data;
+    }
 
     switch (ret) {
     case 0: /* timeout */
-      if (qq_ptr) sql_cache_flush(queries_queue, qq_ptr, &idata, FALSE);
-      sql_cache_handle_flush_event(&idata, &refresh_deadline, &pt);
       break;
     default: /* we received data */
       read_data:
-      if (!config.pipe_amqp) {
+      if (recv_budget == DEFAULT_PLUGIN_COMMON_RECV_BUDGET) {
+	poll_bypass = TRUE;
+	goto poll_ops;
+      }
+
+      if (config.pipe_homegrown) {
         if (!pollagain) {
           seq++;
           seq %= MAX_SEQNUM;
@@ -199,40 +211,28 @@ void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
         memcpy(pipebuf, rg->ptr, bufsz);
         rg->ptr += bufsz;
       }
-#ifdef WITH_RABBITMQ
-      else {
-        ret = p_amqp_consume_binary(amqp_host, pipebuf, config.buffer_size);
-        if (ret) pipe_fd = ERR;
+#ifdef WITH_ZMQ
+      else if (config.pipe_zmq) {
+	ret = p_zmq_topic_recv(zmq_host, pipebuf, config.buffer_size);
+	if (ret > 0) {
+	  if (seq && (((struct ch_buf_hdr *)pipebuf)->seq != ((seq + 1) % MAX_SEQNUM))) {
+	    Log(LOG_WARNING, "WARN ( %s/%s ): Missing data detected. Sequence received=%u expected=%u\n",
+		config.name, config.type, ((struct ch_buf_hdr *)pipebuf)->seq, ((seq + 1) % MAX_SEQNUM));
+	  }
 
-        seq = ((struct ch_buf_hdr *)pipebuf)->seq;
-        amqp_timeout = plugin_pipe_set_retry_timeout(&amqp_host->btimers, pipe_fd);
+	  seq = ((struct ch_buf_hdr *)pipebuf)->seq;
+	}
+	else goto poll_again;
       }
 #endif
-
-      /* lazy sql refresh handling */ 
-      if (idata.now > refresh_deadline) {
-        if (qq_ptr) sql_cache_flush(queries_queue, qq_ptr, &idata, FALSE);
-        sql_cache_handle_flush_event(&idata, &refresh_deadline, &pt);
-      } 
-      else {
-	if (config.sql_trigger_exec) {
-	  while (idata.now > idata.triggertime && idata.t_timeslot > 0) {
-	    sql_trigger_exec(config.sql_trigger_exec); 
-	    idata.triggertime += idata.t_timeslot;
-	    if (config.sql_trigger_time == COUNT_MONTHLY)
-	      idata.t_timeslot = calc_monthly_timeslot(idata.triggertime, config.sql_trigger_time_howmany, ADD);
-	  }
-	}
-      }
 
       data = (struct pkt_data *) (pipebuf+sizeof(struct ch_buf_hdr));
 
       if (config.debug_internal_msg) 
-        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received cpid=%u len=%llu seq=%u num_entries=%u\n",
-                config.name, config.type, core_pid, ((struct ch_buf_hdr *)pipebuf)->len,
-                seq, ((struct ch_buf_hdr *)pipebuf)->num);
+        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received len=%llu seq=%u num_entries=%u\n",
+                config.name, config.type, ((struct ch_buf_hdr *)pipebuf)->len, seq,
+                ((struct ch_buf_hdr *)pipebuf)->num);
 
-      if (!config.pipe_check_core_pid || ((struct ch_buf_hdr *)pipebuf)->core_pid == core_pid) {
       while (((struct ch_buf_hdr *)pipebuf)->num > 0) {
         for (num = 0; primptrs_funcs[num]; num++)
           (*primptrs_funcs[num])((u_char *)data, &extras, &prim_ptrs);
@@ -245,10 +245,6 @@ void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 	  if (!pt.table[data->primitives.dst_port]) data->primitives.dst_port = 0;
 	}
 
-        if (config.pkt_len_distrib_bins_str &&
-            config.what_to_count_2 & COUNT_PKT_LEN_DISTRIB)
-          evaluate_pkt_len_distrib(data);
-
         prim_ptrs.data = data;
 	(*insert_func)(&prim_ptrs, &idata);
 	
@@ -260,9 +256,9 @@ void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
           data = (struct pkt_data *) dataptr;
 	}
       }
-      }
 
-      if (!config.pipe_amqp) goto read_data;
+      recv_budget++;
+      goto read_data;
     }
   }
 }
@@ -424,7 +420,7 @@ void MY_cache_purge(struct db_cache *queue[], int index, struct insert_data *ida
 {
   struct db_cache *LastElemCommitted = NULL;
   time_t start;
-  int j, stop, ret, go_to_pending, saved_index = index;
+  int j, stop, go_to_pending, saved_index = index;
   char orig_insert_clause[LONGSRVBUFLEN], orig_update_clause[LONGSRVBUFLEN], orig_lock_clause[LONGSRVBUFLEN];
   char tmpbuf[LONGLONGSRVBUFLEN], tmptable[SRVBUFLEN];
   struct primitives_ptrs prim_ptrs;
@@ -442,8 +438,10 @@ void MY_cache_purge(struct db_cache *queue[], int index, struct insert_data *ida
 
   for (j = 0, stop = 0; (!stop) && sql_preprocess_funcs[j]; j++)
     stop = sql_preprocess_funcs[j](queue, &index, j); 
-  if (config.what_to_count & COUNT_CLASS)
+
+  if ((config.what_to_count & COUNT_CLASS) || (config.what_to_count_2 & COUNT_NDPI_CLASS))
     sql_invalidate_shadow_entries(queue, &index);
+
   idata->ten = index;
 
   Log(LOG_INFO, "INFO ( %s/%s ): *** Purging cache - START (PID: %u) ***\n", config.name, config.type, writer_pid);
@@ -477,24 +475,25 @@ void MY_cache_purge(struct db_cache *queue[], int index, struct insert_data *ida
     prim_ptrs.data = &dummy_data;
     primptrs_set_all_from_db_cache(&prim_ptrs, queue[0]);
 
-    handle_dynname_internal_strings_same(tmpbuf, LONGSRVBUFLEN, insert_clause, &prim_ptrs);
-    handle_dynname_internal_strings_same(tmpbuf, LONGSRVBUFLEN, update_clause, &prim_ptrs);
-    handle_dynname_internal_strings_same(tmpbuf, LONGSRVBUFLEN, lock_clause, &prim_ptrs);
-    handle_dynname_internal_strings_same(tmpbuf, LONGSRVBUFLEN, idata->dyn_table_name, &prim_ptrs);
+    handle_dynname_internal_strings_same(insert_clause, LONGSRVBUFLEN, tmpbuf, &prim_ptrs, DYN_STR_SQL_TABLE);
+    handle_dynname_internal_strings_same(update_clause, LONGSRVBUFLEN, tmpbuf, &prim_ptrs, DYN_STR_SQL_TABLE);
+    handle_dynname_internal_strings_same(lock_clause, LONGSRVBUFLEN, tmpbuf, &prim_ptrs, DYN_STR_SQL_TABLE);
+    handle_dynname_internal_strings_same(idata->dyn_table_name, LONGSRVBUFLEN, tmpbuf, &prim_ptrs, DYN_STR_SQL_TABLE);
 
-    strftime_same(insert_clause, LONGSRVBUFLEN, tmpbuf, &stamp);
-    strftime_same(update_clause, LONGSRVBUFLEN, tmpbuf, &stamp);
-    strftime_same(lock_clause, LONGSRVBUFLEN, tmpbuf, &stamp);
-    strftime_same(idata->dyn_table_name, LONGSRVBUFLEN, tmpbuf, &stamp);
-    if (config.sql_table_schema) sql_create_table(bed.p, &stamp, &prim_ptrs);
+    pm_strftime_same(insert_clause, LONGSRVBUFLEN, tmpbuf, &stamp, config.timestamps_utc);
+    pm_strftime_same(update_clause, LONGSRVBUFLEN, tmpbuf, &stamp, config.timestamps_utc);
+    pm_strftime_same(lock_clause, LONGSRVBUFLEN, tmpbuf, &stamp, config.timestamps_utc);
+    pm_strftime_same(idata->dyn_table_name, LONGSRVBUFLEN, tmpbuf, &stamp, config.timestamps_utc);
   }
+
+  if (config.sql_table_schema) sql_create_table(bed.p, &queue[0]->basetime, &prim_ptrs);
 
   if (idata->locks == PM_LOCK_EXCLUSIVE) (*sqlfunc_cbr.lock)(bed.p); 
 
   for (idata->current_queue_elem = 0; idata->current_queue_elem < index; idata->current_queue_elem++) {
     go_to_pending = FALSE;
 
-    if (idata->dyn_table) {
+    if (idata->dyn_table && (!idata->dyn_table_time_only || !config.nfacctd_time_new)) {
       time_t stamp = 0;
 
       memset(tmpbuf, 0, LONGLONGSRVBUFLEN); // XXX: pedantic?
@@ -503,8 +502,8 @@ void MY_cache_purge(struct db_cache *queue[], int index, struct insert_data *ida
 
       prim_ptrs.data = &dummy_data;
       primptrs_set_all_from_db_cache(&prim_ptrs, queue[idata->current_queue_elem]);
-      handle_dynname_internal_strings_same(tmpbuf, LONGSRVBUFLEN, tmptable, &prim_ptrs);
-      strftime_same(tmptable, LONGSRVBUFLEN, tmpbuf, &stamp);
+      handle_dynname_internal_strings_same(tmptable, LONGSRVBUFLEN, tmpbuf, &prim_ptrs, DYN_STR_SQL_TABLE);
+      pm_strftime_same(tmptable, LONGSRVBUFLEN, tmpbuf, &stamp, config.timestamps_utc);
 
       if (strncmp(idata->dyn_table_name, tmptable, SRVBUFLEN)) {
 	pending_queries_queue[pqq_ptr] = queue[idata->current_queue_elem];
@@ -667,11 +666,12 @@ void MY_Unlock(struct BE_descs *bed)
 void MY_DB_Connect(struct DBdesc *db, char *host)
 {
   MYSQL *dbptr = db->desc;
+  bool reconnect = TRUE;
 
   if (!db->fail) {
     mysql_init(db->desc);
-    dbptr->reconnect = TRUE;
-    if (!mysql_real_connect(db->desc, host, config.sql_user, config.sql_passwd, config.sql_db, 0, NULL, 0)) {
+    mysql_options(dbptr, MYSQL_OPT_RECONNECT, &reconnect);
+    if (!mysql_real_connect(db->desc, host, config.sql_user, config.sql_passwd, config.sql_db, config.sql_port, NULL, 0)) {
       sql_db_fail(db);
       MY_get_errmsg(db);
       sql_db_errmsg(db);
@@ -734,6 +734,7 @@ void MY_init_default_values(struct insert_data *idata)
   if (!config.sql_user) config.sql_user = mysql_user;
   if (!config.sql_db) config.sql_db = mysql_db;
   if (!config.sql_passwd) config.sql_passwd = mysql_pwd;
+  if (!config.sql_port) config.sql_port = mysql_prt;
   if (!config.sql_table) {
     if (config.sql_table_version == (SQL_TABLE_VERSION_BGP+1)) config.sql_table = mysql_table_bgp;
     else if (config.sql_table_version == 8) config.sql_table = mysql_table_v8;
@@ -745,8 +746,12 @@ void MY_init_default_values(struct insert_data *idata)
     else if (config.sql_table_version == 2) config.sql_table = mysql_table_v2;
     else config.sql_table = mysql_table;
   }
-  if (strchr(config.sql_table, '%') || strchr(config.sql_table, '$')) idata->dyn_table = TRUE;
+  if (strchr(config.sql_table, '%') || strchr(config.sql_table, '$')) {
+    idata->dyn_table = TRUE;
+    if (!strchr(config.sql_table, '$')) idata->dyn_table_time_only = TRUE;
+  }
   glob_dyn_table = idata->dyn_table;
+  glob_dyn_table_time_only = idata->dyn_table_time_only;
 
   if (config.sql_backup_host) idata->recover = TRUE;
 
@@ -761,4 +766,13 @@ void MY_init_default_values(struct insert_data *idata)
   }
 
   if (config.sql_locking_style) idata->locks = sql_select_locking_style(config.sql_locking_style);
+}
+
+void MY_mysql_get_version()
+{
+#ifdef MARIADB_CLIENT_VERSION_STR
+  printf("MariaDB %s\n", MARIADB_CLIENT_VERSION_STR);
+#else
+  printf("MySQL %s\n", MYSQL_SERVER_VERSION);
+#endif
 }

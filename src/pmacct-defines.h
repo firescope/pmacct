@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -20,15 +20,15 @@
 */
 
 /* defines */
-#define ARGS_NFACCTD "n:dDhP:b:f:F:c:m:p:r:s:S:L:l:o:t:O:uRVaA:E:"
-#define ARGS_SFACCTD "n:dDhP:b:f:F:c:m:p:r:s:S:L:l:o:t:O:uRVaA:E:"
-#define ARGS_PMACCTD "n:NdDhP:b:f:F:c:i:I:m:p:r:s:S:o:t:O:uwWL:RVazA:E:"
+#define ARGS_NFACCTD "n:dDhP:b:f:F:c:m:p:r:s:S:L:l:o:t:O:uRVaA:E:I:WZ:Y:"
+#define ARGS_SFACCTD "n:dDhP:b:f:F:c:m:p:r:s:S:L:l:o:t:O:uRVaA:E:I:WZ:Y:"
+#define ARGS_PMACCTD "n:NdDhP:b:f:F:c:i:I:m:p:r:s:S:o:t:O:uwWZ:Y:L:RVazA:E:"
 #define ARGS_UACCTD "n:NdDhP:b:f:F:c:m:p:r:s:S:o:t:O:uRg:L:VaA:E:"
-#define ARGS_PMTELEMETRYD "hVL:l:f:dDS:F:o:O:i:"
-#define ARGS_PMBGPD "hVL:l:f:dDS:F:o:O:i:"
+#define ARGS_PMTELEMETRYD "hVL:u:t:Z:f:dDS:F:o:O:i:"
+#define ARGS_PMBGPD "hVL:l:f:dDS:F:o:O:i:gm:"
 #define ARGS_PMBMPD "hVL:l:f:dDS:F:o:O:i:"
-#define ARGS_PMACCT "Ssc:Cetm:p:P:M:arN:n:lT:O:E:uDVUoiIx"
-#define N_PRIMITIVES 57
+#define ARGS_PMACCT "hSsc:Cetm:p:P:M:arN:n:lT:O:E:uVUiI0"
+#define N_PRIMITIVES 128
 #define N_FUNCS 10 
 #define MAX_N_PLUGINS 32
 #define PROTO_LEN 12
@@ -36,17 +36,24 @@
 #define BGP_MD5_MAP_ENTRIES 8192
 #define AGG_FILTER_ENTRIES 128 
 #define FOLLOW_BGP_NH_ENTRIES 32 
-#define MAX_PROTOCOL_LEN 16
-#define MAX_PKT_LEN_DISTRIB_BINS 255
-#define MAX_PKT_LEN_DISTRIB_LEN 15
+#define MAX_PROTOCOL_LEN 32 
 #define DEFAULT_AVRO_SCHEMA_REFRESH_TIME 60
-#define DEFAULT_IMT_PLUGIN_SELECT_TIMEOUT 5
+#define DEFAULT_IMT_PLUGIN_POLL_TIMEOUT 5
 #define UINT32T_THRESHOLD 4290000000UL
 #define UINT64T_THRESHOLD 18446744073709551360ULL
 #define INT64T_THRESHOLD 9223372036854775807ULL
 #define PM_VARIABLE_LENGTH 65535
 #define PM_COUNTRY_T_STRLEN 4
 #define PM_POCODE_T_STRLEN 12
+#define PCAP_SAVEFILE_MAX_ERRORS 10
+#define PCAP_MAX_INTERFACES 1000
+#define PCAP_MAX_ATTEMPTS 3
+#define PCAP_RETRY_PERIOD 5
+#define PCAP_IFINDEX_NONE 0
+#define PCAP_IFINDEX_SYS 1
+#define PCAP_IFINDEX_HASH 2 
+#define PCAP_IFINDEX_MAP 3
+#define PORT_STRLEN 6
 #ifndef UINT8_MAX
 #define UINT8_MAX (255U)
 #endif
@@ -76,6 +83,7 @@
 #define SNAPLEN_ISIS_MIN 512
 #define SNAPLEN_ISIS_DEFAULT 1476
 
+#define SUPERSHORTBUFLEN (16+MOREBUFSZ)
 #define VERYSHORTBUFLEN (32+MOREBUFSZ)
 #define SHORTSHORTBUFLEN (64+MOREBUFSZ)
 #define SHORTBUFLEN (128+MOREBUFSZ)
@@ -88,15 +96,17 @@
 #define PRIMITIVE_LEN 		32
 #define PRIMITIVE_DESC_LEN	64
 
+#define PMACCT_VERSION "1.7.2-git"
 #define MANTAINER "Paolo Lucente <paolo@pmacct.net>"
-#define PMACCTD_USAGE_HEADER "Promiscuous Mode Accounting Daemon, pmacctd 1.7.0-git"
-#define UACCTD_USAGE_HEADER "Linux NetFilter NFLOG Accounting Daemon, uacctd 1.7.0-git"
-#define PMACCT_USAGE_HEADER "pmacct, pmacct client 1.7.0-git"
-#define NFACCTD_USAGE_HEADER "NetFlow Accounting Daemon, nfacctd 1.7.0-git"
-#define SFACCTD_USAGE_HEADER "sFlow Accounting Daemon, sfacctd 1.7.0-git"
-#define PMTELEMETRYD_USAGE_HEADER "Streaming Network Telemetry Daemon, pmtelemetryd 1.7.0-git"
-#define PMBGPD_USAGE_HEADER "pmacct BGP Collector Daemon, pmbgpd 1.7.0-git"
-#define PMBMPD_USAGE_HEADER "pmacct BMP Collector Daemon, pmbmpd 1.7.0-git"
+#define GET_IN_TOUCH_MSG "If you see this message, please get in touch"
+#define PMACCTD_USAGE_HEADER "Promiscuous Mode Accounting Daemon, pmacctd"
+#define UACCTD_USAGE_HEADER "Linux NetFilter NFLOG Accounting Daemon, uacctd"
+#define PMACCT_USAGE_HEADER "pmacct IMT plugin client, pmacct"
+#define NFACCTD_USAGE_HEADER "NetFlow Accounting Daemon, nfacctd"
+#define SFACCTD_USAGE_HEADER "sFlow Accounting Daemon, sfacctd"
+#define PMTELEMETRYD_USAGE_HEADER "Streaming Network Telemetry Daemon, pmtelemetryd"
+#define PMBGPD_USAGE_HEADER "pmacct BGP Collector Daemon, pmbgpd"
+#define PMBMPD_USAGE_HEADER "pmacct BMP Collector Daemon, pmbmpd"
 #define PMACCT_COMPILE_ARGS COMPILE_ARGS
 #ifndef TRUE
 #define TRUE 1
@@ -151,9 +161,10 @@
 #define MAP_TEE_RECVS		106	/* tee_receivers */
 #define MAP_IGP			107	/* igp_daemon_map */
 #define MAP_CUSTOM_PRIMITIVES	108	/* aggregate_primitives */
+#define MAP_BGP_XCS		109	/* bgp_xconnect_map */
+#define MAP_PCAP_INTERFACES	110	/* pcap_interfaces_map */
 
 /* PRIMITIVES DEFINITION: START */
-/* 55 primitives currently defined */
 /* internal: first registry, ie. what_to_count, aggregation, etc. */
 #define COUNT_INT_SRC_HOST		0x0001000000000001ULL
 #define COUNT_INT_DST_HOST		0x0001000000000002ULL
@@ -208,7 +219,7 @@
 #define COUNT_INT_SAMPLING_RATE		0x0002000000000001ULL
 #define COUNT_INT_SRC_HOST_COUNTRY	0x0002000000000002ULL
 #define COUNT_INT_DST_HOST_COUNTRY	0x0002000000000004ULL
-#define COUNT_INT_PKT_LEN_DISTRIB	0x0002000000000008ULL
+#define COUNT_INT_EXPORT_PROTO_SYSID	0x0002000000000008ULL
 #define COUNT_INT_POST_NAT_SRC_HOST	0x0002000000000010ULL
 #define COUNT_INT_POST_NAT_DST_HOST	0x0002000000000020ULL
 #define COUNT_INT_POST_NAT_SRC_PORT	0x0002000000000040ULL
@@ -231,7 +242,11 @@
 #define COUNT_INT_TUNNEL_DST_HOST	0x0002000000800000ULL
 #define COUNT_INT_TUNNEL_IP_PROTO	0x0002000001000000ULL
 #define COUNT_INT_TUNNEL_IP_TOS		0x0002000002000000ULL
-#define COUNT_INT_CUSTOM_PRIMITIVES	0x0002000004000000ULL
+#define COUNT_INT_NDPI_CLASS		0x0002000004000000ULL
+#define COUNT_INT_SRC_HOST_COORDS	0x0002000008000000ULL
+#define COUNT_INT_DST_HOST_COORDS	0x0002000010000000ULL
+#define COUNT_INT_SAMPLING_DIRECTION	0x0002000020000000ULL
+#define COUNT_INT_CUSTOM_PRIMITIVES	0x0002800000000000ULL
 
 #define COUNT_INDEX_MASK	0xFFFF
 #define COUNT_INDEX_CP		0xFFFF000000000000ULL  /* index 0xffff reserved to custom primitives */
@@ -292,7 +307,7 @@
 #define COUNT_SAMPLING_RATE		(COUNT_INT_SAMPLING_RATE & COUNT_REGISTRY_MASK)
 #define COUNT_SRC_HOST_COUNTRY		(COUNT_INT_SRC_HOST_COUNTRY & COUNT_REGISTRY_MASK)
 #define COUNT_DST_HOST_COUNTRY		(COUNT_INT_DST_HOST_COUNTRY & COUNT_REGISTRY_MASK)
-#define COUNT_PKT_LEN_DISTRIB		(COUNT_INT_PKT_LEN_DISTRIB & COUNT_REGISTRY_MASK)
+#define COUNT_EXPORT_PROTO_SYSID	(COUNT_INT_EXPORT_PROTO_SYSID & COUNT_REGISTRY_MASK)
 #define COUNT_POST_NAT_SRC_HOST		(COUNT_INT_POST_NAT_SRC_HOST & COUNT_REGISTRY_MASK)
 #define COUNT_POST_NAT_DST_HOST		(COUNT_INT_POST_NAT_DST_HOST & COUNT_REGISTRY_MASK)
 #define COUNT_POST_NAT_SRC_PORT		(COUNT_INT_POST_NAT_SRC_PORT & COUNT_REGISTRY_MASK)
@@ -315,6 +330,10 @@
 #define COUNT_TUNNEL_DST_HOST		(COUNT_INT_TUNNEL_DST_HOST & COUNT_REGISTRY_MASK)
 #define COUNT_TUNNEL_IP_PROTO		(COUNT_INT_TUNNEL_IP_PROTO & COUNT_REGISTRY_MASK)
 #define COUNT_TUNNEL_IP_TOS		(COUNT_INT_TUNNEL_IP_TOS & COUNT_REGISTRY_MASK)
+#define COUNT_NDPI_CLASS                (COUNT_INT_NDPI_CLASS & COUNT_REGISTRY_MASK)
+#define COUNT_SRC_HOST_COORDS		(COUNT_INT_SRC_HOST_COORDS & COUNT_REGISTRY_MASK)
+#define COUNT_DST_HOST_COORDS		(COUNT_INT_DST_HOST_COORDS & COUNT_REGISTRY_MASK)
+#define COUNT_SAMPLING_DIRECTION	(COUNT_INT_SAMPLING_DIRECTION & COUNT_REGISTRY_MASK)
 #define COUNT_CUSTOM_PRIMITIVES		(COUNT_INT_CUSTOM_PRIMITIVES & COUNT_REGISTRY_MASK)
 /* PRIMITIVES DEFINITION: END */
 
@@ -352,7 +371,7 @@
 #define WANT_MATCH			0x00000010
 #define WANT_RESET			0x00000020
 #define WANT_CLASS_TABLE		0x00000040
-#define WANT_PKT_LEN_DISTRIB_TABLE	0x00000080
+/* #define XXX 				0x00000080 */
 #define WANT_LOCK_OP			0x00000100
 #define WANT_CUSTOM_PRIMITIVES_TABLE	0x00000200
 #define WANT_ERASE_LAST_TSTAMP		0x00000400
@@ -371,6 +390,7 @@
 #define CHLD_WARNING		0x00000001
 #define CHLD_ALERT		0x00000002
 
+#define BGP_SRC_PRIMITIVES_UNK  0x00000000
 #define BGP_SRC_PRIMITIVES_KEEP	0x00000001
 #define BGP_SRC_PRIMITIVES_MAP	0x00000002
 #define BGP_SRC_PRIMITIVES_BGP	0x00000004
@@ -409,10 +429,23 @@
 
 #define PM_MSG_BIN_COPY			0
 #define PM_MSG_STR_COPY			1
+#define PM_MSG_STR_COPY_ZERO		2
+
+#define DYN_STR_UNKNOWN			0
+#define DYN_STR_KAFKA_TOPIC		1
+#define DYN_STR_KAFKA_PART		2
+#define DYN_STR_RABBITMQ_RK		3
+#define DYN_STR_MONGODB_TABLE		4
+#define DYN_STR_SQL_TABLE		5
+#define DYN_STR_PRINT_FILE		6
 
 typedef u_int32_t pm_class_t;
 typedef u_int64_t pm_id_t;
 typedef u_int64_t pm_cfgreg_t;
+
+#if defined (WITH_NDPI)
+typedef struct ndpi_proto pm_class2_t;
+#endif
 
 typedef struct {
   union {
@@ -477,6 +510,7 @@ typedef u_int32_t pm_counter_t;
 #define NF9_FTYPE_TRAFFIC_IPV6		1
 #define NF9_FTYPE_IPV4                  1
 #define NF9_FTYPE_IPV6                  2
+#define NF9_FTYPE_DLFS			3
 #define NF9_FTYPE_VLAN                  5
 #define NF9_FTYPE_VLAN_IPV4             6
 #define NF9_FTYPE_VLAN_IPV6             7 

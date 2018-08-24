@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -35,7 +35,6 @@ void print_ex_options_error();
 void write_status_header_formatted();
 void write_status_header_csv();
 void write_class_table_header();
-void write_pkt_len_distrib_table_header();
 char *write_sep(char *, int *);
 int CHECK_Q_TYPE(int);
 int check_data_sizes(struct query_header *, struct pkt_data *);
@@ -51,19 +50,20 @@ char *pmc_compose_json(u_int64_t, u_int64_t, u_int8_t, struct pkt_primitives *,
 			struct pkt_nat_primitives *, struct pkt_mpls_primitives *,
 			struct pkt_tunnel_primitives *, char *,
 			struct pkt_vlen_hdr_primitives *, pm_counter_t, pm_counter_t,
-			pm_counter_t, u_int32_t, struct timeval *);
-void pmc_compose_timestamp(char *, int, struct timeval *, int, int);
+			pm_counter_t, u_int32_t, struct timeval *, int, int);
+void pmc_append_rfc3339_timezone(char *, int, const struct tm *);
+void pmc_compose_timestamp(char *, int, struct timeval *, int, int, int);
 void pmc_custom_primitive_header_print(char *, int, struct imt_custom_primitive_entry *, int);
 void pmc_custom_primitive_value_print(char *, int, char *, struct imt_custom_primitive_entry *, int);
 void pmc_vlen_prims_get(struct pkt_vlen_hdr_primitives *, pm_cfgreg_t, char **);
 void pmc_printf_csv_label(struct pkt_vlen_hdr_primitives *, pm_cfgreg_t, char *, char *);
 void pmc_lower_string(char *);
+char *pmc_ndpi_get_proto_name(u_int16_t);
 
 /* vars */
 struct imt_custom_primitives pmc_custom_primitives_registry;
 struct stripped_class *class_table = NULL;
-char *pkt_len_distrib_table[MAX_PKT_LEN_DISTRIB_BINS];
-int want_ipproto_num, tmp_net_own_field, tmp_comms_same_field, want_tstamp_since_epoch;
+int want_ipproto_num, ct_idx, ct_num;
 
 /* functions */
 int CHECK_Q_TYPE(int type)
@@ -79,16 +79,17 @@ int CHECK_Q_TYPE(int type)
 
 void usage_client(char *prog)
 {
-  printf("%s (%s)\n", PMACCT_USAGE_HEADER, PMACCT_BUILD);
+  printf("%s %s (%s)\n", PMACCT_USAGE_HEADER, PMACCT_VERSION, PMACCT_BUILD);
   printf("Usage: %s [query]\n\n", prog);
   printf("Queries:\n");
+  printf("  -h\tShow this page\n");
   printf("  -s\tShow statistics\n"); 
   printf("  -N\t<matching data>[';'<matching data>] | 'file:'<filename> \n\tMatch primitives; print counters only (requires -c)\n");
   printf("  -M\t<matching data>[';'<matching data>] | 'file:'<filename> \n\tMatch primitives; print formatted table (requires -c)\n");
   printf("  -n\t<bytes | packets | flows | all> \n\tSelect the counters to print (applies to -N)\n");
   printf("  -S\tSum counters instead of returning a single counter for each request (applies to -N)\n");
   printf("  -a\tDisplay all table fields (even those currently unused)\n");
-  printf("  -c\t< src_mac | dst_mac | vlan | cos | src_host | dst_host | src_net | dst_net | src_mask | dst_mask | \n\t src_port | dst_port | tos | proto | src_as | dst_as | sum_mac | sum_host | sum_net | sum_as | \n\t sum_port | in_iface | out_iface | tag | tag2 | flows | class | std_comm | ext_comm | lrg_comm | as_path | \n\t peer_src_ip | peer_dst_ip | peer_src_as | peer_dst_as | src_as_path | src_std_comm | src_med | \n\t src_ext_comm | src_lrg_comm | src_local_pref | mpls_vpn_rd | etype | sampling_rate | pkt_len_distrib |\n\t post_nat_src_host | post_nat_dst_host | post_nat_src_port | post_nat_dst_port | nat_event |\n\t tunnel_src_host | tunnel_dst_host | tunnel_protocol | tunnel_tos | \n\t timestamp_start | timestamp_end | timestamp_arrival | mpls_label_top | mpls_label_bottom | \n\t mpls_stack_depth | label | src_host_country | dst_host_country | export_proto_seqno | \n\t export_proto_version | src_host_pocode | dst_host_pocode> \n\tSelect primitives to match (required by -N and -M)\n");
+  printf("  -c\t< src_mac | dst_mac | vlan | cos | src_host | dst_host | src_net | dst_net | src_mask | dst_mask | \n\t src_port | dst_port | tos | proto | src_as | dst_as | sum_mac | sum_host | sum_net | sum_as | \n\t sum_port | in_iface | out_iface | tag | tag2 | flows | class | std_comm | ext_comm | lrg_comm | \n\t as_path | peer_src_ip | peer_dst_ip | peer_src_as | peer_dst_as | src_as_path | src_std_comm | \n\t src_med | src_ext_comm | src_lrg_comm | src_local_pref | mpls_vpn_rd | etype | sampling_rate | \n\t sampling_direction | post_nat_src_host | post_nat_dst_host | post_nat_src_port | post_nat_dst_port | \n\t nat_event | tunnel_src_host | tunnel_dst_host | tunnel_protocol | tunnel_tos | timestamp_start | \n\t timestamp_end | timestamp_arrival | mpls_label_top | mpls_label_bottom | mpls_stack_depth | \n\t label | src_host_country | dst_host_country | export_proto_seqno | export_proto_version | \n\t export_proto_sysid | src_host_pocode | dst_host_pocode | src_host_coords | dst_host_coords > \n\tSelect primitives to match (required by -N and -M)\n");
   printf("  -T\t<bytes | packets | flows>,[<# how many>] \n\tOutput top N statistics (applies to -M and -s)\n");
   printf("  -e\tClear statistics\n");
   printf("  -i\tShow time (in seconds) since statistics were last cleared (ie. pmacct -e)\n");
@@ -97,14 +98,12 @@ void usage_client(char *prog)
   printf("  -t\tShow memory table status\n");
   printf("  -C\tShow classifiers table\n");
   printf("  -U\tShow custom primitives table\n");
-  printf("  -D\tShow packet length distribution table\n");
   printf("  -p\t<file> \n\tSocket for client-server communication (DEFAULT: /tmp/collect.pipe)\n");
   printf("  -O\tSet output < formatted | csv | json | event_formatted | event_csv > (applies to -M and -s)\n");
   printf("  -E\tSet sparator for CSV format\n");
   printf("  -I\tSet timestamps in 'since Epoch' format\n");
   printf("  -u\tLeave IP protocols in numerical format\n");
-  printf("  -o\tPrint IP prefixes in the same field as IP addresses (temporary, 1.5 compatible)\n");
-  printf("  -x\tPrint BGP communities (standard, extended) in the same field (temporary, 1.5 and 1.6.0 compatible)\n");
+  printf("  -0\tAlways set timestamps to UTC (even if the timezone configured on the system is different)\n"); 
   printf("  -V\tPrint version and exit\n");
   printf("\n");
   printf("  See QUICKSTART file in the distribution for examples\n");
@@ -114,7 +113,7 @@ void usage_client(char *prog)
 
 void version_client(char *prog)
 {
-  printf("%s (%s)\n", PMACCT_USAGE_HEADER, PMACCT_BUILD);
+  printf("%s %s (%s)\n", PMACCT_USAGE_HEADER, PMACCT_VERSION, PMACCT_BUILD);
   printf("%s\n\n", PMACCT_COMPILE_ARGS);
   printf("For suggestions, critics, bugs, contact me: %s.\n", MANTAINER);
 }
@@ -211,10 +210,14 @@ void write_stats_header_formatted(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to
 #endif
 #if defined (WITH_GEOIPV2)
     printf("SH_POCODE     ");
-    printf("DH_POCODE     "); 
+    printf("DH_POCODE     ");
+    printf("SH_LAT        ");
+    printf("SH_LON        ");
+    printf("DH_LAT        ");
+    printf("DH_LON        "); 
 #endif
     printf("SAMPLING_RATE ");
-    printf("PKT_LEN_DISTRIB ");
+    printf("SAMPLING_DIRECTION ");
 
 #if defined ENABLE_IPV6
     printf("POST_NAT_SRC_IP                                ");
@@ -244,8 +247,9 @@ void write_stats_header_formatted(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to
     printf("TIMESTAMP_START                ");
     printf("TIMESTAMP_END                  ");
     printf("TIMESTAMP_ARRIVAL              ");
-    printf("SEQNO       ");
+    printf("EXPORT_PROTO_SEQNO  ");
     printf("EXPORT_PROTO_VERSION  ");
+    printf("EXPORT_PROTO_SYSID  ");
 
     /* all custom primitives printed here */
     {
@@ -275,6 +279,9 @@ void write_stats_header_formatted(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to
     if (what_to_count & COUNT_TAG) printf("TAG         ");
     if (what_to_count & COUNT_TAG2) printf("TAG2        ");
     if (what_to_count & COUNT_CLASS) printf("CLASS             ");
+#if defined (WITH_NDPI)
+    if (what_to_count_2 & COUNT_NDPI_CLASS) printf("CLASS             "); 
+#endif
     if (what_to_count & COUNT_IN_IFACE) printf("IN_IFACE    ");
     if (what_to_count & COUNT_OUT_IFACE) printf("OUT_IFACE   ");
 #if defined HAVE_L2
@@ -286,22 +293,10 @@ void write_stats_header_formatted(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to
 #endif
     if (what_to_count & (COUNT_SRC_AS|COUNT_SUM_AS)) printf("SRC_AS      ");
     if (what_to_count & COUNT_DST_AS) printf("DST_AS      "); 
-    if (!tmp_comms_same_field) {
-      if (what_to_count & COUNT_STD_COMM) printf("COMMS                   ");
-      if (what_to_count & COUNT_EXT_COMM) printf("ECOMMS                  ");
-    }
-    else {
-      if (what_to_count & (COUNT_STD_COMM|COUNT_EXT_COMM))
-	printf("COMMS                   ");
-    }
-    if (!tmp_comms_same_field) {
-      if (what_to_count & COUNT_SRC_STD_COMM) printf("SRC_COMMS               ");
-      if (what_to_count & COUNT_SRC_EXT_COMM) printf("SRC_ECOMMS              ");
-    }
-    else {
-      if (what_to_count & (COUNT_SRC_STD_COMM|COUNT_SRC_EXT_COMM))
-	printf("SRC_COMMS               ");
-    }
+    if (what_to_count & COUNT_STD_COMM) printf("COMMS                   ");
+    if (what_to_count & COUNT_EXT_COMM) printf("ECOMMS                  ");
+    if (what_to_count & COUNT_SRC_STD_COMM) printf("SRC_COMMS               ");
+    if (what_to_count & COUNT_SRC_EXT_COMM) printf("SRC_ECOMMS              ");
     if (what_to_count_2 & COUNT_LRG_COMM) printf("LCOMMS                  ");
     if (what_to_count_2 & COUNT_SRC_LRG_COMM) printf("SRC_LCOMMS              ");
     if (what_to_count & COUNT_AS_PATH) printf("AS_PATH                  ");
@@ -320,30 +315,17 @@ void write_stats_header_formatted(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to
     if (what_to_count & COUNT_PEER_DST_IP) printf("PEER_DST_IP      ");
 #endif
     if (what_to_count & COUNT_MPLS_VPN_RD) printf("MPLS_VPN_RD         ");
-    if (!tmp_net_own_field) {
 #if defined ENABLE_IPV6
-      if (what_to_count & (COUNT_SRC_HOST|COUNT_SRC_NET)) printf("SRC_IP                                         "); 
-      if (what_to_count & (COUNT_SUM_HOST|COUNT_SUM_NET)) printf("SRC_IP                                         ");
-      if (what_to_count & (COUNT_DST_HOST|COUNT_DST_NET)) printf("DST_IP                                         ");
+    if (what_to_count & (COUNT_SRC_HOST|COUNT_SUM_HOST)) printf("SRC_IP                                         ");
+    if (what_to_count & (COUNT_SRC_NET|COUNT_SUM_NET)) printf("SRC_NET                                        ");
+    if (what_to_count & COUNT_DST_HOST) printf("DST_IP                                         ");
+    if (what_to_count & COUNT_DST_NET) printf("DST_NET                                        ");
 #else
-      if (what_to_count & (COUNT_SRC_HOST|COUNT_SRC_NET)) printf("SRC_IP           ");
-      if (what_to_count & (COUNT_SUM_HOST|COUNT_SUM_NET)) printf("SRC_IP           ");
-      if (what_to_count & (COUNT_DST_HOST|COUNT_DST_NET)) printf("DST_IP           ");
+    if (what_to_count & (COUNT_SRC_HOST|COUNT_SUM_HOST)) printf("SRC_IP           ");
+    if (what_to_count & (COUNT_SRC_NET|COUNT_SUM_NET)) printf("SRC_NET          ");
+    if (what_to_count & COUNT_DST_HOST) printf("DST_IP           ");
+    if (what_to_count & COUNT_DST_NET) printf("DST_NET          ");
 #endif
-    }
-    else {
-#if defined ENABLE_IPV6
-      if (what_to_count & (COUNT_SRC_HOST|COUNT_SUM_HOST)) printf("SRC_IP                                         ");
-      if (what_to_count & (COUNT_SRC_NET|COUNT_SUM_NET)) printf("SRC_NET                                        ");
-      if (what_to_count & COUNT_DST_HOST) printf("DST_IP                                         ");
-      if (what_to_count & COUNT_DST_NET) printf("DST_NET                                        ");
-#else
-      if (what_to_count & (COUNT_SRC_HOST|COUNT_SUM_HOST)) printf("SRC_IP           ");
-      if (what_to_count & (COUNT_SRC_NET|COUNT_SUM_NET)) printf("SRC_NET          ");
-      if (what_to_count & COUNT_DST_HOST) printf("DST_IP           ");
-      if (what_to_count & COUNT_DST_NET) printf("DST_NET          ");
-#endif
-    }
     if (what_to_count & COUNT_SRC_NMASK) printf("SRC_MASK  ");
     if (what_to_count & COUNT_DST_NMASK) printf("DST_MASK  "); 
     if (what_to_count & (COUNT_SRC_PORT|COUNT_SUM_PORT)) printf("SRC_PORT  ");
@@ -358,10 +340,18 @@ void write_stats_header_formatted(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to
 #endif
 #if defined (WITH_GEOIPV2)
     if (what_to_count_2 & COUNT_SRC_HOST_POCODE) printf("SH_POCODE     ");
-    if (what_to_count_2 & COUNT_DST_HOST_POCODE) printf("DH_POCODE     "); 
+    if (what_to_count_2 & COUNT_DST_HOST_POCODE) printf("DH_POCODE     ");
+    if (what_to_count_2 & COUNT_SRC_HOST_COORDS) {
+      printf("SH_LAT        ");
+      printf("SH_LON        ");
+    }
+    if (what_to_count_2 & COUNT_DST_HOST_COORDS) {
+      printf("DH_LAT        ");
+      printf("DH_LON        ");
+    }
 #endif
     if (what_to_count_2 & COUNT_SAMPLING_RATE) printf("SAMPLING_RATE ");
-    if (what_to_count_2 & COUNT_PKT_LEN_DISTRIB) printf("PKT_LEN_DISTRIB ");
+    if (what_to_count_2 & COUNT_SAMPLING_DIRECTION) printf("SAMPLING_DIRECTION ");
 
 #if defined ENABLE_IPV6
     if (what_to_count_2 & COUNT_POST_NAT_SRC_HOST) printf("POST_NAT_SRC_IP                                ");
@@ -393,6 +383,7 @@ void write_stats_header_formatted(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to
     if (what_to_count_2 & COUNT_TIMESTAMP_ARRIVAL) printf("TIMESTAMP_ARRIVAL              "); 
     if (what_to_count_2 & COUNT_EXPORT_PROTO_SEQNO) printf("EXPORT_PROTO_SEQNO  "); 
     if (what_to_count_2 & COUNT_EXPORT_PROTO_VERSION) printf("EXPORT_PROTO_VERSION  "); 
+    if (what_to_count_2 & COUNT_EXPORT_PROTO_SYSID) printf("EXPORT_PROTO_SYSID  "); 
 
     /* all custom primitives printed here */
     {
@@ -490,9 +481,13 @@ void write_stats_header_csv(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to_count
 #if defined (WITH_GEOIPV2)
     printf("%sSH_POCODE", write_sep(sep, &count));
     printf("%sDH_POCODE", write_sep(sep, &count));
+    printf("%sSH_LAT", write_sep(sep, &count));
+    printf("%sSH_LON", write_sep(sep, &count));
+    printf("%sDH_LAT", write_sep(sep, &count));
+    printf("%sDH_LON", write_sep(sep, &count));
 #endif
     printf("%sSAMPLING_RATE", write_sep(sep, &count));
-    printf("%sPKT_LEN_DISTRIB", write_sep(sep, &count));
+    printf("%sSAMPLING_DIRECTION", write_sep(sep, &count));
     printf("%sPOST_NAT_SRC_IP", write_sep(sep, &count));
     printf("%sPOST_NAT_DST_IP", write_sep(sep, &count));
     printf("%sPOST_NAT_SRC_PORT", write_sep(sep, &count));
@@ -508,8 +503,9 @@ void write_stats_header_csv(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to_count
     printf("%sTIMESTAMP_START", write_sep(sep, &count));
     printf("%sTIMESTAMP_END", write_sep(sep, &count));
     printf("%sTIMESTAMP_ARRIVAL", write_sep(sep, &count));
-    printf("%sSEQNO", write_sep(sep, &count));
+    printf("%sEXPORT_PROTO_SEQNO", write_sep(sep, &count));
     printf("%sEXPORT_PROTO_VERSION", write_sep(sep, &count));
+    printf("%sEXPORT_PROTO_SYSID", write_sep(sep, &count));
     /* all custom primitives printed here */
     {
       char cp_str[SRVBUFLEN];
@@ -538,6 +534,9 @@ void write_stats_header_csv(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to_count
     if (what_to_count & COUNT_TAG2) printf("%sTAG2", write_sep(sep, &count));
     if (what_to_count_2 & COUNT_LABEL) printf("%sLABEL", write_sep(sep, &count));
     if (what_to_count & COUNT_CLASS) printf("%sCLASS", write_sep(sep, &count));
+#if defined (WITH_NDPI)
+    if (what_to_count_2 & COUNT_NDPI_CLASS) printf("%sCLASS", write_sep(sep, &count)); 
+#endif
     if (what_to_count & COUNT_IN_IFACE) printf("%sIN_IFACE", write_sep(sep, &count));
     if (what_to_count & COUNT_OUT_IFACE) printf("%sOUT_IFACE", write_sep(sep, &count));
 #if defined HAVE_L2
@@ -549,22 +548,10 @@ void write_stats_header_csv(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to_count
 #endif
     if (what_to_count & (COUNT_SRC_AS|COUNT_SUM_AS)) printf("%sSRC_AS", write_sep(sep, &count));
     if (what_to_count & COUNT_DST_AS) printf("%sDST_AS", write_sep(sep, &count)); 
-    if (!tmp_comms_same_field) {
-      if (what_to_count & COUNT_STD_COMM) printf("%sCOMMS", write_sep(sep, &count));
-      if (what_to_count & COUNT_EXT_COMM) printf("%sECOMMS", write_sep(sep, &count));
-    }
-    else {
-      if (what_to_count & (COUNT_STD_COMM|COUNT_EXT_COMM))
-        printf("%sCOMMS", write_sep(sep, &count));
-    }
-    if (!tmp_comms_same_field) {
-      if (what_to_count & COUNT_SRC_STD_COMM) printf("%sSRC_COMMS", write_sep(sep, &count));
-      if (what_to_count & COUNT_SRC_EXT_COMM) printf("%sSRC_ECOMMS", write_sep(sep, &count));
-    }
-    else {
-      if (what_to_count & (COUNT_SRC_STD_COMM|COUNT_SRC_EXT_COMM))
-        printf("%sSRC_COMMS", write_sep(sep, &count));
-    }
+    if (what_to_count & COUNT_STD_COMM) printf("%sCOMMS", write_sep(sep, &count));
+    if (what_to_count & COUNT_EXT_COMM) printf("%sECOMMS", write_sep(sep, &count));
+    if (what_to_count & COUNT_SRC_STD_COMM) printf("%sSRC_COMMS", write_sep(sep, &count));
+    if (what_to_count & COUNT_SRC_EXT_COMM) printf("%sSRC_ECOMMS", write_sep(sep, &count));
     if (what_to_count_2 & COUNT_LRG_COMM) printf("%sLCOMMS", write_sep(sep, &count));
     if (what_to_count_2 & COUNT_SRC_LRG_COMM) printf("%sSRC_LCOMMS", write_sep(sep, &count));
     if (what_to_count & COUNT_AS_PATH) printf("%sAS_PATH", write_sep(sep, &count));
@@ -583,17 +570,10 @@ void write_stats_header_csv(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to_count
     if (what_to_count & COUNT_PEER_DST_IP) printf("%sPEER_DST_IP", write_sep(sep, &count));
 #endif
     if (what_to_count & COUNT_MPLS_VPN_RD) printf("%sMPLS_VPN_RD", write_sep(sep, &count));
-    if (!tmp_net_own_field) {
-      if (what_to_count & (COUNT_SRC_HOST|COUNT_SRC_NET)) printf("%sSRC_IP", write_sep(sep, &count));
-      if (what_to_count & (COUNT_SUM_HOST|COUNT_SUM_NET)) printf("%sSRC_IP", write_sep(sep, &count));
-      if (what_to_count & (COUNT_DST_HOST|COUNT_DST_NET)) printf("%sDST_IP", write_sep(sep, &count));
-    }
-    else {
-      if (what_to_count & (COUNT_SRC_HOST|COUNT_SUM_HOST)) printf("%sSRC_IP", write_sep(sep, &count));
-      if (what_to_count & (COUNT_SRC_NET|COUNT_SUM_NET)) printf("%sSRC_NET", write_sep(sep, &count));
-      if (what_to_count & COUNT_DST_HOST) printf("%sDST_IP", write_sep(sep, &count));
-      if (what_to_count & COUNT_DST_NET) printf("%sDST_NET", write_sep(sep, &count));
-    }
+    if (what_to_count & (COUNT_SRC_HOST|COUNT_SUM_HOST)) printf("%sSRC_IP", write_sep(sep, &count));
+    if (what_to_count & (COUNT_SRC_NET|COUNT_SUM_NET)) printf("%sSRC_NET", write_sep(sep, &count));
+    if (what_to_count & COUNT_DST_HOST) printf("%sDST_IP", write_sep(sep, &count));
+    if (what_to_count & COUNT_DST_NET) printf("%sDST_NET", write_sep(sep, &count));
     if (what_to_count & COUNT_SRC_NMASK) printf("%sSRC_MASK", write_sep(sep, &count));
     if (what_to_count & COUNT_DST_NMASK) printf("%sDST_MASK", write_sep(sep, &count)); 
     if (what_to_count & (COUNT_SRC_PORT|COUNT_SUM_PORT)) printf("%sSRC_PORT", write_sep(sep, &count));
@@ -609,9 +589,17 @@ void write_stats_header_csv(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to_count
 #if defined (WITH_GEOIPV2)
     if (what_to_count_2 & COUNT_SRC_HOST_POCODE) printf("%sSH_POCODE", write_sep(sep, &count));
     if (what_to_count_2 & COUNT_DST_HOST_POCODE) printf("%sDH_POCODE", write_sep(sep, &count));
+    if (what_to_count_2 & COUNT_SRC_HOST_COORDS) {
+      printf("%sSH_LAT", write_sep(sep, &count));
+      printf("%sSH_LON", write_sep(sep, &count));
+    }
+    if (what_to_count_2 & COUNT_DST_HOST_COORDS) {
+      printf("%sDH_LAT", write_sep(sep, &count));
+      printf("%sDH_LON", write_sep(sep, &count));
+    }
 #endif
     if (what_to_count_2 & COUNT_SAMPLING_RATE) printf("%sSAMPLING_RATE", write_sep(sep, &count));
-    if (what_to_count_2 & COUNT_PKT_LEN_DISTRIB) printf("%sPKT_LEN_DISTRIB", write_sep(sep, &count));
+    if (what_to_count_2 & COUNT_SAMPLING_DIRECTION) printf("%sSAMPLING_DIRECTION", write_sep(sep, &count));
 
     if (what_to_count_2 & COUNT_POST_NAT_SRC_HOST) printf("%sPOST_NAT_SRC_IP", write_sep(sep, &count));
     if (what_to_count_2 & COUNT_POST_NAT_DST_HOST) printf("%sPOST_NAT_DST_IP", write_sep(sep, &count));
@@ -633,6 +621,7 @@ void write_stats_header_csv(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to_count
     if (what_to_count_2 & COUNT_TIMESTAMP_ARRIVAL) printf("%sTIMESTAMP_ARRIVAL", write_sep(sep, &count));
     if (what_to_count_2 & COUNT_EXPORT_PROTO_SEQNO) printf("%sEXPORT_PROTO_SEQNO", write_sep(sep, &count));
     if (what_to_count_2 & COUNT_EXPORT_PROTO_VERSION) printf("%sEXPORT_PROTO_VERSION", write_sep(sep, &count));
+    if (what_to_count_2 & COUNT_EXPORT_PROTO_SYSID) printf("%sEXPORT_PROTO_SYSID", write_sep(sep, &count));
 
     /* all custom primitives printed here */
     {
@@ -670,12 +659,6 @@ void write_class_table_header()
 {
   printf("CLASS_ID\tCLASS_NAME\n");
 }
-
-void write_pkt_len_distrib_table_header()
-{
-  printf("ID\tPKT_LEN_DISTRIB\n");
-}
-
 
 int build_query_client(char *path_ptr)
 {
@@ -729,14 +712,13 @@ int main(int argc,char **argv)
   struct pkt_vlen_hdr_primitives *pvlen = NULL;
   char *pcust = NULL;
   char *clibuf, *bufptr;
-  unsigned char *largebuf, *elem, *ct, *pldt, *cpt;
-  char ethernet_address[18], ip_address[INET6_ADDRSTRLEN];
+  unsigned char *largebuf, *elem, *ct, *cpt;
+  char ethernet_address[18], ip_address[INET6_ADDRSTRLEN], ndpi_class[SUPERSHORTBUFLEN];
   char path[SRVBUFLEN], file[SRVBUFLEN], password[9], rd_str[SRVBUFLEN], tmpbuf[SRVBUFLEN];
-  char *as_path, empty_aspath[] = "^$", empty_string[] = "", *bgp_comm, unknown_pkt_len_distrib[] = "not_recv";
+  char *as_path, empty_aspath[] = "^$", empty_string[] = "", *bgp_comm;
   int sd, buflen, unpacked, printed;
-  int counter=0, ct_idx=0, ct_num=0, sep_len=0;
-  int pldt_idx=0, pldt_num=0, is_event;
-  char *sep_ptr = NULL, sep[10], default_sep[] = ",";
+  int counter=0, sep_len=0, is_event;
+  char *sep_ptr = NULL, sep[10], default_sep[] = ",", spacing_sep[2];
   struct imt_custom_primitives custom_primitives_input;
 
   /* mrtg stuff */
@@ -750,8 +732,8 @@ int main(int argc,char **argv)
   extern int optind, opterr, optopt;
   int errflag, cp, want_stats, want_erase, want_reset, want_class_table; 
   int want_status, want_mrtg, want_counter, want_match, want_all_fields;
-  int want_output, want_pkt_len_distrib_table, want_custom_primitives_table;
-  int want_erase_last_tstamp;
+  int want_output, want_custom_primitives_table;
+  int want_erase_last_tstamp, want_tstamp_since_epoch, want_tstamp_utc;
   int which_counter, topN_counter, fetch_from_file, sum_counters, num_counters;
   int topN_howmany, topN_printed;
   int datasize;
@@ -774,7 +756,6 @@ int main(int argc,char **argv)
   memset(count, 0, sizeof(count));
   memset(password, 0, sizeof(password)); 
   memset(sep, 0, sizeof(sep));
-  memset(pkt_len_distrib_table, 0, sizeof(pkt_len_distrib_table));
   memset(&pmc_custom_primitives_registry, 0, sizeof(pmc_custom_primitives_registry));
   memset(&custom_primitives_input, 0, sizeof(custom_primitives_input));
 
@@ -793,13 +774,10 @@ int main(int argc,char **argv)
   want_reset = FALSE;
   want_class_table = FALSE;
   want_ipproto_num = FALSE;
-  want_pkt_len_distrib_table = FALSE;
   want_custom_primitives_table = FALSE;
   which_counter = FALSE;
   topN_counter = FALSE;
   topN_howmany = FALSE;
-  tmp_net_own_field = TRUE;
-  tmp_comms_same_field = FALSE;
   sum_counters = FALSE;
   num_counters = FALSE;
   fetch_from_file = FALSE;
@@ -809,6 +787,7 @@ int main(int argc,char **argv)
   want_output = PRINT_OUTPUT_FORMATTED;
   is_event = FALSE;
   want_tstamp_since_epoch = FALSE;
+  want_tstamp_utc = FALSE;
 
   PvhdrSz = sizeof(struct pkt_vlen_hdr_primitives);
   PmLabelTSz = sizeof(pm_label_t);
@@ -918,10 +897,22 @@ int main(int argc,char **argv)
           count_token_int[count_index] = COUNT_INT_DST_HOST_POCODE;
           what_to_count_2 |= COUNT_DST_HOST_POCODE;
         }
+        else if (!strcmp(count_token[count_index], "src_host_coords")) {
+          count_token_int[count_index] = COUNT_INT_SRC_HOST_COORDS;
+          what_to_count_2 |= COUNT_SRC_HOST_COORDS;
+        }
+        else if (!strcmp(count_token[count_index], "dst_host_coords")) {
+          count_token_int[count_index] = COUNT_INT_DST_HOST_COORDS;
+          what_to_count_2 |= COUNT_DST_HOST_COORDS;
+        }
 #endif
         else if (!strcmp(count_token[count_index], "sampling_rate")) {
 	  count_token_int[count_index] = COUNT_INT_SAMPLING_RATE;
 	  what_to_count_2 |= COUNT_SAMPLING_RATE;
+	}
+        else if (!strcmp(count_token[count_index], "sampling_direction")) {
+	  count_token_int[count_index] = COUNT_INT_SAMPLING_DIRECTION;
+	  what_to_count_2 |= COUNT_SAMPLING_DIRECTION;
 	}
         else if (!strcmp(count_token[count_index], "none")) {
 	  count_token_int[count_index] = COUNT_INT_NONE;
@@ -978,10 +969,6 @@ int main(int argc,char **argv)
         else if (!strcmp(count_token[count_index], "class")) {
           count_token_int[count_index] = COUNT_INT_CLASS;
           what_to_count |= COUNT_CLASS;
-        }
-        else if (!strcmp(count_token[count_index], "pkt_len_distrib")) {
-          count_token_int[count_index] = COUNT_INT_PKT_LEN_DISTRIB;
-          what_to_count_2 |= COUNT_PKT_LEN_DISTRIB;
         }
         else if (!strcmp(count_token[count_index], "std_comm")) {
           count_token_int[count_index] = COUNT_INT_STD_COMM;
@@ -1103,6 +1090,10 @@ int main(int argc,char **argv)
           count_token_int[count_index] = COUNT_INT_EXPORT_PROTO_VERSION;
           what_to_count_2 |= COUNT_EXPORT_PROTO_VERSION;
         }
+        else if (!strcmp(count_token[count_index], "export_proto_sysid")) {
+          count_token_int[count_index] = COUNT_INT_EXPORT_PROTO_SYSID;
+          what_to_count_2 |= COUNT_EXPORT_PROTO_SYSID;
+	}
         else if (!strcmp(count_token[count_index], "label")) {
           count_token_int[count_index] = COUNT_INT_LABEL;
           what_to_count_2 |= COUNT_LABEL;
@@ -1128,12 +1119,6 @@ int main(int argc,char **argv)
       q.num = 1;
       want_custom_primitives_table = TRUE;
       break;
-    case 'D':
-      if (CHECK_Q_TYPE(q.type)) print_ex_options_error();
-      q.type |= WANT_PKT_LEN_DISTRIB_TABLE;
-      q.num = 1;
-      want_pkt_len_distrib_table = TRUE;
-      break;
     case 'e':
       q.type |= WANT_ERASE; 
       want_erase = TRUE;
@@ -1149,6 +1134,9 @@ int main(int argc,char **argv)
       break;
     case 'I':
       want_tstamp_since_epoch = TRUE;
+      break;
+    case '0':
+      want_tstamp_utc = TRUE;
       break;
     case 'l':
       q.type |= WANT_LOCK_OP;
@@ -1205,12 +1193,6 @@ int main(int argc,char **argv)
     case 'a':
       want_all_fields = TRUE;
       break;
-    case 'o':
-      tmp_net_own_field = FALSE;
-      break;
-    case 'x':
-      tmp_comms_same_field = TRUE;
-      break;
     case 'r':
       q.type |= WANT_RESET;
       want_reset = TRUE;
@@ -1246,6 +1228,10 @@ int main(int argc,char **argv)
     case 'u':
       want_ipproto_num = TRUE;
       break;
+    case 'h':
+      usage_client(argv[0]);
+      exit(0);
+      break;
     case 'V':
       version_client(argv[0]);
       exit(0);
@@ -1273,7 +1259,7 @@ int main(int argc,char **argv)
     clibuf[buflen] = '\x4'; /* EOT */
     buflen++;
 
-    // XXX: transfer entry by entry like class/pkt_distrib tables
+    // XXX: transfer entry by entry like class tables
     assert(sizeof(struct imt_custom_primitives)+sizeof(struct query_header) < LARGEBUFLEN);
     sd = build_query_client(path);
     send(sd, clibuf, buflen, 0);
@@ -1374,18 +1360,18 @@ int main(int argc,char **argv)
   if (!sep_len) sep_ptr = default_sep;
   else if (sep_len == 1) sep_ptr = sep;
   else {
-    printf("ERROR: -E option expects a single char as separator\n  Exiting...\n\n");
-    exit(1);
-  }
-
-  /* Sanitizing the aggregation method */ 
-  if (what_to_count || what_to_count_2) {
-    if (tmp_comms_same_field && what_to_count & COUNT_STD_COMM && what_to_count & COUNT_EXT_COMM) {
-      printf("ERROR: The use of STANDARD and EXTENDED BGP communitities is mutual exclusive.\n");
-      exit(1);
+    if (!strcmp(sep, "\\t")) {
+      spacing_sep[0] = '\t';
+      spacing_sep[1] = '\0';
+      sep_ptr = spacing_sep;
     }
-    if (tmp_comms_same_field && what_to_count & COUNT_SRC_STD_COMM && what_to_count & COUNT_SRC_EXT_COMM) {
-      printf("ERROR: The use of STANDARD and EXTENDED BGP communitities is mutual exclusive.\n");
+    else if (!strcmp(sep, "\\s")) {
+      spacing_sep[0] = ' ';
+      spacing_sep[1] = '\0';
+      sep_ptr = spacing_sep;
+    }
+    else {
+      printf("ERROR: -E option expects a single char as separator\n  Exiting...\n\n");
       exit(1);
     }
   }
@@ -1617,9 +1603,46 @@ int main(int argc,char **argv)
         else if (!strcmp(count_token[match_string_index], "dst_host_pocode")) {
           strlcpy(request.data.dst_ip_pocode.str, match_string_token, PM_POCODE_T_STRLEN);
         }
+        else if (!strcmp(count_token[match_string_index], "src_host_coords")) {
+	  char *lat_token, *lon_token, *coord_str = strdup(match_string_token), coord_delim[] = ":";
+
+	  lat_token = strtok(coord_str, coord_delim);
+	  lon_token = strtok(NULL, coord_delim);
+
+	  if (!lat_token || !lon_token) {
+	    printf("ERROR: src_host_coords: Invalid coordinates: '%s'.\n", match_string_token);
+	    printf("ERROR: Expected format: <latitude>:<longitude>\n");
+            exit(1);
+	  }
+
+	  request.data.src_ip_lat = atof(lat_token);
+	  request.data.src_ip_lon = atof(lon_token);
+
+	  free(coord_str);
+	}
+        else if (!strcmp(count_token[match_string_index], "dst_host_coords")) {
+	  char *lat_token, *lon_token, *coord_str = strdup(match_string_token), coord_delim[] = ":";
+
+	  lat_token = strtok(coord_str, coord_delim);
+	  lon_token = strtok(NULL, coord_delim);
+
+	  if (!lat_token || !lon_token) {
+	    printf("ERROR: dst_host_coords: Invalid coordinates: '%s'.\n", match_string_token);
+	    printf("ERROR: Expected format: <latitude>:<longitude>\n");
+            exit(1);
+	  }
+
+	  request.data.dst_ip_lat = atof(lat_token);
+	  request.data.dst_ip_lon = atof(lon_token);
+
+	  free(coord_str);
+	}
 #endif
 	else if (!strcmp(count_token[match_string_index], "sampling_rate")) {
 	  request.data.sampling_rate = atoi(match_string_token);
+	}
+	else if (!strcmp(count_token[match_string_index], "sampling_direction")) {
+	  strlcpy(request.data.sampling_direction, match_string_token, sizeof(request.data.sampling_direction));
 	}
         else if (!strcmp(count_token[match_string_index], "proto")) {
 	  int proto;
@@ -1725,50 +1748,6 @@ int main(int argc,char **argv)
 	    }
 	  }
         }
-	else if (!strcmp(count_token[match_string_index], "pkt_len_distrib")) {
-          struct stripped_pkt_len_distrib *pldt_elem, req_elem;
-          struct query_header qhdr;
-          u_int16_t req_value = 0;
-
-          memset(&req_elem, 0, sizeof(req_elem));
-          strlcpy(req_elem.str, match_string_token, MAX_PKT_LEN_DISTRIB_LEN);
-          req_elem.str[MAX_PKT_LEN_DISTRIB_LEN-1] = '\0';
-
-	  memset(&qhdr, 0, sizeof(struct query_header));
-	  qhdr.type = WANT_PKT_LEN_DISTRIB_TABLE;
-	  qhdr.num = 1;
-
-	  memcpy(clibuf, &qhdr, sizeof(struct query_header));
-	  buflen = sizeof(struct query_header);
-	  buflen++;
-	  clibuf[buflen] = '\x4'; /* EOT */
-	  buflen++;
-
-	  sd = build_query_client(path);
-	  send(sd, clibuf, buflen, 0);
-	  unpacked = Recv(sd, &pldt);
-
-	  if (unpacked) {
-	    pldt_num = ((struct query_header *)pldt)->num;
-	    elem = pldt+sizeof(struct query_header);
-	    pldt_elem = (struct stripped_pkt_len_distrib *) elem;
-	    while (pldt_idx < pldt_num) {
-	      pkt_len_distrib_table[pldt_idx] = pldt_elem->str;
-	      if (!strcmp(req_elem.str, pkt_len_distrib_table[pldt_idx])) req_value = pldt_idx;
-	      pldt_idx++; pldt_elem++;
-	    }
-
-            if (!pldt_num) {
-              printf("ERROR: Server has not loaded any packet length distributions.\n");
-              exit(1);
-            }
-	    else request.data.pkt_len_distrib = req_value;
-	  }
-	  else {
-	    printf("ERROR: missing EOF from server (3)\n");
-	    exit(1);
-          }
-	}
         else if (!strcmp(count_token[match_string_index], "std_comm")) {
 	  if (!strcmp(match_string_token, "0"))
 	    memset(request.plbgp.std_comms, 0, MAX_BGP_STD_COMMS);
@@ -1998,7 +1977,7 @@ int main(int argc,char **argv)
 	    residual = strtol(delim, NULL, 0); 
 	  }
 
-	  strptime(match_string_token, "%Y-%m-%d %H:%M:%S", &tmp);
+	  strptime(match_string_token, "%Y-%m-%dT%H:%M:%S", &tmp);
 	  request.pnat.timestamp_start.tv_sec = mktime(&tmp);
 	  request.pnat.timestamp_start.tv_usec = residual;
         }
@@ -2014,7 +1993,7 @@ int main(int argc,char **argv)
             residual = strtol(delim, NULL, 0);
           }
 
-	  strptime(match_string_token, "%Y-%m-%d %H:%M:%S", &tmp);
+	  strptime(match_string_token, "%Y-%m-%dT%H:%M:%S", &tmp);
 	  request.pnat.timestamp_end.tv_sec = mktime(&tmp);
 	  request.pnat.timestamp_end.tv_usec = residual;
         }
@@ -2030,7 +2009,7 @@ int main(int argc,char **argv)
             residual = strtol(delim, NULL, 0);
           }
 
-          strptime(match_string_token, "%Y-%m-%d %H:%M:%S", &tmp);
+          strptime(match_string_token, "%Y-%m-%dT%H:%M:%S", &tmp);
           request.pnat.timestamp_arrival.tv_sec = mktime(&tmp);
           request.pnat.timestamp_arrival.tv_usec = residual;
         }
@@ -2043,6 +2022,11 @@ int main(int argc,char **argv)
           char *endptr;
 
           request.data.export_proto_version = strtoul(match_string_token, &endptr, 10);
+        }
+        else if (!strcmp(count_token[match_string_index], "export_proto_sysid")) {
+          char *endptr;
+
+          request.data.export_proto_sysid = strtoul(match_string_token, &endptr, 10);
         }
 	else if (!strcmp(count_token[match_string_index], "label")) {
 	  // XXX: to be supported in future
@@ -2106,7 +2090,7 @@ int main(int argc,char **argv)
 
     /* Before going on with the output, we need to retrieve the class strings
        from the server */
-    if (what_to_count & COUNT_CLASS && !class_table) {
+    if (((what_to_count & COUNT_CLASS) || (what_to_count_2 & COUNT_NDPI_CLASS)) && !class_table) {
       struct query_header qhdr;
       int unpacked_class;
 
@@ -2136,48 +2120,6 @@ int main(int argc,char **argv)
       else {
 	printf("ERROR: missing EOF from server (5)\n");
 	exit(1);
-      }
-    }
-
-    if (what_to_count_2 & COUNT_PKT_LEN_DISTRIB && !pkt_len_distrib_table[0]) {
-      struct stripped_pkt_len_distrib *pldt_elem;
-      struct query_header qhdr;
-      int unpacked_pldt;
-
-      memset(&qhdr, 0, sizeof(struct query_header));
-      qhdr.type = WANT_PKT_LEN_DISTRIB_TABLE;
-      qhdr.num = 1;
-
-      memcpy(clibuf, &qhdr, sizeof(struct query_header));
-      buflen = sizeof(struct query_header);
-      buflen++;
-      clibuf[buflen] = '\x4'; /* EOT */
-      buflen++;
-
-      sd = build_query_client(path);
-      send(sd, clibuf, buflen, 0);
-      unpacked_pldt = Recv(sd, &pldt);
-
-      if (unpacked_pldt) {
-        pldt_num = ((struct query_header *)pldt)->num;
-        elem = pldt+sizeof(struct query_header);
-        pldt_elem = (struct stripped_pkt_len_distrib *) elem;
-        while (pldt_idx < pldt_num) {
-          pkt_len_distrib_table[pldt_idx] = pldt_elem->str;
-          pldt_idx++; pldt_elem++;
-	}
-      }
-      else {
-	printf("ERROR: missing EOF from server (6)\n");
-	exit(1);
-      }
-    }
-
-    if (((what_to_count & COUNT_SRC_HOST) && (what_to_count & COUNT_SRC_NET)) ||
-        ((what_to_count & COUNT_DST_HOST) && (what_to_count & COUNT_DST_NET))) {
-      if (!tmp_net_own_field) {
-        printf("ERROR: src_host, src_net and dst_host, dst_net are mutually exclusive\n");
-        exit(1);
       }
     }
 
@@ -2244,12 +2186,25 @@ int main(int argc,char **argv)
 	}
 
         if (!have_wtc || (what_to_count & COUNT_CLASS)) {
-           if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-16s  ", (acc_elem->primitives.class == 0 || acc_elem->primitives.class > ct_idx ||
-							!class_table[acc_elem->primitives.class-1].id) ? "unknown" : class_table[acc_elem->primitives.class-1].protocol);
-           else if (want_output & PRINT_OUTPUT_CSV) printf("%s%s", write_sep(sep_ptr, &count),
+          if (want_output & PRINT_OUTPUT_FORMATTED)
+	    printf("%-16s  ", (acc_elem->primitives.class == 0 || acc_elem->primitives.class > ct_idx ||
+				!class_table[acc_elem->primitives.class-1].id) ? "unknown" : class_table[acc_elem->primitives.class-1].protocol);
+          else if (want_output & PRINT_OUTPUT_CSV)
+	    printf("%s%s", write_sep(sep_ptr, &count),
 				(acc_elem->primitives.class == 0 || acc_elem->primitives.class > ct_idx ||
 				!class_table[acc_elem->primitives.class-1].id) ? "unknown" : class_table[acc_elem->primitives.class-1].protocol);
 	}
+
+#if defined (WITH_NDPI)
+	if (!have_wtc || (what_to_count_2 & COUNT_NDPI_CLASS)) {
+	  snprintf(ndpi_class, SUPERSHORTBUFLEN, "%s/%s",
+		pmc_ndpi_get_proto_name(acc_elem->primitives.ndpi_class.master_protocol),
+		pmc_ndpi_get_proto_name(acc_elem->primitives.ndpi_class.app_protocol));
+
+	  if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-16s  ", ndpi_class); 
+	  else if (want_output & PRINT_OUTPUT_CSV) printf("%s%s", write_sep(sep_ptr, &count), ndpi_class);
+	}
+#endif
 
         if (!have_wtc || (what_to_count_2 & COUNT_LABEL)) {
           if (want_output & PRINT_OUTPUT_FORMATTED); /* case not supported */
@@ -2683,6 +2638,28 @@ int main(int argc,char **argv)
           if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-12s  ", acc_elem->primitives.dst_ip_pocode.str);
           else if (want_output & PRINT_OUTPUT_CSV) printf("%s%s", write_sep(sep_ptr, &count), acc_elem->primitives.dst_ip_pocode.str);
         }
+
+        if (!have_wtc || (what_to_count_2 & COUNT_SRC_HOST_COORDS)) {
+          if (want_output & PRINT_OUTPUT_FORMATTED) {
+            printf("%-12f  ", acc_elem->primitives.src_ip_lat);
+            printf("%-12f  ", acc_elem->primitives.src_ip_lon);
+          }
+          else if (want_output & PRINT_OUTPUT_CSV) {
+            printf("%s%f", write_sep(sep_ptr, &count), acc_elem->primitives.src_ip_lat);
+            printf("%s%f", write_sep(sep_ptr, &count), acc_elem->primitives.src_ip_lon);
+          }
+        }
+
+        if (!have_wtc || (what_to_count_2 & COUNT_DST_HOST_COORDS)) {
+          if (want_output & PRINT_OUTPUT_FORMATTED) {
+            printf("%-12f  ", acc_elem->primitives.dst_ip_lat);
+            printf("%-12f  ", acc_elem->primitives.dst_ip_lon);
+          }
+          else if (want_output & PRINT_OUTPUT_CSV) {
+            printf("%s%f", write_sep(sep_ptr, &count), acc_elem->primitives.dst_ip_lat);
+            printf("%s%f", write_sep(sep_ptr, &count), acc_elem->primitives.dst_ip_lon);
+          }
+        }
 #endif
 
 	if (!have_wtc || (what_to_count_2 & COUNT_SAMPLING_RATE)) {
@@ -2690,17 +2667,10 @@ int main(int argc,char **argv)
 	  else if (want_output & PRINT_OUTPUT_CSV) printf("%s%u", write_sep(sep_ptr, &count), acc_elem->primitives.sampling_rate); 
 	}
 
-        if (!have_wtc || (what_to_count_2 & COUNT_PKT_LEN_DISTRIB)) {
-          char *pkt_len_distrib_table_ptr = NULL;
-
-          if (pkt_len_distrib_table[0])
-	    pkt_len_distrib_table_ptr = pkt_len_distrib_table[acc_elem->primitives.pkt_len_distrib];
-	  else
-	    pkt_len_distrib_table_ptr = unknown_pkt_len_distrib;
-
-          if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-10s      ", pkt_len_distrib_table_ptr);
-          else if (want_output & PRINT_OUTPUT_CSV) printf("%s%s", write_sep(sep_ptr, &count), pkt_len_distrib_table_ptr);
-        }
+	if (!have_wtc || (what_to_count_2 & COUNT_SAMPLING_DIRECTION)) {
+	  if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-1s                  ", acc_elem->primitives.sampling_direction); 
+	  else if (want_output & PRINT_OUTPUT_CSV) printf("%s%s", write_sep(sep_ptr, &count), acc_elem->primitives.sampling_direction); 
+	}
 
         if (!have_wtc || (what_to_count_2 & COUNT_POST_NAT_SRC_HOST)) {
           addr_to_str(ip_address, &pnat->post_nat_src_ip);
@@ -2847,7 +2817,7 @@ int main(int argc,char **argv)
         if (!have_wtc || (what_to_count_2 & COUNT_TIMESTAMP_START)) {
 	  char tstamp_str[SRVBUFLEN];
 
-	  pmc_compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_start, TRUE, want_tstamp_since_epoch);
+	  pmc_compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_start, TRUE, want_tstamp_since_epoch, want_tstamp_utc);
           if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-30s ", tstamp_str);
           else if (want_output & PRINT_OUTPUT_CSV) printf("%s%s", write_sep(sep_ptr, &count), tstamp_str);
         }
@@ -2855,7 +2825,7 @@ int main(int argc,char **argv)
         if (!have_wtc || (what_to_count_2 & COUNT_TIMESTAMP_END)) {
           char tstamp_str[SRVBUFLEN];
 
-	  pmc_compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_end, TRUE, want_tstamp_since_epoch);
+	  pmc_compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_end, TRUE, want_tstamp_since_epoch, want_tstamp_utc);
           if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-30s ", tstamp_str);
           else if (want_output & PRINT_OUTPUT_CSV) printf("%s%s", write_sep(sep_ptr, &count), tstamp_str);
         }
@@ -2863,7 +2833,7 @@ int main(int argc,char **argv)
         if (!have_wtc || (what_to_count_2 & COUNT_TIMESTAMP_ARRIVAL)) {
           char tstamp_str[SRVBUFLEN];
 
-          pmc_compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_arrival, TRUE, want_tstamp_since_epoch);
+          pmc_compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_arrival, TRUE, want_tstamp_since_epoch, want_tstamp_utc);
           if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-30s ", tstamp_str);
           else if (want_output & PRINT_OUTPUT_CSV) printf("%s%s", write_sep(sep_ptr, &count), tstamp_str);
         }
@@ -2876,6 +2846,11 @@ int main(int argc,char **argv)
         if (!have_wtc || (what_to_count_2 & COUNT_EXPORT_PROTO_VERSION)) {
           if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-20u  ", acc_elem->primitives.export_proto_version);
           else if (want_output & PRINT_OUTPUT_CSV) printf("%s%u", write_sep(sep_ptr, &count), acc_elem->primitives.export_proto_version);
+        }
+
+        if (!have_wtc || (what_to_count_2 & COUNT_EXPORT_PROTO_SYSID)) {
+          if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-18u  ", acc_elem->primitives.export_proto_sysid);
+          else if (want_output & PRINT_OUTPUT_CSV) printf("%s%u", write_sep(sep_ptr, &count), acc_elem->primitives.export_proto_sysid);
         }
 
         /* all custom primitives printed here */
@@ -2924,7 +2899,7 @@ int main(int argc,char **argv)
 	  json_str = pmc_compose_json(what_to_count, what_to_count_2, acc_elem->flow_type,
 				      &acc_elem->primitives, pbgp, plbgp, pnat, pmpls, ptun, pcust, pvlen,
 				      acc_elem->pkt_len, acc_elem->pkt_num, acc_elem->flo_num,
-				      acc_elem->tcp_flags, NULL);
+				      acc_elem->tcp_flags, NULL, want_tstamp_since_epoch, want_tstamp_utc);
 
 	  if (json_str) {
 	    printf("%s\n", json_str);
@@ -3061,29 +3036,6 @@ int main(int argc,char **argv)
       exit(1);
     }
   }
-  else if (want_pkt_len_distrib_table) {
-    struct stripped_pkt_len_distrib *pldt_elem;
-    int pldt_eff=0;
-
-    unpacked = Recv(sd, &pldt);
-
-    if (unpacked) {
-      write_pkt_len_distrib_table_header();
-      pldt_num = ((struct query_header *)pldt)->num;
-      elem = pldt+sizeof(struct query_header);
-      pldt_elem = (struct stripped_pkt_len_distrib *) elem;
-      while (pldt_idx < pldt_num) {
-        pkt_len_distrib_table[pldt_idx] = pldt_elem->str;
-        printf("%u\t%s\n", pldt_idx, pkt_len_distrib_table[pldt_idx]);
-        pldt_idx++; pldt_elem++;
-      }
-      printf("\nFor a total of: %d packet length distributions\n", pldt_idx);
-    }
-    else {
-      printf("ERROR: missing EOF from server (10)\n");
-      exit(1);
-    }
-  }
   else {
     usage_client(argv[0]);
     exit(1);
@@ -3132,7 +3084,7 @@ int Recv(int sd, unsigned char **buf)
 	eof_received = TRUE;
       }
       else {
-	/* check 1: enough space in allocated buffer */
+	/* check: enough space in allocated buffer */
 	if (unpacked+num >= round*LARGEBUFLEN) {
           round++;
           *buf = realloc((unsigned char *) *buf, round*LARGEBUFLEN);
@@ -3144,8 +3096,6 @@ int Recv(int sd, unsigned char **buf)
           elem = *buf;
           elem += unpacked;
 	}
-	/* check 2: enough space in dss */
-	if (((char *)elem+num) > (char *)sbrk(0)) sbrk(LARGEBUFLEN);
 
 	memcpy(elem, rxbuf, num);
 	unpacked += num;
@@ -3214,7 +3164,10 @@ void client_counters_merge(void *table, int start, int middle, int end, int size
   v1 = malloc(v1_n*s);
   v2 = malloc(v2_n*s);
 
-  if ((!v1) || (!v2)) printf("ERROR: Memory sold out while sorting statistics.\n");
+  if ((!v1) || (!v2)) {
+    printf("ERROR: Memory sold out while sorting statistics.\n");
+    exit(1);
+  }
 
   for (i=0; i<v1_n; i++) {
     memcpy(v1+(i*s), table+((start+i)*s), s);
@@ -3418,12 +3371,11 @@ char *pmc_compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struc
 		  struct pkt_nat_primitives *pnat, struct pkt_mpls_primitives *pmpls,
 		  struct pkt_tunnel_primitives *ptun, char *pcust, struct pkt_vlen_hdr_primitives *pvlen,
 		  pm_counter_t bytes_counter, pm_counter_t packet_counter, pm_counter_t flow_counter,
-		  u_int32_t tcp_flags, struct timeval *basetime)
+		  u_int32_t tcp_flags, struct timeval *basetime, int tstamp_since_epoch, int tstamp_utc)
 {
   char src_mac[18], dst_mac[18], src_host[INET6_ADDRSTRLEN], dst_host[INET6_ADDRSTRLEN], ip_address[INET6_ADDRSTRLEN];
   char rd_str[SRVBUFLEN], misc_str[SRVBUFLEN], *as_path, *bgp_comm, empty_string[] = "", *tmpbuf;
-  char tstamp_str[SRVBUFLEN], unknown_pkt_len_distrib[] = "not_recv", *label_ptr;
-  int ret = FALSE;
+  char tstamp_str[SRVBUFLEN], ndpi_class[SUPERSHORTBUFLEN], *label_ptr;
   json_t *obj = json_object();
   
   if (wtc & COUNT_TAG) json_object_set_new_nocheck(obj, "tag", json_integer((json_int_t)pbase->tag));
@@ -3439,6 +3391,16 @@ char *pmc_compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struc
 
   if (wtc & COUNT_CLASS)
     json_object_set_new_nocheck(obj, "class", json_string((pbase->class && class_table[(pbase->class)-1].id) ? class_table[(pbase->class)-1].protocol : "unknown"));
+
+#if defined (WITH_NDPI)
+  if (wtc_2 & COUNT_NDPI_CLASS) {
+    snprintf(ndpi_class, SUPERSHORTBUFLEN, "%s/%s",
+		pmc_ndpi_get_proto_name(pbase->ndpi_class.master_protocol),
+		pmc_ndpi_get_proto_name(pbase->ndpi_class.app_protocol));
+
+    json_object_set_new_nocheck(obj, "class", json_string(ndpi_class));
+  }
+#endif
 
 #if defined (HAVE_L2)
   if (wtc & COUNT_SRC_MAC) {
@@ -3485,18 +3447,10 @@ char *pmc_compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struc
       if (bgp_comm) *bgp_comm = '_';
     }
 
-    if (!tmp_comms_same_field) {
-      if (strlen(plbgp->ext_comms))
-	json_object_set_new_nocheck(obj, "ecomms", json_string(plbgp->ext_comms));
-      else
-	json_object_set_new_nocheck(obj, "ecomms", json_string(empty_string));
-    }
-    else {
-      if (strlen(plbgp->ext_comms))
-	json_object_set_new_nocheck(obj, "comms", json_string(plbgp->ext_comms));
-      else
-	json_object_set_new_nocheck(obj, "comms", json_string(empty_string));
-    }
+    if (strlen(plbgp->ext_comms))
+      json_object_set_new_nocheck(obj, "ecomms", json_string(plbgp->ext_comms));
+    else
+      json_object_set_new_nocheck(obj, "ecomms", json_string(empty_string));
   }
 
   if (wtc_2 & COUNT_LRG_COMM) {
@@ -3562,18 +3516,10 @@ char *pmc_compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struc
       if (bgp_comm) *bgp_comm = '_';
     }
 
-    if (!tmp_comms_same_field) {
-      if (strlen(plbgp->src_ext_comms))
-	json_object_set_new_nocheck(obj, "src_ecomms", json_string(plbgp->src_ext_comms));
-      else
-	json_object_set_new_nocheck(obj, "src_ecomms", json_string(empty_string));
-    }
-    else {
-      if (strlen(plbgp->src_ext_comms))
-	json_object_set_new_nocheck(obj, "src_comms", json_string(plbgp->src_ext_comms));
-      else
-	json_object_set_new_nocheck(obj, "src_comms", json_string(empty_string));
-    }
+    if (strlen(plbgp->src_ext_comms))
+      json_object_set_new_nocheck(obj, "src_ecomms", json_string(plbgp->src_ext_comms));
+    else
+      json_object_set_new_nocheck(obj, "src_ecomms", json_string(empty_string));
   }
 
   if (wtc_2 & COUNT_SRC_LRG_COMM) {
@@ -3621,8 +3567,7 @@ char *pmc_compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struc
 
   if (wtc & COUNT_SRC_NET) {
     addr_to_str(src_host, &pbase->src_net);
-    if (!tmp_net_own_field) json_object_set_new_nocheck(obj, "ip_src", json_string(src_host));
-    else json_object_set_new_nocheck(obj, "net_src", json_string(src_host));
+    json_object_set_new_nocheck(obj, "net_src", json_string(src_host));
   }
 
   if (wtc & COUNT_DST_HOST) {
@@ -3632,8 +3577,7 @@ char *pmc_compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struc
 
   if (wtc & COUNT_DST_NET) {
     addr_to_str(dst_host, &pbase->dst_net);
-    if (!tmp_net_own_field) json_object_set_new_nocheck(obj, "ip_dst", json_string(dst_host));
-    else json_object_set_new_nocheck(obj, "net_dst", json_string(dst_host));
+    json_object_set_new_nocheck(obj, "net_dst", json_string(dst_host));
   }
 
   if (wtc & COUNT_SRC_NMASK) json_object_set_new_nocheck(obj, "mask_src", json_integer((json_int_t)pbase->src_nmask));
@@ -3687,6 +3631,16 @@ char *pmc_compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struc
     else
       json_object_set_new_nocheck(obj, "pocode_ip_dst", json_string(empty_string));
   }
+
+  if (wtc_2 & COUNT_SRC_HOST_COORDS) {
+    json_object_set_new_nocheck(obj, "lat_ip_src", json_real(pbase->src_ip_lat));
+    json_object_set_new_nocheck(obj, "lat_ip_src", json_real(pbase->src_ip_lon));
+  }
+
+  if (wtc_2 & COUNT_DST_HOST_COORDS) {
+    json_object_set_new_nocheck(obj, "lat_ip_dst", json_real(pbase->dst_ip_lat));
+    json_object_set_new_nocheck(obj, "lat_ip_dst", json_real(pbase->dst_ip_lon));
+  }
 #endif
 
   if (wtc & COUNT_TCPFLAGS) {
@@ -3702,17 +3656,7 @@ char *pmc_compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struc
   if (wtc & COUNT_IP_TOS) json_object_set_new_nocheck(obj, "tos", json_integer((json_int_t)pbase->tos));
 
   if (wtc_2 & COUNT_SAMPLING_RATE) json_object_set_new_nocheck(obj, "sampling_rate", json_integer((json_int_t)pbase->sampling_rate));
-
-  if (wtc_2 & COUNT_PKT_LEN_DISTRIB) {
-    char *pkt_len_distrib_table_ptr = NULL;
-
-    if (pkt_len_distrib_table[0])
-      pkt_len_distrib_table_ptr = pkt_len_distrib_table[pbase->pkt_len_distrib];
-    else
-      pkt_len_distrib_table_ptr = unknown_pkt_len_distrib;
-
-    json_object_set_new_nocheck(obj, "pkt_len_distrib", json_string(pkt_len_distrib_table_ptr));
-  }
+  if (wtc_2 & COUNT_SAMPLING_DIRECTION) json_object_set_new_nocheck(obj, "sampling_direction", json_string(pbase->sampling_direction));
 
   if (wtc_2 & COUNT_POST_NAT_SRC_HOST) {
     addr_to_str(src_host, &pnat->post_nat_src_ip);
@@ -3754,23 +3698,25 @@ char *pmc_compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struc
   if (wtc_2 & COUNT_TUNNEL_IP_TOS) json_object_set_new_nocheck(obj, "tunnel_tos", json_integer((json_int_t)ptun->tunnel_tos));
 
   if (wtc_2 & COUNT_TIMESTAMP_START) {
-    pmc_compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_start, TRUE, want_tstamp_since_epoch);
+    pmc_compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_start, TRUE, tstamp_since_epoch, tstamp_utc);
     json_object_set_new_nocheck(obj, "timestamp_start", json_string(tstamp_str));
   }
 
   if (wtc_2 & COUNT_TIMESTAMP_END) {
-    pmc_compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_end, TRUE, want_tstamp_since_epoch);
+    pmc_compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_end, TRUE, tstamp_since_epoch, tstamp_utc);
     json_object_set_new_nocheck(obj, "timestamp_end", json_string(tstamp_str));
   }
 
   if (wtc_2 & COUNT_TIMESTAMP_ARRIVAL) {
-    pmc_compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_arrival, TRUE, want_tstamp_since_epoch);
+    pmc_compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_arrival, TRUE, tstamp_since_epoch, tstamp_utc);
     json_object_set_new_nocheck(obj, "timestamp_arrival", json_string(tstamp_str));
   }
 
   if (wtc_2 & COUNT_EXPORT_PROTO_SEQNO) json_object_set_new_nocheck(obj, "export_proto_seqno", json_integer((json_int_t)pbase->export_proto_seqno));
 
   if (wtc_2 & COUNT_EXPORT_PROTO_VERSION) json_object_set_new_nocheck(obj, "export_proto_version", json_integer((json_int_t)pbase->export_proto_version));
+
+  if (wtc_2 & COUNT_EXPORT_PROTO_SYSID) json_object_set_new_nocheck(obj, "export_proto_sysid", json_integer((json_int_t)pbase->export_proto_sysid));
 
   /* all custom primitives printed here */
   {
@@ -3812,29 +3758,54 @@ char *pmc_compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struc
 		  struct pkt_nat_primitives *pnat, struct pkt_mpls_primitives *pmpls,
 		  struct pkt_tunnel_primitives *ptun, char *pcust, struct pkt_vlen_hdr_primitives *pvlen,
 		  pm_counter_t bytes_counter, pm_counter_t packet_counter, pm_counter_t flow_counter,
-		  u_int32_t tcp_flags, struct timeval *basetime)
+		  u_int32_t tcp_flags, struct timeval *basetime, int tstamp_since_epoch, int tstamp_utc)
 {
   return NULL;
 }
 #endif
 
-void pmc_compose_timestamp(char *buf, int buflen, struct timeval *tv, int usec, int since_epoch)
+void pmc_append_rfc3339_timezone(char *s, int slen, const struct tm *nowtm)
 {
-  char tmpbuf[SRVBUFLEN];
+  int len = strlen(s), max = (slen - len);
+  char buf[8], zulu[] = "Z";
+
+  strftime(buf, 8, "%z", nowtm);
+
+  if (!strcmp(buf, "+0000")) {
+    if (max) strcat(s, zulu);
+  }
+  else {
+    if (max >= 7) {
+      s[len] = buf[0]; len++;
+      s[len] = buf[1]; len++;
+      s[len] = buf[2]; len++;
+      s[len] = ':'; len++;
+      s[len] = buf[3]; len++;
+      s[len] = buf[4]; len++;
+      s[len] = '\0';
+    }
+  }
+}
+
+void pmc_compose_timestamp(char *buf, int buflen, struct timeval *tv, int usec, int tstamp_since_epoch, int tstamp_utc)
+{
+  int slen;
   time_t time1;
   struct tm *time2;
 
-  if (since_epoch) {
-    if (usec) snprintf(buf, buflen, "%u.%u", tv->tv_sec, tv->tv_usec);
-    else snprintf(buf, buflen, "%u.0", tv->tv_sec);
+  if (tstamp_since_epoch) {
+    if (usec) snprintf(buf, buflen, "%ld.%.6ld", tv->tv_sec, tv->tv_usec);
+    else snprintf(buf, buflen, "%ld", tv->tv_sec);
   }
   else {
     time1 = tv->tv_sec;
-    time2 = localtime(&time1);
-    strftime(tmpbuf, SRVBUFLEN, "%Y-%m-%d %H:%M:%S", time2);
+    if (!tstamp_utc) time2 = localtime(&time1);
+    else time2 = gmtime(&time1);
 
-    if (usec) snprintf(buf, buflen, "%s.%u", tmpbuf, tv->tv_usec);
-    else snprintf(buf, buflen, "%s.0", tmpbuf);
+    slen = strftime(buf, buflen, "%Y-%m-%dT%H:%M:%S", time2);
+
+    if (usec) snprintf((buf + slen), (buflen - slen), ".%.6ld", tv->tv_usec);
+    pmc_append_rfc3339_timezone(buf, buflen, time2);
   }
 }
 
@@ -4040,4 +4011,10 @@ void pmc_lower_string(char *string)
     string[i] = tolower(string[i]);
     i++;
   }
+}
+
+char *pmc_ndpi_get_proto_name(u_int16_t proto_id)
+{
+  if (!proto_id || proto_id > ct_idx || !class_table[proto_id].id) return class_table[0].protocol;
+  else return class_table[proto_id].protocol;
 }

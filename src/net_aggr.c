@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -159,8 +159,6 @@ void load_networks4(char *filename, struct networks_table *nt, struct networks_c
 #endif
 
 	  if (fields >= 2) {
-            char *endptr;
-
             delim = strchr(bufptr, ',');
             nh = bufptr;
             *delim = '\0';
@@ -431,7 +429,10 @@ void merge(char *filename, struct networks_table_entry *table, int start, int mi
   v1 = malloc(v1_n*s);
   v2 = malloc(v2_n*s);
 
-  if ((!v1) || (!v2)) Log(LOG_ERR, "ERROR ( %s/%s ): [%s] memory sold out.\n", config.name, config.type, filename); 
+  if ((!v1) || (!v2)) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): [%s] malloc() failed in merge().\n", config.name, config.type, filename); 
+    exit(1);
+  }
 
   for (i=0; i<v1_n; i++) memcpy(&v1[i], &table[start+i], s);
   for (i=0; i<v2_n; i++) memcpy(&v2[i], &table[middle+i], s);
@@ -746,6 +747,9 @@ void mask_src_ipaddr(struct networks_table *nt, struct networks_cache *nc, struc
 
   memset(maskbits, 0,sizeof(maskbits));
   mask = p->src_nmask;
+
+  if (config.networks_no_mask_if_zero && !mask) mask = 128;
+
   for (j = 0; j < 4 && mask >= 32; j++, mask -= 32) maskbits[j] = 0xffffffffU;
   if (j < 4 && mask) maskbits[j] = ~(0xffffffffU >> mask);
 
@@ -795,6 +799,9 @@ void mask_dst_ipaddr(struct networks_table *nt, struct networks_cache *nc, struc
 
   memset(maskbits, 0,sizeof(maskbits));
   mask = p->dst_nmask; 
+
+  if (config.networks_no_mask_if_zero && !mask) mask = 128;
+
   for (j = 0; j < 4 && mask >= 32; j++, mask -= 32) maskbits[j] = 0xffffffffU;
   if (j < 4 && mask) maskbits[j] = ~(0xffffffffU >> mask);
 
@@ -1125,7 +1132,12 @@ void search_src_as(struct networks_table *nt, struct networks_cache *nc, struct 
 
   if (!(config.nfacctd_as & NF_AS_FALLBACK)) p->src_as = as;
   else {
-    if (mask >= p->src_nmask) p->src_as = as;
+    if (config.networks_file_no_lpm) {
+      if (mask) p->src_as = as;
+    }
+    else {
+      if (mask >= p->src_nmask) p->src_as = as;
+    }
   }
 }
 
@@ -1166,7 +1178,12 @@ void search_dst_as(struct networks_table *nt, struct networks_cache *nc, struct 
 
   if (!(config.nfacctd_as & NF_AS_FALLBACK)) p->dst_as = as;
   else {
-    if (mask >= p->dst_nmask) p->dst_as = as;
+    if (config.networks_file_no_lpm) {
+      if (mask) p->dst_as = as;
+    }
+    else {
+      if (mask >= p->dst_nmask) p->dst_as = as;
+    }
   }
 }
 
@@ -1209,8 +1226,13 @@ void search_peer_src_as(struct networks_table *nt, struct networks_cache *nc, st
     if (pbgp) pbgp->peer_src_as = as;
   }
   else {
-    if (mask >= p->src_nmask) {
-      if (pbgp) pbgp->peer_src_as = as;
+    if (config.networks_file_no_lpm) {
+      if (mask && pbgp) pbgp->peer_src_as = as;
+    }
+    else {
+      if (mask >= p->src_nmask) {
+        if (pbgp) pbgp->peer_src_as = as;
+      }
     }
   }
 }
@@ -1254,8 +1276,13 @@ void search_peer_dst_as(struct networks_table *nt, struct networks_cache *nc, st
     if (pbgp) pbgp->peer_dst_as = as;
   }
   else {
-    if (mask >= p->dst_nmask) {
-      if (pbgp) pbgp->peer_dst_as = as;
+    if (config.networks_file_no_lpm) {
+      if (mask && pbgp) pbgp->peer_dst_as = as;
+    }
+    else {
+      if (mask >= p->dst_nmask) {
+        if (pbgp) pbgp->peer_dst_as = as;
+      }
     }
   }
 }
@@ -1300,8 +1327,13 @@ void search_peer_dst_ip(struct networks_table *nt, struct networks_cache *nc, st
       memcpy(&pbgp->peer_dst_ip, &nh, sizeof(struct host_addr));
     }
     else {
-      if (mask >= p->dst_nmask) {
-        memcpy(&pbgp->peer_dst_ip, &nh, sizeof(struct host_addr));
+      if (config.networks_file_no_lpm) {
+        if (mask && pbgp) memcpy(&pbgp->peer_dst_ip, &nh, sizeof(struct host_addr));
+      }
+      else {
+        if (mask >= p->dst_nmask) {
+          if (pbgp) memcpy(&pbgp->peer_dst_ip, &nh, sizeof(struct host_addr));
+	}
       }
     }
   }
@@ -1341,7 +1373,7 @@ as_t search_pretag_src_as(struct networks_table *nt, struct networks_cache *nc, 
 
   if (pptrs->l3_proto == ETHERTYPE_IP) { 
     addr.family = AF_INET;
-    addr.address.ipv4.s_addr = ((struct my_iphdr *) pptrs->iph_ptr)->ip_src.s_addr;
+    addr.address.ipv4.s_addr = ((struct pm_iphdr *) pptrs->iph_ptr)->ip_src.s_addr;
     res = binsearch(nt, nc, &addr);
     if (!res) return 0;
     else return res->as;
@@ -1369,7 +1401,7 @@ as_t search_pretag_dst_as(struct networks_table *nt, struct networks_cache *nc, 
 
   if (pptrs->l3_proto == ETHERTYPE_IP) {
     addr.family = AF_INET;
-    addr.address.ipv4.s_addr = ((struct my_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr;
+    addr.address.ipv4.s_addr = ((struct pm_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr;
     res = binsearch(nt, nc, &addr);
     if (!res) return 0;
     else return res->as;
@@ -1499,8 +1531,6 @@ void load_networks6(char *filename, struct networks_table *nt, struct networks_c
 #endif
 
           if (fields >= 2) {
-            char *endptr;
-
             delim = strchr(bufptr, ',');
             nh = bufptr;
             *delim = '\0';
@@ -1676,7 +1706,6 @@ void load_networks6(char *filename, struct networks_table *nt, struct networks_c
       index = 0;
       while (!fake_row && index < tmpt->num6) {
         if (config.debug) {
-          int j;
           struct host_addr net_bin;
           char nh_string[INET6_ADDRSTRLEN];
           char net_string[INET6_ADDRSTRLEN];
@@ -1891,7 +1920,6 @@ void networks_cache_insert6(struct networks_cache *nc, void *key, struct network
   struct networks6_cache_entry *ptr;
   unsigned int hash;
   u_int32_t *keyptr = key;
-  int chunk;
 
   hash = networks_cache_hash6(key); 
   ptr = &nc->cache6[hash % nc->num6];

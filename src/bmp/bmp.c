@@ -39,7 +39,6 @@
 thread_pool_t *bmp_pool;
 
 /* Functions */
-#if defined ENABLE_THREADS
 void nfacctd_bmp_wrapper()
 {
   /* initialize variables */
@@ -54,7 +53,6 @@ void nfacctd_bmp_wrapper()
   /* giving a kick to the BMP thread */
   send_to_pool(bmp_pool, skinny_bmp_daemon, NULL);
 }
-#endif
 
 void skinny_bmp_daemon()
 {
@@ -87,6 +85,7 @@ void skinny_bmp_daemon()
 
 
   /* initial cleanups */
+  reload_map_bmp_thread = FALSE;
   reload_log_bmp_thread = FALSE;
   memset(&server, 0, sizeof(server));
   memset(&client, 0, sizeof(client));
@@ -230,8 +229,13 @@ void skinny_bmp_daemon()
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for IP_TOS (errno: %d).\n", config.name, bmp_misc_db->log_str, errno);
   }
 
+#if (defined LINUX) && (defined HAVE_SO_REUSEPORT)
+  rc = setsockopt(config.bmp_sock, SOL_SOCKET, SO_REUSEADDR|SO_REUSEPORT, (char *)&yes, sizeof(yes));
+  if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEADDR|SO_REUSEPORT (errno: %d).\n", config.name, bmp_misc_db->log_str, errno);
+#else
   rc = setsockopt(config.bmp_sock, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, sizeof(yes));
   if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEADDR (errno: %d).\n", config.name, bmp_misc_db->log_str, errno);
+#endif
 
 #if (defined ENABLE_IPV6) && (defined IPV6_BINDV6ONLY)
   rc = setsockopt(config.bmp_sock, IPPROTO_IPV6, IPV6_BINDV6ONLY, (char *) &no, (socklen_t) sizeof(no));
@@ -380,6 +384,12 @@ void skinny_bmp_daemon()
     select_num = select(select_fd, &read_descs, NULL, NULL, drt_ptr);
     if (select_num < 0) goto select_again;
 
+    if (reload_map_bmp_thread) {
+      if (config.nfacctd_bmp_allow_file) load_allow_file(config.nfacctd_bmp_allow_file, &allow);
+
+      reload_map_bmp_thread = FALSE;
+    }
+
     if (reload_log_bmp_thread) {
       for (peers_idx = 0; peers_idx < config.nfacctd_bmp_max_peers; peers_idx++) {
         if (bmp_misc_db->peers_log[peers_idx].fd) {
@@ -395,16 +405,28 @@ void skinny_bmp_daemon()
 
     if (bmp_misc_db->msglog_backend_methods || bmp_misc_db->dump_backend_methods) {
       gettimeofday(&bmp_misc_db->log_tstamp, NULL);
-      compose_timestamp(bmp_misc_db->log_tstamp_str, SRVBUFLEN, &bmp_misc_db->log_tstamp, TRUE, config.timestamps_since_epoch);
+      compose_timestamp(bmp_misc_db->log_tstamp_str, SRVBUFLEN, &bmp_misc_db->log_tstamp, TRUE,
+			config.timestamps_since_epoch, config.timestamps_rfc3339, config.timestamps_utc);
+
+      /* if dumping, let's reset log sequence at the next dump event */
+      if (!bgp_misc_db->dump_backend_methods) {
+	if (bgp_peer_log_seq_has_ro_bit(&bgp_misc_db->log_seq))
+	  bgp_peer_log_seq_init(&bgp_misc_db->log_seq);
+      }
 
       if (bmp_misc_db->dump_backend_methods) {
         while (bmp_misc_db->log_tstamp.tv_sec > dump_refresh_deadline) {
           bmp_misc_db->dump.tstamp.tv_sec = dump_refresh_deadline;
           bmp_misc_db->dump.tstamp.tv_usec = 0;
-          compose_timestamp(bmp_misc_db->dump.tstamp_str, SRVBUFLEN, &bmp_misc_db->dump.tstamp, FALSE, config.timestamps_since_epoch);
+          compose_timestamp(bmp_misc_db->dump.tstamp_str, SRVBUFLEN, &bmp_misc_db->dump.tstamp, FALSE,
+			    config.timestamps_since_epoch, config.timestamps_rfc3339, config.timestamps_utc);
 	  bmp_misc_db->dump.period = config.bmp_dump_refresh_time;
 
+	  if (bgp_peer_log_seq_has_ro_bit(&bgp_misc_db->log_seq))
+	    bgp_peer_log_seq_init(&bgp_misc_db->log_seq);
+
           bmp_handle_dump_event();
+
           dump_refresh_deadline += config.bmp_dump_refresh_time;
         }
       }
@@ -500,8 +522,6 @@ void skinny_bmp_daemon()
       }
 
       if (!peer) {
-        int fd;
-
         /* We briefly accept the new connection to be able to drop it */
         Log(LOG_ERR, "ERROR ( %s/%s ): Insufficient number of BMP peers has been configured by 'bmp_daemon_max_peers' (%d).\n",
                         config.name, bmp_misc_db->log_str, config.nfacctd_bmp_max_peers);

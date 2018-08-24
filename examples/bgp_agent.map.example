@@ -4,13 +4,11 @@
 ! File syntax is key-based. Read full syntax rules in 'pretag.map.example' in
 ! this same directory.
 !
-! All daemons valid keys: id, ip, filter.
-!
 ! list of currently supported keys follow:
 !
-! 'bgp_ip'		LOOKUP: IPv4/IPv6 session address or Router ID of the
+! 'bgp_ip'		SET: IPv4/IPv6 session address or Router ID of the
 !			BGP peer.
-! 'bgp_port'		LOOKUP: TCP port used by the BGP peer to establish the
+! 'bgp_port'		SET: TCP port used by the BGP peer to establish the
 !			session, useful in NAT traversal scenarios. 
 ! 'ip'                  MATCH: in nfacctd this is compared against the source
 !                       IP address of the device originating NetFlow packets;
@@ -27,7 +25,7 @@
 !			this is meant to discriminate among IPv4 ('ip', 'vlan
 !			and ip') and IPv6 ('ip6', 'vlan and ip6') traffic. 
 !
-! A couple of straightforward examples follow.  
+! Examples:
 !
 bgp_ip=1.2.3.4		ip=2.3.4.5
 !
@@ -50,4 +48,4 @@ bgp_ip=1.2.3.4		ip=2.3.4.5
 ! BGP agent, the peers will need to have a different Router ID configured:
 !
 ! bgp_ip=4.0.0.1	ip=0.0.0.0/0	filter='ip  or (vlan and ip)'
-! bgp_ip=6.0.0.1	ip=0.0.0.0/0	filter='ip6 or (vlan and ip6)'
+! bgp_ip=6::1		ip=0.0.0.0/0	filter='ip6 or (vlan and ip6)'

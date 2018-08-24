@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -40,7 +40,7 @@
 void load_plugins(struct plugin_requests *req)
 {
   u_int64_t buf_pipe_ratio_sz = 0, pipe_idx = 0;
-  int snd_buflen = 0, rcv_buflen = 0, socklen = 0, target_buflen = 0, ret;
+  int snd_buflen = 0, rcv_buflen = 0, socklen = 0, target_buflen = 0;
 
   int nfprobe_id = 0, min_sz = 0, extra_sz = 0;
   struct plugins_list_entry *list = plugins_list;
@@ -106,7 +106,7 @@ void load_plugins(struct plugin_requests *req)
       while (list->cfg.buffer_size % 4 != 0) list->cfg.buffer_size--;
 #endif
 
-      if (!list->cfg.pipe_amqp) {
+      if (!list->cfg.pipe_zmq) {
         /* creating communication channel */
         socketpair(AF_UNIX, SOCK_DGRAM, 0, list->pipe);
 
@@ -240,6 +240,18 @@ void load_plugins(struct plugin_requests *req)
 	list->cfg.nfprobe_id = nfprobe_id;
 	nfprobe_id++;
       }
+
+      /* ZMQ inits, if required */
+#ifdef WITH_ZMQ
+      if (list->cfg.pipe_zmq) {
+	char log_id[SHORTBUFLEN];
+
+	p_zmq_plugin_pipe_init_core(&chptr->zmq_host, list->id);
+	snprintf(log_id, sizeof(log_id), "%s/%s", list->name, list->type.string);
+	p_zmq_set_log_id(&chptr->zmq_host, log_id);
+	p_zmq_pub_setup(&chptr->zmq_host);
+      }
+#endif
       
       switch (list->pid = fork()) {  
       case -1: /* Something went wrong */
@@ -261,11 +273,11 @@ void load_plugins(struct plugin_requests *req)
 
 	close(config.sock);
 	close(config.bgp_sock);
-	if (!list->cfg.pipe_amqp) close(list->pipe[1]);
+	if (!list->cfg.pipe_zmq) close(list->pipe[1]);
 	(*list->type.func)(list->pipe[0], &list->cfg, chptr);
 	exit(0);
       default: /* Parent */
-	if (!list->cfg.pipe_amqp) {
+	if (!list->cfg.pipe_zmq) {
 	  close(list->pipe[0]);
 	  setnonblocking(list->pipe[1]);
 	}
@@ -324,91 +336,6 @@ void load_plugins(struct plugin_requests *req)
       list = list->next;
     }
   }
-
-  /* AMQP handling, if required */
-#ifdef WITH_RABBITMQ
-  {
-    int ret, index, index2;
-
-    for (index = 0; channels_list[index].aggregation || channels_list[index].aggregation_2; index++) {
-      chptr = &channels_list[index];
-      list = chptr->plugin;
-
-      if (list->cfg.pipe_amqp) {
-        plugin_pipe_amqp_init_host(&chptr->amqp_host, list);
-        ret = p_amqp_connect_to_publish(&chptr->amqp_host);
-        if (ret) plugin_pipe_amqp_sleeper_start(chptr);
-      }
-
-      /* reset core process pipe AMQP routing key */
-      if (list->type.id == PLUGIN_ID_CORE) list->cfg.pipe_amqp_routing_key = NULL;
-    }
-
-    for (index = 0; channels_list[index].aggregation || channels_list[index].aggregation_2; index++) {
-      struct plugins_list_entry *list2 = plugins_list;
-      struct channels_list_entry *chptr2 = NULL;
-
-      chptr = &channels_list[index];
-      list = chptr->plugin;
-
-      for (index2 = index; channels_list[index2].aggregation || channels_list[index2].aggregation_2; index2++) {
-        chptr2 = &channels_list[index2];
-        list2 = chptr2->plugin;
-
-	if (index2 > index && list->cfg.pipe_amqp_exchange && list->cfg.pipe_amqp_routing_key) {
-	  if (!strcmp(list->cfg.pipe_amqp_exchange, list2->cfg.pipe_amqp_exchange) &&
-	      !strcmp(list->cfg.pipe_amqp_routing_key, list2->cfg.pipe_amqp_routing_key)) {
-	    Log(LOG_ERR, "ERROR ( %s/%s ): Duplicated plugin_pipe_amqp_exchange, plugin_pipe_amqp_routing_key: %s, %s\nExiting.\n",
-		list->name, list->type.string, list->cfg.pipe_amqp_exchange, list->cfg.pipe_amqp_routing_key);
-	    exit(1);
-	  }
-        }
-      }
-    }
-  }
-#endif
-
-  /* Kafka handling, if required */
-#ifdef WITH_KAFKA
-  {
-    int ret, index, index2;
-
-    for (index = 0; channels_list[index].aggregation || channels_list[index].aggregation_2; index++) {
-      chptr = &channels_list[index];
-      list = chptr->plugin;
-
-      /* XXX: no sleeper thread, trusting librdkafka */
-      if (list->cfg.pipe_kafka) ret = plugin_pipe_kafka_init_host(&chptr->kafka_host, list, TRUE);
-
-      /* reset core process pipe Kafka topic */
-      if (list->type.id == PLUGIN_ID_CORE) list->cfg.pipe_kafka_topic = NULL;
-    }
-
-    for (index = 0; channels_list[index].aggregation || channels_list[index].aggregation_2; index++) {
-      struct plugins_list_entry *list2 = plugins_list;
-      struct channels_list_entry *chptr2 = NULL;
-
-      chptr = &channels_list[index];
-      list = chptr->plugin;
-
-      for (index2 = index; channels_list[index2].aggregation || channels_list[index2].aggregation_2; index2++) {
-        chptr2 = &channels_list[index2];
-        list2 = chptr2->plugin;
-
-        if (index2 > index && list->cfg.pipe_kafka_broker_host && list->cfg.pipe_kafka_topic) {
-          if (!strcmp(list->cfg.pipe_kafka_broker_host, list2->cfg.pipe_kafka_broker_host) &&
-              list->cfg.pipe_kafka_broker_port == list2->cfg.pipe_kafka_broker_port &&
-              !strcmp(list->cfg.pipe_kafka_topic, list2->cfg.pipe_kafka_topic) /* && XXX: topic partition too? */ ) {
-            Log(LOG_ERR, "ERROR ( %s/%s ): Duplicated plugin_pipe_kafka_broker_*, plugin_pipe_kafka_topic: %s, %s, %s\nExiting.\n",
-                list->name, list->type.string, list->cfg.pipe_kafka_broker_host, list->cfg.pipe_kafka_broker_port,
-		list->cfg.pipe_kafka_topic);
-            exit(1);
-          }
-        }
-      }
-    }
-  }
-#endif
 }
 
 void exec_plugins(struct packet_ptrs *pptrs, struct plugin_requests *req) 
@@ -440,8 +367,12 @@ void exec_plugins(struct packet_ptrs *pptrs, struct plugin_requests *req)
 
     if (p->cfg.pre_tag_map && find_id_func) {
       if (p->cfg.type_id == PLUGIN_ID_TEE) {
-	if ((req->ptm_c.exec_ptm_res && !p->cfg.ptm_complex) ||
-	    ((!req->ptm_c.exec_ptm_res && p->cfg.ptm_complex) && !p->cfg.tee_dissect_send_full_pkt)) 
+	/*
+	   replicate and compute tagging if:
+	   - a dissected flow hits a complex pre_tag_map or
+	   - a non-dissected (full) packet hits a simple pre_tag_map
+	*/
+	if ((req->ptm_c.exec_ptm_res && !p->cfg.ptm_complex) || (!req->ptm_c.exec_ptm_res && p->cfg.ptm_complex))
 	  continue;
       }
 
@@ -455,19 +386,28 @@ void exec_plugins(struct packet_ptrs *pptrs, struct plugin_requests *req)
         pptrs->have_label = saved_have_label;
       }
       else {
-        find_id_func(&p->cfg.ptm, pptrs, &pptrs->tag, &pptrs->tag2);
+	if (p->cfg.type_id == PLUGIN_ID_TEE && req->ptm_c.exec_ptm_res && pptrs->tee_dissect_bcast) /* noop */;
+        else {
+	  find_id_func(&p->cfg.ptm, pptrs, &pptrs->tag, &pptrs->tag2);
 
-	if (p->cfg.ptm_global) {
-	  saved_tag = pptrs->tag;
-	  saved_tag2 = pptrs->tag2;
-	  pretag_copy_label(&saved_label, &pptrs->label);
+	  if (p->cfg.ptm_global) {
+	    saved_tag = pptrs->tag;
+	    saved_tag2 = pptrs->tag2;
+	    pretag_copy_label(&saved_label, &pptrs->label);
 
-	  saved_have_tag = pptrs->have_tag;
-	  saved_have_tag2 = pptrs->have_tag2;
-	  saved_have_label = pptrs->have_label;
+	    saved_have_tag = pptrs->have_tag;
+	    saved_have_tag2 = pptrs->have_tag2;
+	    saved_have_label = pptrs->have_label;
 
-          got_tags = TRUE;
+            got_tags = TRUE;
+	  }
         }
+      }
+    }
+    else {
+      if (p->cfg.type_id == PLUGIN_ID_TEE) {
+        /* stop dissected flows from being replicated in case of no pre_tag_map */
+        if (req->ptm_c.exec_ptm_res) continue;
       }
     }
 
@@ -530,50 +470,30 @@ reprocess:
 	((struct ch_buf_hdr *)channels_list[index].rg.ptr)->len = channels_list[index].bufptr;
 	((struct ch_buf_hdr *)channels_list[index].rg.ptr)->seq = channels_list[index].hdr.seq;
 	((struct ch_buf_hdr *)channels_list[index].rg.ptr)->num = channels_list[index].hdr.num;
-	((struct ch_buf_hdr *)channels_list[index].rg.ptr)->core_pid = channels_list[index].core_pid;
 
 	channels_list[index].status->last_buf_off = (u_int64_t)(channels_list[index].rg.ptr - channels_list[index].rg.base);
 
         if (config.debug_internal_msg) {
 	  struct plugins_list_entry *list = channels_list[index].plugin;
-	  Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer released cpid=%u len=%llu seq=%u num_entries=%u off=%llu\n",
-		list->name, list->type.string, channels_list[index].core_pid, channels_list[index].bufptr,
-		channels_list[index].hdr.seq, channels_list[index].hdr.num, channels_list[index].status->last_buf_off);
+	  Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer released len=%llu seq=%u num_entries=%u off=%llu\n",
+		list->name, list->type.string, channels_list[index].bufptr, channels_list[index].hdr.seq,
+		channels_list[index].hdr.num, channels_list[index].status->last_buf_off);
 	}
 
-	/* sending the buffer to the AMQP broker */
-	if (channels_list[index].plugin->cfg.pipe_amqp) {
-#ifdef WITH_RABBITMQ
+	/* sending buffer to connected ZMQ subscriber(s) */
+	if (channels_list[index].plugin->cfg.pipe_zmq) {
+#ifdef WITH_ZMQ
           struct channels_list_entry *chptr = &channels_list[index];
 
-          plugin_pipe_amqp_sleeper_stop(chptr);
-	  if (!chptr->amqp_host_sleep) ret = p_amqp_publish_binary(&chptr->amqp_host, chptr->rg.ptr, chptr->bufsize);
-	  else ret = FALSE;
-          if (ret) plugin_pipe_amqp_sleeper_start(chptr);
-#endif
-	}
-	/* sending the buffer to the Kafka broker */
-	else if (channels_list[index].plugin->cfg.pipe_kafka) {
-#ifdef WITH_KAFKA
-          struct channels_list_entry *chptr = &channels_list[index];
-
-	  /* XXX: no sleeper thread, trusting librdkafka */
-	  ret = p_kafka_produce_data(&chptr->kafka_host, chptr->rg.ptr, chptr->bufsize);
+	  ret = p_zmq_topic_send(&chptr->zmq_host, chptr->rg.ptr, chptr->bufsize);
 #endif
 	}
 	else {
 	  if (channels_list[index].status->wakeup) {
-	    channels_list[index].status->backlog++;
-	  
-	    if (channels_list[index].status->backlog >
-		((channels_list[index].plugin->cfg.pipe_size/channels_list[index].plugin->cfg.buffer_size)
-		*channels_list[index].plugin->cfg.pipe_backlog)/100) {
-	      channels_list[index].status->wakeup = channels_list[index].request;
-              if (write(channels_list[index].pipe, &channels_list[index].rg.ptr, CharPtrSz) != CharPtrSz) {
-	        struct plugins_list_entry *list = channels_list[index].plugin;
-	        Log(LOG_WARNING, "WARN ( %s/%s ): Failed during write: %s\n", list->name, list->type.string, strerror(errno));
-	      }
-	      channels_list[index].status->backlog = 0;
+	    channels_list[index].status->wakeup = channels_list[index].request;
+	    if (write(channels_list[index].pipe, &channels_list[index].rg.ptr, CharPtrSz) != CharPtrSz) {
+	      struct plugins_list_entry *list = channels_list[index].plugin;
+	      Log(LOG_WARNING, "WARN ( %s/%s ): Failed during write: %s\n", list->name, list->type.string, strerror(errno));
 	    }
 	  }
 	}
@@ -586,7 +506,6 @@ reprocess:
 	/* let's protect the buffer we are going to write */
         ((struct ch_buf_hdr *)channels_list[index].rg.ptr)->seq = -1;
         ((struct ch_buf_hdr *)channels_list[index].rg.ptr)->num = 0;
-        ((struct ch_buf_hdr *)channels_list[index].rg.ptr)->core_pid = 0;
 
         /* rewind pointer */
         channels_list[index].bufptr = channels_list[index].buf;
@@ -639,7 +558,7 @@ reprocess:
 struct channels_list_entry *insert_pipe_channel(int plugin_type, struct configuration *cfg, int pipe)
 {
   struct channels_list_entry *chptr; 
-  int index = 0, x;  
+  int index = 0;  
 
   while (index < MAX_N_PLUGINS) {
     chptr = &channels_list[index]; 
@@ -885,16 +804,10 @@ void fill_pipe_buffer()
 
     ((struct ch_buf_hdr *)chptr->rg.ptr)->seq = chptr->hdr.seq;
     ((struct ch_buf_hdr *)chptr->rg.ptr)->num = chptr->hdr.num;
-    ((struct ch_buf_hdr *)chptr->rg.ptr)->core_pid = chptr->core_pid;
 
-    if (chptr->plugin->cfg.pipe_amqp) {
-#ifdef WITH_RABBITMQ
-      p_amqp_publish_binary(&chptr->amqp_host, chptr->rg.ptr, chptr->bufsize);
-#endif
-    }
-    else if (chptr->plugin->cfg.pipe_kafka) {
-#ifdef WITH_KAFKA
-      p_kafka_produce_data(&chptr->kafka_host, chptr->rg.ptr, chptr->bufsize);
+    if (chptr->plugin->cfg.pipe_zmq) {
+#ifdef WITH_ZMQ
+      p_zmq_topic_send(&chptr->zmq_host, chptr->rg.ptr, chptr->bufsize);
 #endif
     }
     else {
@@ -970,7 +883,7 @@ void load_plugin_filters(int link_type)
 
 	dev_desc = pcap_open_dead(link_type, 128); /* 128 bytes should be long enough */
 
-	if (config.dev) pcap_lookupnet(config.dev, &localnet, &netmask, errbuf);
+	if (config.pcap_if) pcap_lookupnet(config.pcap_if, &localnet, &netmask, errbuf);
 
 	list->cfg.bpfp_a_table[idx] = malloc(sizeof(struct bpf_program));
 	while ( (count_token = extract_token(&list->cfg.a_filter, ',')) && idx < AGG_FILTER_ENTRIES ) {
@@ -1019,244 +932,39 @@ int pkt_extras_clean(void *pextras, int len)
   return PdataSz+PextrasSz;
 }
 
-void handle_plugin_pipe_dyn_strings(char *new, int newlen, char *old, struct plugins_list_entry *list)
+void plugin_pipe_zmq_compile_check()
 {
-  int oldlen, ptr_len;
-  char core_proc_name[] = "$core_proc_name", plugin_name[] = "$plugin_name";
-  char plugin_type[] = "$plugin_type";
-  char *ptr_start, *ptr_end;
-
-  if (!new || !old || !list) return;
-
-  oldlen = strlen(old);
-  if (oldlen <= newlen) strcpy(new, old);
-  else {
-    strncpy(new, old, newlen);
-    return;
-  }
-
-  replace_string(new, newlen, core_proc_name, list->cfg.proc_name);
-  replace_string(new, newlen, plugin_name, list->cfg.name);
-  replace_string(new, newlen, plugin_type, list->cfg.type);
-}
-
-char *plugin_pipe_compose_default_string(struct plugins_list_entry *list, char *default_rk)
-{
-  char *rk = NULL;
-
-  if (!list || !default_rk) return rk;
-
-  rk = malloc(SRVBUFLEN);
-  memset(rk, 0, SRVBUFLEN);
-
-  handle_plugin_pipe_dyn_strings(rk, SRVBUFLEN, default_rk, list);
-
-  return rk;
-}
-
-#ifdef WITH_RABBITMQ
-void plugin_pipe_amqp_init_host(struct p_amqp_host *amqp_host, struct plugins_list_entry *list)
-{
-  int ret;
-
-  if (amqp_host) {
-    char *amqp_rk = plugin_pipe_compose_default_string(list, "$core_proc_name-$plugin_name-$plugin_type");
-
-    p_amqp_init_host(amqp_host);
-
-    if (!list->cfg.pipe_amqp_user) list->cfg.pipe_amqp_user = rabbitmq_user;
-    if (!list->cfg.pipe_amqp_passwd) list->cfg.pipe_amqp_passwd = rabbitmq_pwd;
-    if (!list->cfg.pipe_amqp_exchange) list->cfg.pipe_amqp_exchange = default_amqp_exchange;
-    if (!list->cfg.pipe_amqp_host) list->cfg.pipe_amqp_host = default_amqp_host;
-    if (!list->cfg.pipe_amqp_vhost) list->cfg.pipe_amqp_vhost = default_amqp_vhost;
-    if (!list->cfg.pipe_amqp_routing_key) list->cfg.pipe_amqp_routing_key = amqp_rk;
-    if (!list->cfg.pipe_amqp_retry) list->cfg.pipe_amqp_retry = AMQP_DEFAULT_RETRY;
-
-    p_amqp_set_user(amqp_host, list->cfg.pipe_amqp_user);
-    p_amqp_set_passwd(amqp_host, list->cfg.pipe_amqp_passwd);
-    p_amqp_set_exchange(amqp_host, list->cfg.pipe_amqp_exchange);
-    p_amqp_set_host(amqp_host, list->cfg.pipe_amqp_host);
-    p_amqp_set_vhost(amqp_host, list->cfg.pipe_amqp_vhost);
-    p_amqp_set_routing_key(amqp_host, list->cfg.pipe_amqp_routing_key);
-    P_broker_timers_set_retry_interval(&amqp_host->btimers, list->cfg.pipe_amqp_retry);
-
-    p_amqp_set_frame_max(amqp_host, list->cfg.buffer_size);
-    p_amqp_set_exchange_type(amqp_host, default_amqp_exchange_type);
-    p_amqp_set_content_type_binary(amqp_host);
-  }
-}
-
-struct plugin_pipe_amqp_sleeper *plugin_pipe_amqp_sleeper_define(struct p_amqp_host *amqp_host, int *flag, struct plugins_list_entry *plugin)
-{
-  struct plugin_pipe_amqp_sleeper *pas;
-  int size = sizeof(struct plugin_pipe_amqp_sleeper);
-
-  if (!amqp_host || !flag) return NULL;
-
-  pas = malloc(size);
-
-  if (pas) {
-    memset(pas, 0, size);
-    pas->amqp_host = amqp_host;
-    pas->plugin = plugin;
-    pas->do_reconnect = flag;
-  }
-  else {
-    Log(LOG_ERR, "ERROR ( %s/%s ): plugin_pipe_amqp_sleeper_define(): malloc() failed\n", plugin->cfg.name, plugin->cfg.type);
-    return NULL;
-  }
-
-  return pas;
-}
-
-void plugin_pipe_amqp_sleeper_free(struct plugin_pipe_amqp_sleeper **pas)
-{
-  if (!pas || !(*pas)) return;
-
-  free((*pas));
-  (*pas) = NULL;
-}
-
-void plugin_pipe_amqp_sleeper_publish_func(struct plugin_pipe_amqp_sleeper *pas)
-{
-  int ret;
-
-  if (!pas || !pas->amqp_host || !pas->plugin || !pas->do_reconnect) return;
-
-sleep_again:
-  sleep(P_broker_timers_get_retry_interval(&pas->amqp_host->btimers));
-
-  plugin_pipe_amqp_init_host(pas->amqp_host, pas->plugin);
-  ret = p_amqp_connect_to_publish(pas->amqp_host);
-
-  if (ret) goto sleep_again;
-
-  (*pas->do_reconnect) = TRUE;
-
-  plugin_pipe_amqp_sleeper_free(&pas);
-}
-
-void plugin_pipe_amqp_sleeper_start(struct channels_list_entry *chptr)
-{
-#if defined ENABLE_THREADS
-  if (chptr && !chptr->amqp_host_sleep) {
-    struct plugin_pipe_amqp_sleeper *pas;
-
-    chptr->amqp_host_sleep = allocate_thread_pool(1);
-    assert(chptr->amqp_host_sleep);
-
-    pas = plugin_pipe_amqp_sleeper_define(&chptr->amqp_host, &chptr->amqp_host_reconnect, chptr->plugin);
-    if (pas) send_to_pool((thread_pool_t *) chptr->amqp_host_sleep, plugin_pipe_amqp_sleeper_publish_func, pas);
-    else Log(LOG_ERR, "ERROR ( %s/%s ): plugin_pipe_amqp_sleeper_start(): sleeper define failed\n", chptr->plugin->cfg.name, chptr->plugin->cfg.type);
-  }
-#endif
-}
-
-void plugin_pipe_amqp_sleeper_stop(struct channels_list_entry *chptr)
-{
-#if defined ENABLE_THREADS
-  if (chptr && chptr->amqp_host_reconnect) {
-    deallocate_thread_pool((thread_pool_t **) &chptr->amqp_host_sleep);
-    chptr->amqp_host_sleep = NULL;
-    chptr->amqp_host_reconnect = FALSE;
-  }
-#endif
-}
-
-int plugin_pipe_amqp_connect_to_consume(struct p_amqp_host *amqp_host, struct plugins_list_entry *plugin_data)
-{
-  plugin_pipe_amqp_init_host(amqp_host, plugin_data);
-  p_amqp_connect_to_consume(amqp_host);
-  return p_amqp_get_sockfd(amqp_host);
-}
-#endif
-
-#if defined WITH_KAFKA
-int plugin_pipe_kafka_init_host(struct p_kafka_host *kafka_host, struct plugins_list_entry *list, int is_prod)
-{
-  int ret = SUCCESS;
-
-  if (kafka_host && list && !validate_truefalse(is_prod)) {
-    char *topic = plugin_pipe_compose_default_string(list, "pmacct.$core_proc_name-$plugin_name-$plugin_type");
-
-    p_kafka_init_host(kafka_host, NULL);
-
-    if (is_prod) ret = p_kafka_connect_to_produce(kafka_host);
-    else ret = p_kafka_connect_to_consume(kafka_host);
-
-    if (!list->cfg.pipe_kafka_broker_host) list->cfg.pipe_kafka_broker_host = default_kafka_broker_host;
-    if (!list->cfg.pipe_kafka_broker_port) list->cfg.pipe_kafka_broker_port = default_kafka_broker_port;
-    if (!list->cfg.pipe_kafka_topic) list->cfg.pipe_kafka_topic = topic;
-    if (!list->cfg.pipe_kafka_retry) list->cfg.pipe_kafka_retry = PM_KAFKA_DEFAULT_RETRY;
-
-    p_kafka_set_broker(kafka_host, list->cfg.pipe_kafka_broker_host, list->cfg.pipe_kafka_broker_port);
-    p_kafka_set_topic(kafka_host, list->cfg.pipe_kafka_topic);
-    p_kafka_set_partition(kafka_host, list->cfg.pipe_kafka_partition);
-    p_kafka_set_key(kafka_host, list->cfg.pipe_kafka_partition_key, list->cfg.pipe_kafka_partition_keylen);
-    p_kafka_set_fallback(kafka_host, list->cfg.pipe_kafka_fallback);
-    p_kafka_set_content_type(kafka_host, PM_KAFKA_CNT_TYPE_BIN);
-    P_broker_timers_set_retry_interval(&kafka_host->btimers, list->cfg.pipe_kafka_retry);
-  }
-  else return ERR;
-
-  return ret;
-}
-
-int plugin_pipe_kafka_connect_to_consume(struct p_kafka_host *kafka_host, struct plugins_list_entry *plugin_data)
-{
-  int ret = SUCCESS;
-
-  if (kafka_host && plugin_data) {
-    ret = plugin_pipe_kafka_init_host(kafka_host, plugin_data, FALSE);
-    if (!ret) ret = p_kafka_manage_consumer(kafka_host, TRUE);
-  }
-  else return ERR;
-
-  return ret;
-}
-#endif 
-
-int plugin_pipe_set_retry_timeout(struct p_broker_timers *btimers, int pipe_fd)
-{
-  if (pipe_fd == ERR) return (P_broker_timers_get_retry_interval(btimers) * 1000);
-  else return LONGLONG_RETRY;
-}
-
-int plugin_pipe_calc_retry_timeout_diff(struct p_broker_timers *btimers, time_t now)
-{
-  int timeout;
-
-  timeout = (((P_broker_timers_get_last_fail(btimers) + P_broker_timers_get_retry_interval(btimers)) - now) * 1000);
-  assert(timeout >= 0);
-
-  return timeout;
-}
-
-void plugin_pipe_amqp_compile_check()
-{
-#ifndef WITH_RABBITMQ
-  Log(LOG_ERR, "ERROR ( %s/%s ): 'plugin_pipe_amqp' requires compiling with --enable-rabbitmq. Exiting ..\n", config.name, config.type);
-  exit_plugin(1);
-#endif
-}
-
-void plugin_pipe_kafka_compile_check()
-{
-#ifndef WITH_KAFKA
-  Log(LOG_ERR, "ERROR ( %s/%s ): 'plugin_pipe_kafka' requires compiling with --enable-kafka. Exiting ..\n", config.name, config.type);
+#ifndef WITH_ZMQ
+  Log(LOG_ERR, "ERROR ( %s/%s ): 'plugin_pipe_zmq' requires compiling with --enable-zmq. Exiting ..\n", config.name, config.type);
   exit_plugin(1);
 #endif
 }
 
 void plugin_pipe_check(struct configuration *cfg)
 {
-  if (!cfg->pipe_amqp && !cfg->pipe_kafka) cfg->pipe_homegrown = TRUE;
+  if (!cfg->pipe_zmq) cfg->pipe_homegrown = TRUE;
+}
 
-  if (cfg->pipe_amqp && cfg->pipe_kafka) {
-    Log(LOG_WARNING, "WARN ( %s/%s ): 'plugin_pipe_amqp' and 'plugin_pipe_kafka' are mutual exclusive: disabling both.\n", cfg->name, cfg->type);
+void P_zmq_pipe_init(void *zh, int *pipe_fd, int *seq)
+{
+  plugin_pipe_zmq_compile_check();
 
-    cfg->pipe_amqp = FALSE;
-    cfg->pipe_kafka = FALSE;
-    cfg->pipe_homegrown = TRUE;
+#ifdef WITH_ZMQ
+  if (zh) {
+    struct p_zmq_host *zmq_host = zh;
+    char log_id[SHORTBUFLEN];
+
+    p_zmq_plugin_pipe_init_plugin(zmq_host);
+
+    snprintf(log_id, sizeof(log_id), "%s/%s", config.name, config.type);
+    p_zmq_set_log_id(zmq_host, log_id);
+
+    p_zmq_set_hwm(zmq_host, config.pipe_zmq_hwm);
+    p_zmq_sub_setup(zmq_host);
+    p_zmq_set_retry_timeout(zmq_host, config.pipe_zmq_retry);
+
+    if (pipe_fd) (*pipe_fd) = p_zmq_get_fd(zmq_host);
+    if (seq) (*seq) = 0;
   }
+#endif
 }

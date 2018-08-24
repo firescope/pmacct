@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -19,17 +19,6 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-/* Netflow stuff */
-
-/*  NetFlow Export Version 1 Header Format  */
-struct struct_header_v1  {
-  u_int16_t version;		/* Current version = 1 */
-  u_int16_t count;		/* The number of records in PDU. */
-  u_int32_t SysUptime;		/* Current time in msecs since router booted */
-  u_int32_t unix_secs;		/* Current seconds since 0000 UTC 1970 */
-  u_int32_t unix_nsecs;		/* Residual nanoseconds since 0000 UTC 1970 */
-};
-
 /*  NetFlow Export Version 5 Header Format  */
 struct struct_header_v5 {
   u_int16_t version;		/* Version = 5 */
@@ -41,34 +30,6 @@ struct struct_header_v5 {
   unsigned char engine_type;    /* Type of flow switching engine (RP,VIP,etc.) */
   unsigned char engine_id;      /* Slot number of the flow switching engine */
   u_int16_t sampling;
-};
-
-/*  NetFlow Export Version 7 Header Format  */
-struct struct_header_v7 {
-  u_int16_t version;		/* Version = 7 */
-  u_int16_t count;		/* The number of records in the PDU */
-  u_int32_t SysUptime;		/* Current time in millisecs since router booted */
-  u_int32_t unix_secs;		/* Current seconds since 0000 UTC 1970 */
-  u_int32_t unix_nsecs;		/* Residual nanoseconds since 0000 UTC 1970 */
-  u_int32_t flow_sequence;	/* Seq counter of total flows seen */
-  u_int8_t  engine_type;	/* Type of flow switching engine (RP,VIP,etc.) */
-  u_int8_t  engine_id;		/* Slot number of the flow switching engine */
-  u_int16_t reserved;
-};
-
-/*  NetFlow Export Version 8 Header Format  */
-struct struct_header_v8 {
-  u_int16_t version;       	/* Version = 8 */
-  u_int16_t count;         	/* The number of records in the PDU */
-  u_int32_t SysUptime;     	/* Current time in millisecs since router booted */
-  u_int32_t unix_secs;     	/* Current seconds since 0000 UTC 1970 */
-  u_int32_t unix_nsecs;    	/* Residual nanoseconds since 0000 UTC 1970 */
-  u_int32_t flow_sequence;	/* Seq counter of total flows seen */
-  unsigned char engine_type;	/* Type of flow switching engine (RP,VIP,etc.) */
-  unsigned char engine_id;	/* Slot number of the flow switching engine */
-  u_int8_t  aggregation;	/* Aggregation method being used */
-  u_int8_t  agg_version;	/* Version of the aggregation export */
-  u_int32_t reserved;
 };
 
 /*  NetFlow Export Version 9 Header Format  */
@@ -87,25 +48,6 @@ struct struct_header_ipfix {
   u_int32_t unix_secs;          /* Current seconds since 0000 UTC 1970 */
   u_int32_t flow_sequence;      /* Sequence number of total flows seen */
   u_int32_t source_id;          /* Source id */
-};
-
-/* NetFlow Export version 1 */
-struct struct_export_v1 {
-  struct in_addr srcaddr;	/* Source IP Address */
-  struct in_addr dstaddr;	/* Destination IP Address */
-  struct in_addr nexthop;	/* Next hop router's IP Address */
-  u_int16_t input;		/* Input interface index */
-  u_int16_t output;    		/* Output interface index */
-  u_int32_t dPkts;      	/* Packets sent in Duration (milliseconds between 1st & last packet in this flow)*/
-  u_int32_t dOctets;    	/* Octets sent in Duration (milliseconds between 1st & last packet in this flow)*/
-  u_int32_t First;      	/* SysUptime at start of flow */
-  u_int32_t Last;       	/* and of last packet of the flow */
-  u_int16_t srcport;   		/* TCP/UDP source port number (.e.g, FTP, Telnet, etc.,or equivalent) */
-  u_int16_t dstport;   		/* TCP/UDP destination port number (.e.g, FTP, Telnet, etc.,or equivalent) */
-  u_int16_t pad;       		/* pad to word boundary */
-  unsigned char prot;           /* IP protocol, e.g., 6=TCP, 17=UDP, etc... */
-  unsigned char tos;            /* IP Type-of-Service */
-  unsigned char pad_2[8];	/* pad to word boundary */
 };
 
 /* NetFlow Export version 5 */
@@ -130,243 +72,6 @@ struct struct_export_v5 {
   unsigned char src_mask;       /* source route's mask bits */ 
   unsigned char dst_mask;       /* destination route's mask bits */
   u_int16_t pad_1;   		/* pad to word boundary */
-};
-
-/* NetFlow Export version 7 */
-struct struct_export_v7 {
-  u_int32_t srcaddr;		/* Source IP Address */
-  u_int32_t dstaddr;		/* Destination IP Address */
-  u_int32_t nexthop;		/* Next hop router's IP Address */
-  u_int16_t input;		/* Input interface index */
-  u_int16_t output;		/* Output interface index */
-  u_int32_t dPkts;		/* Packets sent in Duration */
-  u_int32_t dOctets;		/* Octets sent in Duration. */
-  u_int32_t First;		/* SysUptime at start of flow */
-  u_int32_t Last;		/* and of last packet of flow */
-  u_int16_t srcport;		/* TCP/UDP source port number or equivalent */
-  u_int16_t dstport;		/* TCP/UDP destination port number or equiv */
-  u_int8_t  pad;
-  u_int8_t  tcp_flags;		/* Cumulative OR of tcp flags */
-  u_int8_t  prot;		/* IP protocol, e.g., 6=TCP, 17=UDP, ... */
-  u_int8_t  tos;		/* IP Type-of-Service */
-  u_int16_t src_as;		/* originating AS of source address */
-  u_int16_t dst_as;		/* originating AS of destination address */
-  u_int8_t  src_mask;		/* source address prefix mask bits */
-  u_int8_t  dst_mask;		/* destination address prefix mask bits */
-  u_int16_t drops;
-  u_int32_t router_sc;		/* Router which is shortcut by switch */
-};
-
-struct struct_export_v8_1 {
-  u_int32_t dFlows;     /* Number of flows */
-  u_int32_t dPkts;      /* Packets sent in duration */
-  u_int32_t dOctets;    /* Octets sent in duration */
-  u_int32_t First;      /* SysUpTime at start of flow */
-  u_int32_t Last;       /* and of last packet of flow */
-  u_int16_t src_as;     /* originating AS of source address */
-  u_int16_t dst_as;     /* originating AS of destination address */
-  u_int16_t input;      /* input interface index */
-  u_int16_t output;     /* output interface index */
-};
-
-struct struct_export_v8_2 {
-  u_int32_t dFlows;     /* Number of flows */
-  u_int32_t dPkts;      /* Packets sent in duration */
-  u_int32_t dOctets;    /* Octets sent in duration */
-  u_int32_t First;      /* SysUpTime at start of flow */
-  u_int32_t Last;       /* and of last packet of flow */
-  u_int8_t  prot;       /* IP protocol */
-  u_int8_t  pad;
-  u_int16_t reserved;
-  u_int16_t srcport;    /* TCP/UDP source port number of equivalent */
-  u_int16_t dstport;    /* TCP/UDP dst port number of equivalent */
-};
-
-struct struct_export_v8_3 {
-  u_int32_t dFlows;     /* Number of flows */
-  u_int32_t dPkts;      /* Packets sent in duration */
-  u_int32_t dOctets;    /* Octets sent in duration */
-  u_int32_t First;      /* SysUpTime at start of flow */
-  u_int32_t Last;       /* and of last packet of flow */
-  u_int32_t src_prefix;
-  u_int8_t  src_mask;
-  u_int8_t  pad;
-  u_int16_t src_as;
-  u_int16_t input;
-  u_int16_t reserved;
-};
-
-struct struct_export_v8_4 {
-  u_int32_t dFlows;     /* Number of flows */
-  u_int32_t dPkts;      /* Packets sent in duration */
-  u_int32_t dOctets;    /* Octets sent in duration */
-  u_int32_t First;      /* SysUpTime at start of flow */
-  u_int32_t Last;       /* and of last packet of flow */
-  u_int32_t dst_prefix;
-  u_int8_t  dst_mask;
-  u_int8_t  pad;
-  u_int16_t dst_as;
-  u_int16_t output;
-  u_int16_t reserved;
-};
-
-struct struct_export_v8_5 {
-  u_int32_t dFlows;     /* Number of flows */
-  u_int32_t dPkts;      /* Packets sent in duration */
-  u_int32_t dOctets;    /* Octets sent in duration */
-  u_int32_t First;      /* SysUpTime at start of flow */
-  u_int32_t Last;       /* and of last packet of flow */
-  u_int32_t src_prefix;
-  u_int32_t dst_prefix;
-  u_int8_t  dst_mask;
-  u_int8_t  src_mask;
-  u_int16_t reserved;
-  u_int16_t src_as;
-  u_int16_t dst_as;
-  u_int16_t input;
-  u_int16_t output;
-};
-
-struct struct_export_v8_6 {
-  u_int32_t dstaddr;   /* destination IP address */
-  u_int32_t dPkts;      /* Packets sent in duration */
-  u_int32_t dOctets;    /* Octets sent in duration */
-  u_int32_t First;      /* SysUpTime at start of flow */
-  u_int32_t Last;       /* and of last packet of flow */
-  u_int16_t output;     /* output interface index */
-  u_int8_t  tos;        /* tos */
-  u_int8_t  marked_tos; /* tos of pkts that exceeded the contract */
-  u_int32_t extra_pkts; /* packets that exceed the contract */
-  u_int32_t router_sc;  /* IP address of the router being shortcut */
-};
-
-struct struct_export_v8_7 {
-  u_int32_t dstaddr;    /* destination IP address */
-  u_int32_t srcaddr;    /* source address */
-  u_int32_t dPkts;      /* Packets sent in duration */
-  u_int32_t dOctets;    /* Octets sent in duration */
-  u_int32_t First;      /* SysUpTime at start of flow */
-  u_int32_t Last;       /* and of last packet of flow */
-  u_int16_t output;     /* output interface index */
-  u_int16_t input;      /* input interface index */
-  u_int8_t  tos;        /* tos */
-  u_int8_t  marked_tos; /* tos of pkts that exceeded the contract */
-  u_int16_t reserved;
-  u_int32_t extra_pkts; /* packets that exceed the contract */
-  u_int32_t router_sc;  /* IP address of the router being shortcut */
-};
-
-struct struct_export_v8_8 {
-  u_int32_t dstaddr;    /* destination IP address */
-  u_int32_t srcaddr;    /* source IP address */
-  u_int16_t dstport;    /* TCP/UDP destination port */
-  u_int16_t srcport;    /* TCP/UDP source port */
-  u_int32_t dPkts;      /* Packets sent in duration */
-  u_int32_t dOctets;    /* Octets sent in duration */
-  u_int32_t First;      /* SysUpTime at start of flow */
-  u_int32_t Last;       /* and of last packet of flow */
-  u_int16_t output;     /* output interface index */
-  u_int16_t input;      /* input interface index */
-  u_int8_t  tos;        /* tos */
-  u_int8_t  prot;       /* protocol */
-  u_int8_t  marked_tos; /* tos of pkts that exceeded the contract */
-  u_int8_t  reserved;
-  u_int32_t extra_pkts; /* packets that exceed the contract */
-  u_int32_t router_sc;  /* IP address of the router being shortcut */
-};
-
-struct struct_export_v8_9 {
-  u_int32_t dFlows;     /* Number of flows */
-  u_int32_t dPkts;      /* Packets sent in duration */
-  u_int32_t dOctets;    /* Octets sent in duration */
-  u_int32_t First;      /* SysUpTime at start of flow */
-  u_int32_t Last;       /* and of last packet of flow */
-  u_int16_t src_as;     /* originating AS of source address */
-  u_int16_t dst_as;     /* originating AS of destination address */
-  u_int16_t input;      /* input interface index */
-  u_int16_t output;     /* output interface index */
-  u_int8_t  tos;        /* tos */
-  u_int8_t  pad;
-  u_int16_t reserved;
-};
-
-struct struct_export_v8_10 {
-  u_int32_t dFlows;     /* Number of flows */
-  u_int32_t dPkts;      /* Packets sent in duration */
-  u_int32_t dOctets;    /* Octets sent in duration */
-  u_int32_t First;      /* SysUpTime at start of flow */
-  u_int32_t Last;       /* and of last packet of flow */
-  u_int8_t  prot;       /* IP protocol */
-  u_int8_t  tos;        /* tos */
-  u_int16_t reserved;
-  u_int16_t srcport;    /* TCP/UDP source port number of equivalent */
-  u_int16_t dstport;    /* TCP/UDP dst port number of equivalent */
-  u_int16_t input;      /* input interface */
-  u_int16_t output;     /* output interface index */
-};
-
-struct struct_export_v8_11 {
-  u_int32_t dFlows;     /* Number of flows */
-  u_int32_t dPkts;      /* Packets sent in duration */
-  u_int32_t dOctets;    /* Octets sent in duration */
-  u_int32_t First;      /* SysUpTime at start of flow */
-  u_int32_t Last;       /* and of last packet of flow */
-  u_int32_t src_prefix; /* Source Prefix */
-  u_int8_t  src_mask;   /* Source Prefix mask length */
-  u_int8_t  tos;        /* tos */
-  u_int16_t src_as;     /* Source AS */
-  u_int16_t input;      /* input interface */
-  u_int16_t reserved;
-};
-
-struct struct_export_v8_12 {
-  u_int32_t dFlows;     /* Number of flows */
-  u_int32_t dPkts;      /* Packets sent in duration */
-  u_int32_t dOctets;    /* Octets sent in duration */
-  u_int32_t First;      /* SysUpTime at start of flow */
-  u_int32_t Last;       /* and of last packet of flow */
-  u_int32_t dst_prefix; /* Destination Prefix */
-  u_int8_t  dst_mask;   /* Destination Prefix mask length */
-  u_int8_t  tos;        /* tos */
-  u_int16_t dst_as;     /* Destination AS */
-  u_int16_t output;     /* output interface */
-  u_int16_t reserved;
-};
-
-struct struct_export_v8_13 {
-  u_int32_t dFlows;     /* Number of flows */
-  u_int32_t dPkts;      /* Packets sent in duration */
-  u_int32_t dOctets;    /* Octets sent in duration */
-  u_int32_t First;      /* SysUpTime at start of flow */
-  u_int32_t Last;       /* and of last packet of flow */
-  u_int32_t src_prefix; /* Source Prefix */
-  u_int32_t dst_prefix; /* Destination Prefix */
-  u_int8_t  dst_mask;   /* Destination Prefix mask length */
-  u_int8_t  src_mask;   /* Source Prefix mask length */
-  u_int8_t  tos;        /* tos */
-  u_int8_t  pad;
-  u_int16_t src_as;     /* Source AS */
-  u_int16_t dst_as;     /* Destination AS */
-  u_int16_t input;      /* input interface */
-  u_int16_t output;     /* output interface */
-};
-
-struct struct_export_v8_14 {
-  u_int32_t dFlows;     /* Number of flows */
-  u_int32_t dPkts;      /* Packets sent in duration */
-  u_int32_t dOctets;    /* Octets sent in duration */
-  u_int32_t First;      /* SysUpTime at start of flow */
-  u_int32_t Last;       /* and of last packet of flow */
-  u_int32_t src_prefix; /* Source Prefix */
-  u_int32_t dst_prefix; /* Destination Prefix */
-  u_int8_t  dst_mask;   /* Destination Prefix mask length */
-  u_int8_t  src_mask;   /* Source Prefix mask length */
-  u_int8_t  tos;        /* tos */
-  u_int8_t  prot;       /* protocol */
-  u_int16_t srcport;    /* Source port */
-  u_int16_t dstport;    /* Destination port */
-  u_int16_t input;      /* input interface */
-  u_int16_t output;     /* output interface */
 };
 
 /* NetFlow Export version 9 */
@@ -401,24 +106,8 @@ struct data_hdr_v9 {
 /* defines */
 #define DEFAULT_NFACCTD_PORT 2100
 #define NETFLOW_MSG_SIZE PKT_MSG_SIZE
-#define V1_MAXFLOWS 24  /* max records in V1 packet */
 #define V5_MAXFLOWS 30  /* max records in V5 packet */
-#define V7_MAXFLOWS 27  /* max records in V7 packet */
-#define V8_1_MAXFLOWS  51  /* max records in V8 AS packet */
-#define V8_2_MAXFLOWS  51  /* max records in V8 PROTO PORT packet */
-#define V8_3_MAXFLOWS  44  /* max records in V8 SRC PREFIX packet */
-#define V8_4_MAXFLOWS  44  /* max records in V8 DST PREFIX packet */
-#define V8_5_MAXFLOWS  35  /* max records in V8 PREFIX packet */
-#define V8_6_MAXFLOWS  44  /* max records in V8 DESTONLY packet */
-#define V8_7_MAXFLOWS  35  /* max records in V8 SRC_DEST packet */
-#define V8_8_MAXFLOWS  32  /* max records in V8 FULL_FLOW packet */
-#define V8_9_MAXFLOWS  44  /* max records in V8 AS_TOS packet */
-#define V8_10_MAXFLOWS 44  /* max records in V8 PROT_PORT_TOS packet */
-#define V8_11_MAXFLOWS 44  /* max records in V8 SRC_PREFIX_TOS packet */
-#define V8_12_MAXFLOWS 44  /* max records in V8 DST_PREFIX_TOS packet */
-#define V8_13_MAXFLOWS 35  /* max records in V8 PREFIX_TOS packet */
-#define V8_14_MAXFLOWS 35  /* max records in V8 PREFIX_PORT_TOS packet */
-#define TEMPLATE_CACHE_ENTRIES 255
+#define TEMPLATE_CACHE_ENTRIES 1021
 
 #define NF_TIME_MSECS 0 /* times are in msecs */
 #define NF_TIME_SECS 1 /* times are in secs */ 
@@ -505,6 +194,8 @@ struct data_hdr_v9 {
 /* ... */
 #define NF9_FLOW_BYTES			85 
 #define NF9_FLOW_PACKETS		86 
+
+#define NF9_FORWARDING_STATUS           89
 /* ... */
 #define NF9_PEER_DST_AS			128
 #define NF9_PEER_SRC_AS			129
@@ -555,10 +246,14 @@ struct data_hdr_v9 {
 #define NF9_POST_DOT1QCVLANID		255
 #define NF9_ETHERTYPE			256
 /* ... */
+#define NF9_DATALINK_FRAME_SECTION	315
+/* ... */
 #define NF9_OBSERVATION_TIME_SEC	322
 #define NF9_OBSERVATION_TIME_MSEC	323
 /* ... */
 #define NF9_LAYER2OCTETDELTACOUNT	352
+/* ... */
+#define NF9_DATALINK_FRAME_TYPE		408
 /* ... */
 #define NF9_ASA_XLATE_IPV4_SRC_ADDR	40001
 #define NF9_ASA_XLATE_IPV4_DST_ADDR	40002
@@ -588,13 +283,18 @@ struct data_hdr_v9 {
 #define NF9_OPT_SCOPE_CACHE		4
 #define NF9_OPT_SCOPE_TPL		5
 
+/* dataLinkFrameType */
+#define NF9_DL_F_TYPE_UNKNOWN		0
+#define NF9_DL_F_TYPE_ETHERNET		1
+#define NF9_DL_F_TYPE_802DOT11		2
+
 /* CUSTOM TYPES START HERE: supported in IPFIX only with pmacct PEN */
 #define NF9_CUST_TAG                    1
 #define NF9_CUST_TAG2                   2
 #define NF9_CUST_LABEL			3
 /* CUSTOM TYPES END HERE */
 
-#define MAX_TPL_DESC_LIST 81
+#define MAX_TPL_DESC_LIST 89
 static char *tpl_desc_list[] = {
   "",
   "in bytes",
@@ -660,7 +360,10 @@ static char *tpl_desc_list[] = {
   "mpls label 9",
   "mpls label 10",
   "in dst mac",
-  "out src mac"
+  "out src mac",
+  "", "", "", "",
+  "", "", "",
+  "forwarding status",
 };
 
 #define MAX_OPT_TPL_DESC_LIST 100
@@ -749,11 +452,18 @@ struct template_cache {
   struct template_cache_entry *c[TEMPLATE_CACHE_ENTRIES];
 };
 
-typedef void (*v8_filter_handler)(struct packet_ptrs *, void *);
-struct v8_handler_entry {
-  u_int8_t max_flows;
-  u_int8_t exp_size;
-  v8_filter_handler fh;
+struct NF_dissect {
+  u_int8_t hdrVersion;
+  u_int16_t hdrCount; /* NetFlow v5 and v5 and v5 and v5 and v5 and v9 */
+  char *hdrBasePtr;
+  char *hdrEndPtr;
+  u_int32_t hdrLen;
+  char *flowSetBasePtr;
+  char *flowSetEndPtr;
+  u_int32_t flowSetLen;
+  char *elemBasePtr;
+  char *elemEndPtr;
+  u_int32_t elemLen;
 };
 
 /* functions */
@@ -762,11 +472,8 @@ struct v8_handler_entry {
 #else
 #define EXT
 #endif
-EXT void process_v1_packet(unsigned char *, u_int16_t, struct packet_ptrs *, struct plugin_requests *);
-EXT void process_v5_packet(unsigned char *, u_int16_t, struct packet_ptrs *, struct plugin_requests *);
-EXT void process_v7_packet(unsigned char *, u_int16_t, struct packet_ptrs *, struct plugin_requests *);
-EXT void process_v8_packet(unsigned char *, u_int16_t, struct packet_ptrs *, struct plugin_requests *);
-EXT void process_v9_packet(unsigned char *, u_int16_t, struct packet_ptrs_vector *, struct plugin_requests *, u_int16_t);
+EXT void process_v5_packet(unsigned char *, u_int16_t, struct packet_ptrs *, struct plugin_requests *, u_int16_t, struct NF_dissect *);
+EXT void process_v9_packet(unsigned char *, u_int16_t, struct packet_ptrs_vector *, struct plugin_requests *, u_int16_t, struct NF_dissect *);
 EXT void process_raw_packet(unsigned char *, u_int16_t, struct packet_ptrs_vector *, struct plugin_requests *);
 EXT u_int8_t NF_evaluate_flow_type(struct template_cache_entry *, struct packet_ptrs *);
 EXT u_int16_t NF_evaluate_direction(struct template_cache_entry *, struct packet_ptrs *);
@@ -775,15 +482,16 @@ EXT void reset_mac(struct packet_ptrs *);
 EXT void reset_mac_vlan(struct packet_ptrs *);
 EXT void reset_ip4(struct packet_ptrs *);
 EXT void reset_ip6(struct packet_ptrs *);
+EXT void reset_dummy_v4(struct packet_ptrs *, char *);
 EXT void notify_malf_packet(short int, char *, struct sockaddr *, u_int32_t);
 EXT int NF_find_id(struct id_table *, struct packet_ptrs *, pm_id_t *, pm_id_t *);
+EXT void NF_compute_once();
 
-EXT char *nfv578_check_status(struct packet_ptrs *);
+EXT char *nfv5_check_status(struct packet_ptrs *);
 EXT char *nfv9_check_status(struct packet_ptrs *, u_int32_t, u_int32_t, u_int32_t, u_int8_t);
+EXT void nfv9_datalink_frame_section_handler(struct packet_ptrs *);
 
 EXT struct template_cache tpl_cache;
-EXT struct v8_handler_entry v8_handlers[15];
-
 EXT struct host_addr debug_a;
 EXT u_char debug_agent_addr[50];
 EXT u_int16_t debug_agent_port;
@@ -794,16 +502,17 @@ EXT u_int16_t debug_agent_port;
 #else
 #define EXT
 #endif
+EXT u_int16_t modulo_template(u_int16_t, struct sockaddr *, u_int16_t);
 EXT struct template_cache_entry *handle_template(struct template_hdr_v9 *, struct packet_ptrs *, u_int16_t, u_int32_t, u_int16_t *, u_int16_t, u_int32_t);
-EXT struct template_cache_entry *find_template(u_int16_t, struct host_addr *, u_int16_t, u_int32_t);
+EXT struct template_cache_entry *find_template(u_int16_t, struct sockaddr *, u_int16_t, u_int32_t);
 EXT struct template_cache_entry *insert_template(struct template_hdr_v9 *, struct packet_ptrs *, u_int16_t, u_int32_t, u_int16_t *, u_int8_t, u_int16_t, u_int32_t);
 EXT struct template_cache_entry *refresh_template(struct template_hdr_v9 *, struct template_cache_entry *, struct packet_ptrs *, u_int16_t, u_int32_t, u_int16_t *, u_int8_t, u_int16_t, u_int32_t);
 EXT void log_template_header(struct template_cache_entry *, struct packet_ptrs *, u_int16_t, u_int32_t, u_int8_t);
-EXT void log_opt_template_field(u_int16_t, u_int16_t, u_int16_t, u_int8_t);
+EXT void log_opt_template_field(u_int8_t, u_int32_t *, u_int16_t, u_int16_t, u_int16_t, u_int8_t);
 EXT void log_template_field(u_int8_t, u_int32_t *, u_int16_t, u_int16_t, u_int16_t, u_int8_t);
 EXT void log_template_footer(struct template_cache_entry *, u_int16_t, u_int8_t);
-EXT struct template_cache_entry *insert_opt_template(void *, struct packet_ptrs *, u_int16_t, u_int32_t, u_int8_t, u_int16_t, u_int32_t);
-EXT struct template_cache_entry *refresh_opt_template(void *, struct template_cache_entry *, struct packet_ptrs *, u_int16_t, u_int32_t, u_int8_t, u_int16_t, u_int32_t);
+EXT struct template_cache_entry *insert_opt_template(void *, struct packet_ptrs *, u_int16_t, u_int32_t, u_int16_t *, u_int8_t, u_int16_t, u_int32_t);
+EXT struct template_cache_entry *refresh_opt_template(void *, struct template_cache_entry *, struct packet_ptrs *, u_int16_t, u_int32_t, u_int16_t *, u_int8_t, u_int16_t, u_int32_t);
 EXT struct utpl_field *ext_db_get_ie(struct template_cache_entry *, u_int32_t, u_int16_t, u_int8_t);
 EXT struct utpl_field *ext_db_get_next_ie(struct template_cache_entry *, u_int16_t, u_int8_t *);
 
@@ -813,6 +522,14 @@ EXT u_int8_t get_ipfix_vlen(char *, u_int16_t *);
 EXT struct template_cache_entry *nfacctd_offline_read_json_template(char *, char *, int);
 EXT void load_templates_from_file(char *);
 EXT void save_template(struct template_cache_entry *, char *);
+
+#ifdef WITH_KAFKA
+EXT void NF_init_kafka_host(void *);
+#endif
+
+#ifdef WITH_ZMQ
+EXT void NF_init_zmq_host(void *, int *);
+#endif
 #undef EXT
 
 #if (!defined __PKT_HANDLERS_C)

@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -26,6 +26,7 @@
 #define BGP_LOGDUMP_ET_NONE	0
 #define BGP_LOGDUMP_ET_LOG	1
 #define BGP_LOGDUMP_ET_DUMP	2
+#define BGP_LOGDUMP_ET_LG	3
 
 #define BGP_LOG_TYPE_MISC	0
 #define BGP_LOG_TYPE_UPDATE	1
@@ -33,6 +34,9 @@
 #define BGP_LOG_TYPE_DELETE	3
 #define BGP_LOG_TYPE_OPEN	4
 #define BGP_LOG_TYPE_CLOSE	5
+
+#define BGP_LOGSEQ_ROLLOVER_BIT	0x8000000000000000ULL
+#define BGP_LOGSEQ_MASK		0x7FFFFFFFFFFFFFFFULL	
 
 struct bgp_peer_log {
   FILE *fd;
@@ -55,12 +59,17 @@ struct bgp_dump_stats {
 #endif
 EXT int bgp_peer_log_init(struct bgp_peer *, int, int);
 EXT int bgp_peer_log_close(struct bgp_peer *, int, int);
+EXT void bgp_peer_log_dynname(char *, int, char *, struct bgp_peer *);
+EXT int bgp_peer_log_msg(struct bgp_node *, struct bgp_info *, afi_t, safi_t, char *, int, char **, int);
+
 EXT void bgp_peer_log_seq_init(u_int64_t *);
 EXT void bgp_peer_log_seq_increment(u_int64_t *);
-EXT void bgp_peer_log_dynname(char *, int, char *, struct bgp_peer *);
-EXT int bgp_peer_log_msg(struct bgp_node *, struct bgp_info *, afi_t, safi_t, char *, int, int);
-EXT int bgp_peer_dump_init(struct bgp_peer *, int, int);
-EXT int bgp_peer_dump_close(struct bgp_peer *, struct bgp_dump_stats *, int, int);
+EXT u_int64_t bgp_peer_log_seq_get(u_int64_t *);
+EXT void bgp_peer_log_seq_set(u_int64_t *, u_int64_t);
+EXT int bgp_peer_log_seq_has_ro_bit(u_int64_t *);
+
+EXT int bgp_peer_dump_init(struct bgp_peer *, int, int, int);
+EXT int bgp_peer_dump_close(struct bgp_peer *, struct bgp_dump_stats *, int, int, int);
 EXT void bgp_handle_dump_event();
 EXT void bgp_daemon_msglog_init_amqp_host();
 EXT void bgp_table_dump_init_amqp_host();

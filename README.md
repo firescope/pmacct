@@ -14,15 +14,19 @@ DOCUMENTATION
   * FAQS: FAQ document
   * INSTALL: basic installation guide
   * docs/: Miscellaneous internals, UNIX signals, SQL triggers documents 
-  * examples/: Sample pmacct and 3rd party tools configurations; sample maps
+  * examples/: Sample configs, maps, AMQP/Kafka consumers, clients 
   * sql/: SQL documentation, default SQL schemas and customization tips
 
-#BUILDING#
+# BUILDING
+
+- Resolve dependencies, ie.:
+  * apt-get install libpcap-dev pkg-config libtool autoconf automake bash *[Debian/Ubuntu]*
+  * yum install libpcap-devel pkgconfig libtool autoconf automake bash *[CentOS/RHEL]*
 
 - Build GitHub code:
   * git clone https://github.com/pmacct/pmacct.git
   * cd pmacct
-  * ./autogen.sh *[pkg-config, libtool, autoconf, automake and bash packages required]*
+  * ./autogen.sh
   * ./configure *[check-out available configure knobs via ./configure --help]* 
   * make
   * make install *[with super-user permission]*

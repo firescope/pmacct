@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -24,9 +24,11 @@
 
 /* includes */
 #include "pmacct.h"
+#include "addr.h"
 #include "pmacct-data.h"
 #include "addr.h"
 #include "bgp.h"
+#include "thread_pool.h"
 #if defined WITH_RABBITMQ
 #include "amqp_common.h"
 #endif
@@ -170,7 +172,7 @@ int bgp_label2str(char *str, u_char *label)
 	(unsigned)(unsigned char)(label[2] >> 4));
   
   tmp = strtoul(str, &endp, 16);
-  snprintf(str, 8, "%u", tmp);
+  snprintf(str, 8, "%lu", tmp);
 
   return TRUE;
 }
@@ -482,12 +484,93 @@ void *bgp_attr_hash_alloc(void *p)
   return attr;
 }
 
+void bgp_peer_cache_init(struct bgp_peer_cache_bucket *cache, u_int32_t buckets)
+{
+  u_int32_t idx;
+
+  for (idx = 0; idx < buckets; idx++) {
+    memset(&cache[idx], 0, sizeof(struct bgp_peer_cache_bucket));
+    pthread_mutex_init(&cache[idx].mutex, NULL);
+  }
+}
+
+struct bgp_peer_cache *bgp_peer_cache_insert(struct bgp_peer_cache_bucket *cache, u_int32_t bucket, struct bgp_peer *peer)
+{
+  struct bgp_peer_cache *cursor, *last, *new, *ret = NULL;
+
+  pthread_mutex_lock(&peers_cache[bucket].mutex);  
+
+  for (cursor = peers_cache[bucket].e, last = NULL; cursor; cursor = cursor->next) last = cursor;
+
+  new = malloc(sizeof(struct bgp_peer_cache));
+  if (new) {
+    new->ptr = peer;
+    new->next = NULL;
+
+    if (!last) peers_cache[bucket].e = new;
+    else last->next = new; 
+
+    ret = new;
+  }
+
+  pthread_mutex_unlock(&peers_cache[bucket].mutex);  
+
+  return ret;
+}
+
+int bgp_peer_cache_delete(struct bgp_peer_cache_bucket *cache, u_int32_t bucket, struct bgp_peer *peer)
+{
+  struct bgp_peer_cache *cursor, *last;
+  int ret = ERR;
+
+  pthread_mutex_lock(&peers_cache[bucket].mutex);  
+
+  for (cursor = peers_cache[bucket].e, last = NULL; cursor; cursor = cursor->next) {
+    if (cursor->ptr == peer) {
+      if (!last) peers_cache[bucket].e = cursor->next;
+      else last->next = cursor->next;
+
+      free(cursor);
+
+      ret = SUCCESS;
+      break;
+    }
+
+    last = cursor;
+  }
+
+  pthread_mutex_unlock(&peers_cache[bucket].mutex);
+
+  return ret;
+}
+
+struct bgp_peer *bgp_peer_cache_search(struct bgp_peer_cache_bucket *cache, u_int32_t bucket, struct host_addr *ha, u_int16_t port)
+{
+  struct bgp_peer_cache *cursor;
+  struct bgp_peer *ret = NULL;
+
+  pthread_mutex_lock(&peers_cache[bucket].mutex);
+
+  for (cursor = peers_cache[bucket].e; cursor; cursor = cursor->next) {
+    if (port) {
+      if (cursor->ptr->tcp_port != port) continue;
+    }
+
+    if (!memcmp(&cursor->ptr->addr, ha, sizeof(struct host_addr))) {
+      ret = cursor->ptr;
+      break;
+    }
+  }
+
+  pthread_mutex_unlock(&peers_cache[bucket].mutex);
+
+  return ret;
+}
+
 int bgp_peer_init(struct bgp_peer *peer, int type)
 {
   struct bgp_misc_structs *bms;
   int ret = TRUE;
-  afi_t afi;
-  safi_t safi;
 
   bms = bgp_select_misc_db(type);
 
@@ -513,8 +596,6 @@ int bgp_peer_init(struct bgp_peer *peer, int type)
 void bgp_peer_close(struct bgp_peer *peer, int type, int no_quiet, int send_notification, u_int8_t n_major, u_int8_t n_minor, char *shutdown_msg)
 {
   struct bgp_misc_structs *bms;
-  afi_t afi;
-  safi_t safi;
 
   if (!peer) return;
 
@@ -522,23 +603,40 @@ void bgp_peer_close(struct bgp_peer *peer, int type, int no_quiet, int send_noti
 
   if (!bms) return;
 
-  if (send_notification) {
-    int ret, notification_msglen = (BGP_MIN_NOTIFICATION_MSG_SIZE + BGP_NOTIFY_CEASE_SM_LEN + 1);
-    char notification_msg[notification_msglen];
+  if (!config.bgp_xconnect_map) {
+    if (send_notification) {
+      int ret, notification_msglen = (BGP_MIN_NOTIFICATION_MSG_SIZE + BGP_NOTIFY_CEASE_SM_LEN + 1);
+      char notification_msg[notification_msglen];
 
-    ret = bgp_write_notification_msg(notification_msg, notification_msglen, n_major, n_minor, shutdown_msg);
-    if (ret) send(peer->fd, notification_msg, ret, 0);
+      ret = bgp_write_notification_msg(notification_msg, notification_msglen, n_major, n_minor, shutdown_msg);
+      if (ret) send(peer->fd, notification_msg, ret, 0);
+    }
+
+    /* be quiet if we are in a signal handler and already set to exit() */
+    if (!no_quiet) bgp_peer_info_delete(peer);
+
+    if (bms->msglog_file || bms->msglog_amqp_routing_key || bms->msglog_kafka_topic)
+      bgp_peer_log_close(peer, bms->msglog_output, peer->type);
+
+    if (bms->peers_cache && bms->peers_port_cache) {
+      u_int32_t bucket;
+
+      bucket = addr_hash(&peer->addr, bms->max_peers);
+      bgp_peer_cache_delete(bms->peers_cache, bucket, peer);
+
+      bucket = addr_port_hash(&peer->addr, peer->tcp_port, bms->max_peers);
+      bgp_peer_cache_delete(bms->peers_port_cache, bucket, peer);
+    }
+  }
+  else {
+    if (peer->xconnect_fd && peer->xconnect_fd != ERR) close(peer->xconnect_fd);
   }
 
-  /* be quiet if we are in a signal handler and already set to exit() */
-  if (!no_quiet) bgp_peer_info_delete(peer);
-
-  if (bms->msglog_file || bms->msglog_amqp_routing_key || bms->msglog_kafka_topic)
-    bgp_peer_log_close(peer, bms->msglog_output, peer->type);
-
-  if (peer->fd != ERR) close(peer->fd);
+  if (peer->fd && peer->fd != ERR) close(peer->fd);
 
   peer->fd = 0;
+  memset(&peer->xc, 0, sizeof(peer->xc));
+  peer->xconnect_fd = 0;
   memset(&peer->id, 0, sizeof(peer->id));
   memset(&peer->addr, 0, sizeof(peer->addr));
   memset(&peer->addr_str, 0, sizeof(peer->addr_str));
@@ -549,19 +647,95 @@ void bgp_peer_close(struct bgp_peer *peer, int type, int no_quiet, int send_noti
     write_neighbors_file(bms->neighbors_file, peer->type);
 }
 
-char *bgp_peer_print(struct bgp_peer *peer)
+int bgp_peer_xconnect_init(struct bgp_peer *peer, int type)
 {
-  static __thread char buf[INET6_ADDRSTRLEN], dumb_buf[] = "0.0.0.0";
+  char peer_str[INET6_ADDRSTRLEN], xconnect_str[BGP_XCONNECT_STRLEN];
+  struct bgp_misc_structs *bms;
+  struct bgp_xconnects *bxm; 
+  int ret = TRUE, idx, fd;
+
+  assert(!peer->xconnect_fd);
+
+  bms = bgp_select_misc_db(type);
+
+  if (!peer || !bms) return ERR;
+
+  bxm = bms->xconnects;
+
+  if (bxm) {
+    for (idx = 0; idx < bxm->num; idx++) {
+      if (!sa_addr_cmp((struct sockaddr *) &bxm->pool[idx].src, &peer->addr) ||
+	  !host_addr_mask_cmp(&bxm->pool[idx].src_addr, &bxm->pool[idx].src_mask, &peer->addr)) { 
+	struct sockaddr *sa = (struct sockaddr *) &bxm->pool[idx].dst;
+
+	memcpy(&peer->xc, &bxm->pool[idx], sizeof(struct bgp_xconnect));
+	bgp_peer_xconnect_print(peer, xconnect_str, BGP_XCONNECT_STRLEN);
+
+	fd = socket(sa->sa_family, SOCK_STREAM, 0);
+	if (fd == ERR) {
+	  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] bgp_peer_xconnect_init(): socket() failed.\n", config.name, bms->log_str, xconnect_str);
+	  memset(&peer->xc, 0, sizeof(peer->xc));
+	  peer->xconnect_fd = 0;
+	  return ERR;
+	}
+
+	ret = connect(fd, sa, bxm->pool[idx].dst_len);
+	if (ret == ERR) {
+	  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] bgp_peer_xconnect_init(): connect() failed.\n", config.name, bms->log_str, xconnect_str);
+	  memset(&peer->xc, 0, sizeof(peer->xc));
+	  peer->xconnect_fd = 0;
+	  return ERR;
+	}
+
+	peer->xconnect_fd = fd;
+	break;
+      }
+    }
+
+    if (!peer->xconnect_fd) {
+      bgp_peer_print(peer, peer_str, INET6_ADDRSTRLEN);
+      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] unable to xconnect BGP peer.\n", config.name, bgp_misc_db->log_str, peer_str);
+    }
+  }
+
+  return ret;
+}
+
+void bgp_peer_print(struct bgp_peer *peer, char *buf, int len)
+{
+  char dumb_buf[] = "0.0.0.0";
   int ret = 0;
 
+  if (!buf || len < INET6_ADDRSTRLEN) return;
+
   if (peer) {
-    if (peer->id.family) return inet_ntoa(peer->id.address.ipv4);
+    if (peer->id.family) {
+      inet_ntop(AF_INET, &peer->id.address.ipv4, buf, len);
+      ret = AF_INET;
+    }
     else ret = addr_to_str(buf, &peer->addr);
   }
 
   if (!ret) strcpy(buf, dumb_buf);
+}
 
-  return buf;
+void bgp_peer_xconnect_print(struct bgp_peer *peer, char *buf, int len)
+{
+  char src[INET6_ADDRSTRLEN + PORT_STRLEN + 1], dst[INET6_ADDRSTRLEN + PORT_STRLEN + 1];
+  struct sockaddr *sa_src;
+  struct sockaddr *sa_dst;
+
+  if (peer && buf && len >= BGP_XCONNECT_STRLEN) {
+    sa_src = (struct sockaddr *) &peer->xc.src;
+    sa_dst = (struct sockaddr *) &peer->xc.dst;
+
+    if (sa_src->sa_family) sa_to_str(src, sizeof(src), sa_src);
+    else addr_mask_to_str(src, sizeof(src), &peer->xc.src_addr, &peer->xc.src_mask);
+
+    sa_to_str(dst, sizeof(dst), sa_dst);
+
+    snprintf(buf, len, "%s x %s", src, dst);
+  }
 }
 
 void bgp_peer_info_delete(struct bgp_peer *peer)
@@ -592,7 +766,7 @@ void bgp_peer_info_delete(struct bgp_peer *peer)
 	      if (bms->msglog_backend_methods) {
 		char event_type[] = "log";
 
-		bgp_peer_log_msg(node, ri, afi, safi, event_type, bms->msglog_output, BGP_LOG_TYPE_DELETE);
+		bgp_peer_log_msg(node, ri, afi, safi, event_type, bms->msglog_output, NULL, BGP_LOG_TYPE_DELETE);
 	      }
 
 	      ri_next = ri->next; /* let's save pointer to next before free up */
@@ -625,7 +799,7 @@ int bgp_attr_munge_as4path(struct bgp_peer *peer, struct bgp_attr *attr, struct 
   return SUCCESS;
 }
 
-void load_comm_patterns(char **stdcomm, char **extcomm, char **lrgcomm, char **stdcomm_to_asn)
+void load_comm_patterns(char **stdcomm, char **extcomm, char **lrgcomm, char **stdcomm_to_asn, char **lrgcomm_to_asn)
 {
   int idx;
   char *token;
@@ -634,6 +808,7 @@ void load_comm_patterns(char **stdcomm, char **extcomm, char **lrgcomm, char **s
   memset(ext_comm_patterns, 0, sizeof(ext_comm_patterns));
   memset(lrg_comm_patterns, 0, sizeof(lrg_comm_patterns));
   memset(std_comm_patterns_to_asn, 0, sizeof(std_comm_patterns_to_asn));
+  memset(lrg_comm_patterns_to_asn, 0, sizeof(lrg_comm_patterns_to_asn));
 
   if (*stdcomm) {
     idx = 0;
@@ -670,7 +845,16 @@ void load_comm_patterns(char **stdcomm, char **extcomm, char **lrgcomm, char **s
       idx++;
     }
   }
-} 
+
+  if (*lrgcomm_to_asn) {
+    idx = 0;
+    while ( (token = extract_token(lrgcomm_to_asn, ',')) && idx < MAX_BGP_COMM_PATTERNS ) {
+      lrg_comm_patterns_to_asn[idx] = token;
+      trim_spaces(lrg_comm_patterns_to_asn[idx]);
+      idx++;
+    }
+  }
+}
 
 void evaluate_comm_patterns(char *dst, char *src, char **patterns, int dstlen)
 {
@@ -833,6 +1017,24 @@ void copy_stdcomm_to_asn(char *stdcomm, as_t *asn, int is_origin)
   else *asn = atoi(p1);
 }
 
+void copy_lrgcomm_to_asn(char *lrgcomm, as_t *asn, int is_origin)
+{
+  char *delim, *delim2;
+  char *p1, *p2, *endptr;
+
+  if (!lrgcomm || !strlen(lrgcomm) || (delim = strchr(lrgcomm, ':')) == NULL) return;
+  if (validate_truefalse(is_origin)) return;
+
+  delim2 = strchr(lrgcomm, ':');
+  *delim = '\0';
+  *delim2 = '\0';
+  p1 = lrgcomm;
+  p2 = delim+1;
+
+  if (is_origin) *asn = strtoul(p2, &endptr, 10);
+  else *asn = strtoul(p1, &endptr, 10);
+}
+
 /* XXX: currently only BGP is supported due to use of peers struct */
 void write_neighbors_file(char *filename, int type)
 {
@@ -913,14 +1115,6 @@ void bgp_config_checks(struct configuration *c)
 			  COUNT_SRC_EXT_COMM|COUNT_SRC_AS_PATH)) ||
       (c->what_to_count_2 & (COUNT_LRG_COMM|COUNT_SRC_LRG_COMM))) {
     /* Sanitizing the aggregation method */
-    if (config.tmp_comms_same_field) {
-      if (((c->what_to_count & COUNT_STD_COMM) && (c->what_to_count & COUNT_EXT_COMM)) ||
-	  ((c->what_to_count & COUNT_SRC_STD_COMM) && (c->what_to_count & COUNT_SRC_EXT_COMM))) {
-        printf("ERROR: The use of STANDARD and EXTENDED BGP communitities is mutual exclusive.\n");
-        exit(1);
-      }
-    }
-
     if ( (c->what_to_count & COUNT_SRC_AS_PATH && !c->nfacctd_bgp_src_as_path_type) ||
          (c->what_to_count & COUNT_SRC_STD_COMM && !c->nfacctd_bgp_src_std_comm_type) ||
 	 (c->what_to_count & COUNT_SRC_EXT_COMM && !c->nfacctd_bgp_src_ext_comm_type) ||
@@ -938,19 +1132,100 @@ void bgp_config_checks(struct configuration *c)
   }
 }
 
-void process_bgp_md5_file(int sock, struct bgp_md5_table *bgp_md5)
+void bgp_md5_file_init(struct bgp_md5_table *t)
 {
-  struct my_tcp_md5sig md5sig;
-  struct sockaddr_storage ss_md5sig;
-  int rc, keylen, idx = 0, ss_md5sig_len;
+  if (t) memset(t, 0, sizeof(struct bgp_md5_table));
+}
+
+void bgp_md5_file_load(char *filename, struct bgp_md5_table *t)
+{
+  FILE *file;
+  char buf[SRVBUFLEN], *ptr;
+  int index = 0;
+
+  if (filename && t) {
+    Log(LOG_INFO, "INFO ( %s/core/BGP ): [%s] (re)loading map.\n", config.name, filename);
+
+    if ((file = fopen(filename, "r")) == NULL) {
+      Log(LOG_ERR, "ERROR ( %s/core/BGP ): [%s] file not found.\n", config.name, filename);
+      exit(1);
+    }
+
+    while (!feof(file)) {
+      if (index >= BGP_MD5_MAP_ENTRIES) {
+	Log(LOG_WARNING, "WARN ( %s/core/BGP ): [%s] loaded the first %u entries.\n", config.name, filename, BGP_MD5_MAP_ENTRIES);
+        break;
+      }
+      memset(buf, 0, SRVBUFLEN);
+      if (fgets(buf, SRVBUFLEN, file)) {
+        if (!sanitize_buf(buf)) {
+          char *token;
+          int tk_idx = 0, ret = 0, len = 0;
+
+          ptr = buf;
+	  memset(&t->table[index], 0, sizeof(t->table[index]));
+          while ( (token = extract_token(&ptr, ',')) && tk_idx < 2 ) {
+            if (tk_idx == 0) ret = str_to_addr(token, &t->table[index].addr);
+            else if (tk_idx == 1) {
+              strlcpy(t->table[index].key, token, TCP_MD5SIG_MAXKEYLEN);
+              len = strlen(t->table[index].key);
+            }
+            tk_idx++;
+          }
+
+          if (ret > 0 && len > 0) index++;
+          else Log(LOG_WARNING, "WARN ( %s/core/BGP ): [%s] line '%s' ignored.\n", config.name, filename, buf);
+        }
+      }
+    }
+    t->num = index;
+
+    /* Set to -1 to distinguish between no map and empty map conditions */
+    if (!t->num) t->num = -1;
+
+    Log(LOG_INFO, "INFO ( %s/core/BGP ): [%s] map successfully (re)loaded.\n", config.name, filename);
+    fclose(file);
+  }
+}
+
+void bgp_md5_file_unload(struct bgp_md5_table *t)
+{
+  int index = 0;
+
+  if (!t) return;
+
+  while (index < t->num) {
+    memset(t->table[index].key, 0, TCP_MD5SIG_MAXKEYLEN);
+    index++;
+  }
+}
+
+void bgp_md5_file_process(int sock, struct bgp_md5_table *bgp_md5)
+{
+  struct pm_tcp_md5sig md5sig;
+  struct sockaddr_storage ss_md5sig, ss_server;
+  struct sockaddr *sa_md5sig = (struct sockaddr *)&ss_md5sig, *sa_server = (struct sockaddr *)&ss_server;
+  int rc, keylen, idx = 0, ss_md5sig_len, ss_server_len;
+
+  if (!bgp_md5) return;
 
   while (idx < bgp_md5->num) {
     memset(&md5sig, 0, sizeof(md5sig));
     memset(&ss_md5sig, 0, sizeof(ss_md5sig));
 
     ss_md5sig_len = addr_to_sa((struct sockaddr *)&ss_md5sig, &bgp_md5->table[idx].addr, 0);
-    memcpy(&md5sig.tcpm_addr, &ss_md5sig, ss_md5sig_len);
 
+    ss_server_len = sizeof(ss_server);
+    getsockname(sock, (struct sockaddr *)&ss_server, &ss_server_len);
+
+#if defined ENABLE_IPV6
+    if (sa_md5sig->sa_family == AF_INET6 && sa_server->sa_family == AF_INET)
+      ipv4_mapped_to_ipv4(&ss_md5sig);
+    else if (sa_md5sig->sa_family == AF_INET && sa_server->sa_family == AF_INET6)
+      ipv4_to_ipv4_mapped(&ss_md5sig);
+#endif
+
+    memcpy(&md5sig.tcpm_addr, &ss_md5sig, ss_md5sig_len);
     keylen = strlen(bgp_md5->table[idx].key);
     if (keylen) {
       md5sig.tcpm_keylen = keylen;
@@ -1064,6 +1339,10 @@ void bgp_link_misc_structs(struct bgp_misc_structs *bms)
   bms->msglog_kafka_host = &bgp_daemon_msglog_kafka_host;
 #endif
   bms->max_peers = config.nfacctd_bgp_max_peers;
+  bms->peers = peers;
+  bms->peers_cache = peers_cache;
+  bms->peers_port_cache = peers_port_cache;
+  bms->xconnects = &bgp_xcs_map;
   bms->neighbors_file = config.nfacctd_bgp_neighbors_file; 
   bms->dump_file = config.bgp_table_dump_file; 
   bms->dump_amqp_routing_key = config.bgp_table_dump_amqp_routing_key; 
@@ -1078,8 +1357,8 @@ void bgp_link_misc_structs(struct bgp_misc_structs *bms)
   bms->msglog_kafka_topic_rr = config.nfacctd_bgp_msglog_kafka_topic_rr;
   bms->peer_str = malloc(strlen("peer_ip_src") + 1);
   strcpy(bms->peer_str, "peer_ip_src");
-  bms->peer_port_str = malloc(strlen("peer_ip_src_port") + 1);
-  strcpy(bms->peer_port_str, "peer_ip_src_port");
+  bms->peer_port_str = malloc(strlen("peer_tcp_port") + 1);
+  strcpy(bms->peer_port_str, "peer_tcp_port");
   bms->bgp_peer_log_msg_extras = NULL;
   bms->bgp_peer_logdump_initclose_extras = NULL;
 
@@ -1091,24 +1370,32 @@ void bgp_link_misc_structs(struct bgp_misc_structs *bms)
   bms->bgp_lookup_find_peer = bgp_lookup_find_bgp_peer;
   bms->bgp_lookup_node_match_cmp = bgp_lookup_node_match_cmp_bgp;
 
-  if (!bms->is_thread && !bms->dump_backend_methods) bms->skip_rib = TRUE;
+  bms->bgp_msg_open_router_id_check = bgp_router_id_check; 
+
+  if (!bms->is_thread && !bms->dump_backend_methods && !bms->has_lglass)
+    bms->skip_rib = TRUE;
 }
 
 int bgp_peer_cmp(const void *a, const void *b)
 {
-  return memcmp(&((struct bgp_peer *)a)->addr, &((struct bgp_peer *)b)->addr, sizeof(struct host_addr));
+  return host_addr_cmp(&((struct bgp_peer *)a)->addr, &((struct bgp_peer *)b)->addr);
 }
 
 int bgp_peer_host_addr_cmp(const void *a, const void *b)
 {
-  return memcmp(a, &((struct bgp_peer *)b)->addr, sizeof(struct host_addr));
+  return host_addr_cmp((struct host_addr *)a, &((struct bgp_peer *)b)->addr);
+}
+
+int bgp_peer_sa_addr_cmp(const void *a, const void *b)
+{
+  return sa_addr_cmp((struct sockaddr *) a, &((struct bgp_peer *)b)->addr);
 }
 
 void bgp_peer_free(void *a)
 {
 }
 
-void bgp_peers_bintree_walk_print(const void *nodep, const VISIT which, const int depth)
+int bgp_peers_bintree_walk_print(const void *nodep, const pm_VISIT which, const int depth, void *extra)
 {
   struct bgp_misc_structs *bms;
   struct bgp_peer *peer;
@@ -1117,16 +1404,18 @@ void bgp_peers_bintree_walk_print(const void *nodep, const VISIT which, const in
   peer = (*(struct bgp_peer **) nodep);
   bms = bgp_select_misc_db(peer->type);
 
-  if (!bms) return;
+  if (!bms) return FALSE;
 
   if (!peer) Log(LOG_INFO, "INFO ( %s/%s ): bgp_peers_bintree_walk_print(): null\n", config.name, bms->log_str);
   else {
     addr_to_str(peer_str, &peer->addr);
     Log(LOG_INFO, "INFO ( %s/%s ): bgp_peers_bintree_walk_print(): %s\n", config.name, bms->log_str, peer_str);
   }
+
+  return TRUE;
 }
 
-void bgp_peers_bintree_walk_delete(const void *nodep, const VISIT which, const int depth)
+int bgp_peers_bintree_walk_delete(const void *nodep, const pm_VISIT which, const int depth, void *extra)
 {
   struct bgp_misc_structs *bms;
   char peer_str[] = "peer_ip", *saved_peer_str;
@@ -1134,11 +1423,11 @@ void bgp_peers_bintree_walk_delete(const void *nodep, const VISIT which, const i
 
   peer = (*(struct bgp_peer **) nodep);
 
-  if (!peer) return;
+  if (!peer) return FALSE;
 
   bms = bgp_select_misc_db(peer->type);
 
-  if (!bms) return;
+  if (!bms) return FALSE;
 
   saved_peer_str = bms->peer_str;
   bms->peer_str = peer_str;
@@ -1146,4 +1435,33 @@ void bgp_peers_bintree_walk_delete(const void *nodep, const VISIT which, const i
   bms->peer_str = saved_peer_str;
 
   // XXX: count tree elements to index and free() later
+
+  return TRUE;
+}
+
+int bgp_router_id_check(struct bgp_msg_data *bmd)
+{
+  struct bgp_peer *peer = bmd->peer;
+  struct bgp_misc_structs *bms;
+  struct bgp_peer *peers_check;
+  int peers_check_idx = 0;
+
+  bms = bgp_select_misc_db(peer->type);
+
+  if (!bms) return ERR;
+
+  peers_check = bms->peers;
+
+  for (; peers_check_idx < bms->max_peers; peers_check_idx++) {
+    if (peers_check_idx != peer->idx && !memcmp(&peers_check[peers_check_idx].id, &peer->id, sizeof(peers_check[peers_check_idx].id))) {
+      char bgp_peer_str[INET6_ADDRSTRLEN];
+
+      bgp_peer_print(&peers_check[peers_check_idx], bgp_peer_str, INET6_ADDRSTRLEN);
+      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Refusing new connection from existing Router-ID.\n", config.name, bms->log_str, bgp_peer_str);
+
+      return ERR;
+    }
+  }
+
+  return FALSE;
 }
