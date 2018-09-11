@@ -6,8 +6,8 @@ DOCUMENTATION
 Custom FireScope functionality which adds SSL support, fqdn, and flow collapsing capabilities.
 
 - Online:
-  * pmacct wiki: http://wiki.pmacct.net/
-  * GitHub: https://github.com/pmacct/pmacct/
+  * GitHub Wiki Pages: https://github.com/pmacct/pmacct/wiki
+  * GitHub master code: https://github.com/pmacct/pmacct/
 
 - Distribution tarball:
   * ChangeLog: History of features version by version 
@@ -16,15 +16,15 @@ Custom FireScope functionality which adds SSL support, fqdn, and flow collapsing
   * FAQS: FAQ document
   * INSTALL: basic installation guide
   * docs/: Miscellaneous internals, UNIX signals, SQL triggers documents 
-  * examples/: Sample pmacct and 3rd party tools configurations; sample maps
+  * examples/: Sample configs, maps, AMQP/Kafka consumers, clients 
   * sql/: SQL documentation, default SQL schemas and customization tips
 
-BUILDING
+# BUILDING
 
 - Build GitHub code:
   * git clone https://github.com/pmacct/pmacct.git
   * cd pmacct
-  * ./autogen.sh *[pkg-config, libtool, autoconf and automake packages required]*
+  * ./autogen.sh *[pkg-config, libtool, autoconf, automake and bash packages required]*
   * ./configure *[check-out available configure knobs via ./configure --help]* 
   * make
   * make install *[with super-user permission]*

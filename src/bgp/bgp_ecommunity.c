@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -30,9 +30,6 @@ Software Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
 #include "bgp_prefix.h"
 #include "bgp.h"
 
-/* Hash of community attribute. */
-// struct hash *ecomhash;
-
 /* Allocate a new ecommunities.  */
 struct ecommunity *
 ecommunity_new (struct bgp_peer *peer)
@@ -48,7 +45,7 @@ ecommunity_new (struct bgp_peer *peer)
 
   tmp = malloc(sizeof (struct ecommunity));
   if (!tmp) {
-    Log(LOG_ERR, "ERROR ( %s/core/%s ): malloc() failed (ecommunity_new). Exiting ..\n", config.name, bms->log_thread_str);
+    Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (ecommunity_new). Exiting ..\n", config.name, bms->log_str);
     exit_all(1);
   }
   memset(tmp, 0, sizeof (struct ecommunity));
@@ -90,7 +87,7 @@ ecommunity_add_val (struct bgp_peer *peer, struct ecommunity *ecom, struct ecomm
       ecom->size++;
       ecom->val = malloc(ecom_length (ecom));
       if (!ecom->val) {
-	Log(LOG_ERR, "ERROR ( %s/core/%s ): malloc() failed (ecommunity_add_val). Exiting ..\n", config.name, bms->log_thread_str);
+	Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (ecommunity_add_val). Exiting ..\n", config.name, bms->log_str);
 	exit_all(1);
       }
       memcpy (ecom->val, eval->val, ECOMMUNITY_SIZE);
@@ -163,15 +160,6 @@ ecommunity_parse (struct bgp_peer *peer, u_int8_t *pnt, u_short length)
   new = ecommunity_uniq_sort (peer, &tmp);
 
   return ecommunity_intern (peer, new);
-}
-
-/* Retrun string representation of communities attribute. */
-char *
-ecommunity_str (struct bgp_peer *peer, struct ecommunity *ecom)
-{
-  if (! ecom->str)
-    ecom->str = ecommunity_ecom2str (peer, ecom, ECOMMUNITY_FORMAT_DISPLAY);
-  return ecom->str;
 }
 
 /* Intern Extended Communities Attribute.  */
@@ -263,209 +251,6 @@ ecommunity_init (int buckets, struct hash **loc_ecomhash)
 {
   (*loc_ecomhash) = hash_create (buckets, ecommunity_hash_make, ecommunity_cmp);
 }
-
-/* Extended Communities token enum. */
-enum ecommunity_token
-{
-  ecommunity_token_rt,
-  ecommunity_token_soo,
-  ecommunity_token_val,
-  ecommunity_token_unknown
-};
-
-/* Get next Extended Communities token from the string. */
-static const char *
-ecommunity_gettoken (const char *str, struct ecommunity_val *eval,
-		     enum ecommunity_token *token)
-{
-  int ret;
-  int dot = 0;
-  int digit = 0;
-  int separator = 0;
-  const char *p = str;
-  char *endptr;
-  struct in_addr ip;
-  as_t as = 0;
-  u_int32_t val = 0;
-  char buf[INET_ADDRSTRLEN + 1];
-
-  /* Skip white space. */
-  while (isspace ((int) *p))
-    {
-      p++;
-      str++;
-    }
-
-  /* Check the end of the line. */
-  if (*p == '\0')
-    return NULL;
-
-  /* "rt" and "soo" keyword parse. */
-  if (! isdigit ((int) *p)) 
-    {
-      /* "rt" match check.  */
-      if (tolower ((int) *p) == 'r')
-	{
-	  p++;
- 	  if (tolower ((int) *p) == 't')
-	    {
-	      p++;
-	      *token = ecommunity_token_rt;
-	      return p;
-	    }
-	  if (isspace ((int) *p) || *p == '\0')
-	    {
-	      *token = ecommunity_token_rt;
-	      return p;
-	    }
-	  goto error;
-	}
-      /* "soo" match check.  */
-      else if (tolower ((int) *p) == 's')
-	{
-	  p++;
- 	  if (tolower ((int) *p) == 'o')
-	    {
-	      p++;
-	      if (tolower ((int) *p) == 'o')
-		{
-		  p++;
-		  *token = ecommunity_token_soo;
-		  return p;
-		}
-	      if (isspace ((int) *p) || *p == '\0')
-		{
-		  *token = ecommunity_token_soo;
-		  return p;
-		}
-	      goto error;
-	    }
-	  if (isspace ((int) *p) || *p == '\0')
-	    {
-	      *token = ecommunity_token_soo;
-	      return p;
-	    }
-	  goto error;
-	}
-      goto error;
-    }
-  
-  /* What a mess, there are several possibilities:
-   *
-   * a) A.B.C.D:MN
-   * b) EF:OPQR
-   * c) GHJK:MN
-   *
-   * A.B.C.D: Four Byte IP
-   * EF:      Two byte ASN
-   * GHJK:    Four-byte ASN
-   * MN:      Two byte value
-   * OPQR:    Four byte value
-   *
-   */
-  while (isdigit ((int) *p) || *p == ':' || *p == '.') 
-    {
-      if (*p == ':')
-	{
-	  if (separator)
-	    goto error;
-
-	  separator = 1;
-	  digit = 0;
-	  
-	  if ((p - str) > INET_ADDRSTRLEN)
-	    goto error;
-          memset (buf, 0, INET_ADDRSTRLEN + 1);
-          memcpy (buf, str, p - str);
-          
-	  if (dot)
-	    {
-	      /* Parsing A.B.C.D in:
-               * A.B.C.D:MN
-               */
-	      ret = inet_aton (buf, &ip);
-	      if (ret == 0)
-	        goto error;
-	    }
-          else
-            {
-              /* ASN */
-              as = strtoul (buf, &endptr, 10);
-              if (*endptr != '\0' || as == BGP_AS4_MAX)
-                goto error;
-            }
-	}
-      else if (*p == '.')
-	{
-	  if (separator)
-	    goto error;
-	  dot++;
-	  if (dot > 4)
-	    goto error;
-	}
-      else
-	{
-	  digit = 1;
-	  
-	  /* We're past the IP/ASN part */
-	  if (separator)
-	    {
-	      val *= 10;
-	      val += (*p - '0');
-            }
-	}
-      p++;
-    }
-
-  /* Low digit part must be there. */
-  if (!digit || !separator)
-    goto error;
-
-  /* Encode result into routing distinguisher.  */
-  if (dot)
-    {
-      if (val > UINT16_MAX)
-        goto error;
-      
-      eval->val[0] = ECOMMUNITY_ENCODE_IP;
-      eval->val[1] = 0;
-      memcpy (&eval->val[2], &ip, sizeof (struct in_addr));
-      eval->val[6] = (val >> 8) & 0xff;
-      eval->val[7] = val & 0xff;
-    }
-  else if (as > BGP_AS_MAX)
-    {
-      if (val > UINT16_MAX)
-        goto error;
-      
-      eval->val[0] = ECOMMUNITY_ENCODE_AS4;
-      eval->val[1] = 0;
-      eval->val[2] = (as >>24) & 0xff;
-      eval->val[3] = (as >>16) & 0xff;
-      eval->val[4] = (as >>8) & 0xff;
-      eval->val[5] =  as & 0xff;
-      eval->val[6] = (val >> 8) & 0xff;
-      eval->val[7] = val & 0xff;
-    }
-  else
-    {
-      eval->val[0] = ECOMMUNITY_ENCODE_AS;
-      eval->val[1] = 0;
-      
-      eval->val[2] = (as >>8) & 0xff;
-      eval->val[3] = as & 0xff;
-      eval->val[4] = (val >>24) & 0xff;
-      eval->val[5] = (val >>16) & 0xff;
-      eval->val[6] = (val >>8) & 0xff;
-      eval->val[7] = val & 0xff;
-    }
-  *token = ecommunity_token_val;
-  return p;
-
- error:
-  *token = ecommunity_token_unknown;
-  return p;
-}
 
 /* Convert extended community attribute to string.  
 
@@ -527,7 +312,7 @@ ecommunity_ecom2str (struct bgp_peer *peer, struct ecommunity *ecom, int format)
     {
       str_buf = malloc(1);
       if (!str_buf) {
-	Log(LOG_ERR, "ERROR ( %s/core/%s ): malloc() failed (ecommunity_ecom2str). Exiting ..\n", config.name, bms->log_thread_str);
+	Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (ecommunity_ecom2str). Exiting ..\n", config.name, bms->log_str);
 	exit_all(1);
       }
       str_buf[0] = '\0';
@@ -537,7 +322,7 @@ ecommunity_ecom2str (struct bgp_peer *peer, struct ecommunity *ecom, int format)
   /* Prepare buffer.  */
   str_buf = malloc(ECOMMUNITY_STR_DEFAULT_LEN + 1);
   if (!str_buf) {
-    Log(LOG_ERR, "ERROR ( %s/core/%s ): malloc() failed (ecommunity_ecom2str). Exiting ..\n", config.name, bms->log_thread_str);
+    Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (ecommunity_ecom2str). Exiting ..\n", config.name, bms->log_str);
     exit_all(1);
   }
   str_size = ECOMMUNITY_STR_DEFAULT_LEN + 1;
@@ -606,7 +391,7 @@ ecommunity_ecom2str (struct bgp_peer *peer, struct ecommunity *ecom, int format)
 	  eas.val = (*pnt++ << 8);
 	  eas.val |= (*pnt++);
 
-	  len = sprintf( str_buf + str_pnt, "%s%d:%d", prefix,
+	  len = sprintf( str_buf + str_pnt, "%s%u:%u", prefix,
                         eas.as, eas.val );
 	  str_pnt += len;
 	  first = 0;
@@ -621,7 +406,7 @@ ecommunity_ecom2str (struct bgp_peer *peer, struct ecommunity *ecom, int format)
 	  eas.val |= (*pnt++ << 8);
 	  eas.val |= (*pnt++);
 
-	  len = sprintf (str_buf + str_pnt, "%s%d:%d", prefix,
+	  len = sprintf (str_buf + str_pnt, "%s%u:%u", prefix,
 			 eas.as, eas.val);
 	  str_pnt += len;
 	  first = 0;
@@ -633,7 +418,7 @@ ecommunity_ecom2str (struct bgp_peer *peer, struct ecommunity *ecom, int format)
 	  eip.val = (*pnt++ << 8);
 	  eip.val |= (*pnt++);
 
-	  len = sprintf (str_buf + str_pnt, "%s%s:%d", prefix,
+	  len = sprintf (str_buf + str_pnt, "%s%s:%u", prefix,
 			 inet_ntoa (eip.ip), eip.val);
 	  str_pnt += len;
 	  first = 0;
@@ -641,34 +426,3 @@ ecommunity_ecom2str (struct bgp_peer *peer, struct ecommunity *ecom, int format)
     }
   return str_buf;
 }
-
-int
-ecommunity_match (const struct ecommunity *ecom1, 
-                  const struct ecommunity *ecom2)
-{
-  int i = 0;
-  int j = 0;
-
-  if (ecom1 == NULL && ecom2 == NULL)
-    return 1;
-
-  if (ecom1 == NULL || ecom2 == NULL)
-    return 0;
-
-  if (ecom1->size < ecom2->size)
-    return 0;
-
-  /* Every community on com2 needs to be on com1 for this to match */
-  while (i < ecom1->size && j < ecom2->size)
-    {
-      if (memcmp (ecom1->val + i, ecom2->val + j, ECOMMUNITY_SIZE) == 0)
-        j++;
-      i++;
-    }
-
-  if (j == ecom2->size)
-    return 1;
-  else
-    return 0;
-}
-

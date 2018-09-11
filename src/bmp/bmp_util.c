@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -24,6 +24,7 @@
 
 /* includes */
 #include "pmacct.h"
+#include "addr.h"
 #include "../bgp/bgp.h"
 #include "bmp.h"
 #if defined WITH_RABBITMQ
@@ -90,16 +91,34 @@ void bgp_peer_log_msg_extras_bmp(struct bgp_peer *peer, int output, void *void_o
   if (output == PRINT_OUTPUT_JSON) {
 #ifdef WITH_JANSSON
     char ip_address[INET6_ADDRSTRLEN];
-    json_t *obj = void_obj, *kv;
+    json_t *obj = void_obj;
 
     addr_to_str(ip_address, &bmpp->self.addr);
-    kv = json_pack("{ss}", "bmp_router", ip_address);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+    json_object_set_new_nocheck(obj, "bmp_router", json_string(ip_address));
 
-    kv = json_pack("{ss}", "bmp_msg_type", bmp_msg_type);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+    json_object_set_new_nocheck(obj, "bmp_router_port", json_integer((json_int_t)bmpp->self.tcp_port));
+
+    json_object_set_new_nocheck(obj, "bmp_msg_type", json_string(bmp_msg_type));
+#endif
+  }
+}
+
+void bgp_peer_logdump_initclose_extras_bmp(struct bgp_peer *peer, int output, void *void_obj)
+{
+  struct bgp_misc_structs *bms;
+  struct bmp_peer *bmpp;
+
+  if (!peer || !void_obj) return;
+
+  bms = bgp_select_misc_db(peer->type);
+  bmpp = peer->bmp_se;
+  if (!bms || !bmpp) return;
+
+  if (output == PRINT_OUTPUT_JSON) {
+#ifdef WITH_JANSSON
+    json_t *obj = void_obj;
+
+    json_object_set_new_nocheck(obj, "bmp_router_port", json_integer((json_int_t)peer->tcp_port));
 #endif
   }
 }
@@ -113,6 +132,10 @@ void bmp_link_misc_structs(struct bgp_misc_structs *bms)
   bms->msglog_kafka_host = &bmp_daemon_msglog_kafka_host;
 #endif
   bms->max_peers = config.nfacctd_bmp_max_peers;
+  bms->peers = bmp_peers;
+  bms->peers_cache = NULL;
+  bms->peers_port_cache = NULL;
+  bms->xconnects = NULL;
   bms->dump_file = config.bmp_dump_file;
   bms->dump_amqp_routing_key = config.bmp_dump_amqp_routing_key;
   bms->dump_amqp_routing_key_rr = config.bmp_dump_amqp_routing_key_rr;
@@ -126,9 +149,15 @@ void bmp_link_misc_structs(struct bgp_misc_structs *bms)
   bms->msglog_kafka_topic_rr = config.nfacctd_bmp_msglog_kafka_topic_rr;
   bms->peer_str = malloc(strlen("bmp_router") + 1);
   strcpy(bms->peer_str, "bmp_router");
-  bms->log_thread_str = malloc(strlen("BMP") + 1);
-  strcpy(bms->log_thread_str, "BMP");
+  bms->peer_port_str = malloc(strlen("bmp_router_port") + 1);
+  strcpy(bms->peer_port_str, "bmp_router_port");
   bms->bgp_peer_log_msg_extras = bgp_peer_log_msg_extras_bmp;
+  bms->bgp_peer_logdump_initclose_extras = bgp_peer_logdump_initclose_extras_bmp;
+
+  bms->bgp_peer_logdump_extra_data = bgp_extra_data_print_bmp;
+  bms->bgp_extra_data_process = bgp_extra_data_process_bmp;
+  bms->bgp_extra_data_cmp = bgp_extra_data_cmp_bmp;
+  bms->bgp_extra_data_free = bgp_extra_data_free_bmp;
 
   bms->table_peer_buckets = config.bmp_table_peer_buckets;
   bms->table_per_peer_buckets = config.bmp_table_per_peer_buckets;
@@ -137,6 +166,8 @@ void bmp_link_misc_structs(struct bgp_misc_structs *bms)
   bms->route_info_modulo = bmp_route_info_modulo;
   bms->bgp_lookup_find_peer = bgp_lookup_find_bmp_peer;
   bms->bgp_lookup_node_match_cmp = bgp_lookup_node_match_cmp_bmp;
+
+  if (!bms->is_thread && !bms->dump_backend_methods) bms->skip_rib = TRUE;
 }
 
 struct bgp_peer *bmp_sync_loc_rem_peers(struct bgp_peer *bgp_peer_loc, struct bgp_peer *bgp_peer_rem)
@@ -176,62 +207,89 @@ void bmp_peer_close(struct bmp_peer *bmpp, int type)
 
   if (!bms) return;
 
-  pm_twalk(bmpp->bgp_peers, bmp_bmpp_bgp_peers_walk_delete);
+  pm_twalk(bmpp->bgp_peers, bgp_peers_bintree_walk_delete, NULL);
 
-  pm_tdestroy(&bmpp->bgp_peers, bmp_bmpp_bgp_peers_free);
+  pm_tdestroy(&bmpp->bgp_peers, bgp_peer_free);
 
   if (bms->dump_file || bms->dump_amqp_routing_key || bms->dump_kafka_topic)
     bmp_dump_close_peer(peer);
 
-  bgp_peer_close(peer, type);
+  bgp_peer_close(peer, type, FALSE, FALSE, FALSE, FALSE, NULL);
 }
 
-int bmp_bmpp_bgp_peers_cmp(const void *a, const void *b)
+void bgp_msg_data_set_data_bmp(struct bgp_msg_extra_data_bmp *bmed_bmp, struct bmp_data *bdata)
 {
-  return memcmp(&((struct bgp_peer *)a)->addr, &((struct bgp_peer *)b)->addr, sizeof(struct host_addr));
+  bmed_bmp->peer_type = bdata->peer_type;
+
+  bmed_bmp->is_post = bdata->is_post;
+  bmed_bmp->is_2b_asn = bdata->is_2b_asn;
+  bmed_bmp->is_out = bdata->is_out;
+  bmed_bmp->is_filtered = bdata->is_filtered;
 }
 
-int bmp_bmpp_bgp_peer_host_addr_cmp(const void *a, const void *b)
+int bgp_extra_data_cmp_bmp(struct bgp_msg_extra_data *a, struct bgp_msg_extra_data *b) 
 {
-  return memcmp(a, &((struct bgp_peer *)b)->addr, sizeof(struct host_addr));
+  if (a->id == b->id && a->len == b->len && a->id == BGP_MSG_EXTRA_DATA_BMP)
+    return memcmp(a->data, b->data, a->len);
+  else
+    return ERR;
 }
 
-void bmp_bmpp_bgp_peers_free(void *a)
+int bgp_extra_data_process_bmp(struct bgp_msg_extra_data *bmed, struct bgp_info *ri)
 {
+  struct bgp_info_extra *rie = NULL;
+  int ret = BGP_MSG_EXTRA_DATA_NONE;
+
+  if (bmed && ri && bmed->id == BGP_MSG_EXTRA_DATA_BMP) {
+    rie = bgp_info_extra_get(ri);
+    if (rie) {
+      if (rie->bmed.data && (rie->bmed.len != bmed->len)) {
+	free(rie->bmed.data);
+	rie->bmed.data = NULL;
+      }
+
+      if (!rie->bmed.data) rie->bmed.data = malloc(bmed->len);
+
+      if (rie->bmed.data) {
+	memcpy(rie->bmed.data, bmed->data, bmed->len);
+	rie->bmed.len = bmed->len; 
+	rie->bmed.id = bmed->id;
+
+	ret = BGP_MSG_EXTRA_DATA_BMP;	
+      }
+    }
+  }
+
+  return ret;
 }
 
-void bmp_bmpp_bgp_peers_walk_print(const void *nodep, const VISIT which, const int depth)
+void bgp_extra_data_free_bmp(struct bgp_msg_extra_data *bmed)
 {
-  struct bgp_peer *peer;
-  char peer_str[INET6_ADDRSTRLEN];
-
-  peer = (*(struct bgp_peer **) nodep);
-
-  if (!peer) Log(LOG_INFO, "INFO ( %s/core/BMP ): bmp_bmpp_bgp_peers_walk_print(): null\n", config.name);
-  else {
-    addr_to_str(peer_str, &peer->addr);
-    Log(LOG_INFO, "INFO ( %s/core/BMP ): bmp_bmpp_bgp_peers_walk_print(): %s\n", config.name, peer_str);
+  if (bmed && bmed->id == BGP_MSG_EXTRA_DATA_BMP) {
+    if (bmed->data) free(bmed->data);
+    memset(bmed, 0, sizeof(struct bgp_msg_extra_data));
   }
 }
 
-void bmp_bmpp_bgp_peers_walk_delete(const void *nodep, const VISIT which, const int depth)
+void bgp_extra_data_print_bmp(struct bgp_msg_extra_data *bmed, int output, void *void_obj)
 {
-  struct bgp_misc_structs *bms;
-  char peer_str[] = "peer_ip", *saved_peer_str;
-  struct bgp_peer *peer;
+  struct bgp_msg_extra_data_bmp *bmed_bmp;
 
-  peer = (*(struct bgp_peer **) nodep);
+  if (!bmed || !void_obj || bmed->id != BGP_MSG_EXTRA_DATA_BMP) return;
 
-  if (!peer) return;
+  bmed_bmp = bmed->data;
 
-  bms = bgp_select_misc_db(peer->type);
+  if (output == PRINT_OUTPUT_JSON) {
+#ifdef WITH_JANSSON
+    json_t *obj = void_obj;
 
-  if (!bms) return;
-
-  saved_peer_str = bms->peer_str;
-  bms->peer_str = peer_str;
-  bgp_peer_info_delete(peer);
-  bms->peer_str = saved_peer_str;
-
-  // XXX: count tree elements to index and free() later
+    if (bmed_bmp->peer_type == BMP_PEER_TYPE_LOC_RIB) {
+      json_object_set_new_nocheck(obj, "is_filtered", json_integer((json_int_t)bmed_bmp->is_filtered));
+    }
+    else {
+      json_object_set_new_nocheck(obj, "is_post", json_integer((json_int_t)bmed_bmp->is_post));
+      json_object_set_new_nocheck(obj, "is_out", json_integer((json_int_t)bmed_bmp->is_out));
+    }
+#endif
+  }
 }

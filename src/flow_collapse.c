@@ -9,6 +9,7 @@
 #include "amqp_common.h"
 #include "uthash.h"
 #include "utlist.h"
+#include "flow_url_common.h"
 
 #define MODULE_NAME "flow_collapse"
 #define DEFAULT_PRETAG_PMACCT_FILENAME "/etc/pmacct/pretag_pmacct.map"
@@ -315,7 +316,7 @@ void get_host_ip(char *host) {
     perror("getifaddrs");
   } else {
     //Walk through linked list, maintaining head pointer so we can free list later
-    char *interface = config.dev == NULL ? "eth0" : config.dev;
+    char *interface = config.pcap_if == NULL ? "eth0" : config.pcap_if;
     for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
       if (ifa->ifa_addr != NULL) {
 	int family = ifa->ifa_addr->sa_family;
@@ -332,17 +333,6 @@ void get_host_ip(char *host) {
     freeifaddrs(ifaddr);
   }
 }
-
-void compose_timestamp_utc(char *buf, int buflen, struct timeval *tv)
-{
-  time_t time1;
-  struct tm *time2;
-
-  time1 = tv->tv_sec;
-  time2 = gmtime(&time1);
-  strftime(buf, SRVBUFLEN, "%Y-%m-%d %H:%M:%S", time2);
-}
-
 
 void publish_port_entry(u_int64_t wtc, struct port_bucket_entry *port_bucket_entry, struct port_entry *port_entry, char *reason)
 {
@@ -402,7 +392,7 @@ void publish_port_entry(u_int64_t wtc, struct port_bucket_entry *port_bucket_ent
     tv.tv_sec = time(NULL);
     tv.tv_usec = 0;
     stamp_updated = malloc(SRVBUFLEN);
-    compose_timestamp_utc(stamp_updated, SRVBUFLEN, &tv);
+    compose_timestamp(stamp_updated, SRVBUFLEN, &tv, FALSE, FALSE, FALSE, TRUE);
   }
   add_element(json_obj, json_pack("{ss}", "stamp_updated", stamp_updated));
 
@@ -633,7 +623,7 @@ void publish(u_int64_t wtc, struct flow_entry *flow_entry)
 
 void read_edge_device_id(char *pretag_filename) {
   if (pretag_filename && strlen(pretag_filename) > 0) {
-    int allocated;
+    int allocated = FALSE;
     struct plugin_requests req;
     struct id_table pretag_table;
     memset(&req, 0, sizeof(req));

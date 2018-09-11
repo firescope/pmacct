@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -25,6 +25,7 @@
 /* includes */
 /* includes */
 #include "pmacct.h"
+#include "addr.h"
 #include "../bgp/bgp.h"
 #include "bmp.h"
 #if defined WITH_RABBITMQ
@@ -34,10 +35,11 @@
 #include "kafka_common.h"
 #endif
 
-int bmp_log_msg(struct bgp_peer *peer, struct bmp_data *bdata, void *log_data, char *event_type, int output, int log_type)
+int bmp_log_msg(struct bgp_peer *peer, struct bmp_data *bdata, void *log_data, u_int64_t log_seq, char *event_type, int output, int log_type)
 {
   struct bgp_misc_structs *bms = bgp_select_misc_db(FUNC_TYPE_BMP);
   int ret = 0, amqp_ret = 0, kafka_ret = 0, etype = BGP_LOGDUMP_ET_NONE;
+  pid_t writer_pid = getpid();
 
   if (!bms || !peer || !peer->log || !bdata || !event_type) return ERR;
 
@@ -58,29 +60,31 @@ int bmp_log_msg(struct bgp_peer *peer, struct bmp_data *bdata, void *log_data, c
 
   if (output == PRINT_OUTPUT_JSON) {
 #ifdef WITH_JANSSON
-    json_t *obj = json_object(), *kv;
+    json_t *obj = json_object();
     char tstamp_str[SRVBUFLEN];
 
-    kv = json_pack("{ss}", "event_type", event_type);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+    json_object_set_new_nocheck(obj, "event_type", json_string(event_type));
 
-    /* no need for seq for "dump" event_type */
+    json_object_set_new_nocheck(obj, "seq", json_integer((json_int_t)log_seq));
+
     if (etype == BGP_LOGDUMP_ET_LOG) {
-      kv = json_pack("{sI}", "seq", (json_int_t)bms->log_seq);
-      json_object_update_missing(obj, kv);
-      json_decref(kv);
-      bgp_peer_log_seq_increment(&bms->log_seq);
+      compose_timestamp(tstamp_str, SRVBUFLEN, &bdata->tstamp, TRUE,
+			config.timestamps_since_epoch, config.timestamps_rfc3339,
+			config.timestamps_utc);
+      json_object_set_new_nocheck(obj, "timestamp", json_string(tstamp_str));
+    }
+    else if (etype == BGP_LOGDUMP_ET_DUMP) {
+      json_object_set_new_nocheck(obj, "timestamp", json_string(bms->dump.tstamp_str));
+
+      compose_timestamp(tstamp_str, SRVBUFLEN, &bdata->tstamp, TRUE,
+			config.timestamps_since_epoch, config.timestamps_rfc3339,
+			config.timestamps_utc);
+      json_object_set_new_nocheck(obj, "event_timestamp", json_string(tstamp_str));
     }
 
-    compose_timestamp(tstamp_str, SRVBUFLEN, &bdata->tstamp, TRUE, config.timestamps_since_epoch);
-    kv = json_pack("{ss}", "timestamp", tstamp_str);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+    json_object_set_new_nocheck(obj, "bmp_router", json_string(peer->addr_str));
 
-    kv = json_pack("{ss}", "bmp_router", peer->addr_str);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+    json_object_set_new_nocheck(obj, "bmp_router_port", json_integer((json_int_t)peer->tcp_port));
 
     switch (log_type) {
     case BMP_LOG_TYPE_STATS:
@@ -109,6 +113,7 @@ int bmp_log_msg(struct bgp_peer *peer, struct bmp_data *bdata, void *log_data, c
 #ifdef WITH_RABBITMQ
     if ((config.nfacctd_bmp_msglog_amqp_routing_key && etype == BGP_LOGDUMP_ET_LOG) ||
 	(config.bmp_dump_amqp_routing_key && etype == BGP_LOGDUMP_ET_DUMP)) {
+      add_writer_name_and_pid_json(obj, config.proc_name, writer_pid);
       amqp_ret = write_and_free_json_amqp(peer->log->amqp_host, obj);
       p_amqp_unset_routing_key(peer->log->amqp_host);
     }
@@ -117,6 +122,7 @@ int bmp_log_msg(struct bgp_peer *peer, struct bmp_data *bdata, void *log_data, c
 #ifdef WITH_KAFKA
     if ((config.nfacctd_bmp_msglog_kafka_topic && etype == BGP_LOGDUMP_ET_LOG) ||
         (config.bmp_dump_kafka_topic && etype == BGP_LOGDUMP_ET_DUMP)) {
+      add_writer_name_and_pid_json(obj, config.proc_name, writer_pid);
       kafka_ret = write_and_free_json_kafka(peer->log->kafka_host, obj);
       p_kafka_unset_topic(peer->log->kafka_host);
     }
@@ -133,47 +139,40 @@ int bmp_log_msg_stats(struct bgp_peer *peer, struct bmp_data *bdata, struct bmp_
   int ret = 0;
 #ifdef WITH_JANSSON
   char ip_address[INET6_ADDRSTRLEN];
-  json_t *obj = (json_t *) vobj, *kv;
+  json_t *obj = (json_t *) vobj;
 
   if (!peer || !bdata || !blstats || !vobj) return ERR;
 
-  kv = json_pack("{ss}", "bmp_msg_type", bmp_msg_type);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "bmp_msg_type", json_string(bmp_msg_type));
 
   addr_to_str(ip_address, &bdata->peer_ip);
-  kv = json_pack("{ss}", "peer_ip", ip_address);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "peer_ip", json_string(ip_address));
 
-  kv = json_pack("{sI}", "peer_asn", (json_int_t)bdata->peer_asn);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "peer_asn", json_integer((json_int_t)bdata->peer_asn));
 
-  kv = json_pack("{sI}", "peer_type", (json_int_t)bdata->peer_type);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "peer_type", json_integer((json_int_t)bdata->peer_type));
 
-  kv = json_pack("{sI}", "counter_type", (json_int_t)blstats->cnt_type);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
-
-  if (blstats->cnt_type <= BMP_STATS_MAX) {
-    kv = json_pack("{ss}", "counter_type_str", bmp_stats_cnt_types[blstats->cnt_type]);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+  if (bdata->peer_type == BMP_PEER_TYPE_LOC_RIB) {
+    json_object_set_new_nocheck(obj, "is_filtered", json_integer((json_int_t)bdata->is_filtered));
   }
-  else {
-    kv = json_pack("{ss}", "counter_type_str", "Unknown");
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+  else { 
+    json_object_set_new_nocheck(obj, "is_post", json_integer((json_int_t)bdata->is_post));
+    json_object_set_new_nocheck(obj, "is_out", json_integer((json_int_t)bdata->is_out));
   }
 
-  if (blstats->got_data) {
-    kv = json_pack("{sI}", "counter_value", (json_int_t)blstats->cnt_data);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+  json_object_set_new_nocheck(obj, "counter_type", json_integer((json_int_t)blstats->cnt_type));
+
+  if (blstats->cnt_type <= BMP_STATS_MAX)
+    json_object_set_new_nocheck(obj, "counter_type_str", json_string(bmp_stats_cnt_types[blstats->cnt_type]));
+  else
+    json_object_set_new_nocheck(obj, "counter_type_str", json_string("Unknown"));
+
+  if (blstats->cnt_type == BMP_STATS_TYPE9 || blstats->cnt_type == BMP_STATS_TYPE10) {
+    json_object_set_new_nocheck(obj, "afi", json_integer((json_int_t)blstats->cnt_afi));
+    json_object_set_new_nocheck(obj, "safi", json_integer((json_int_t)blstats->cnt_safi));
   }
+
+  if (blstats->got_data) json_object_set_new_nocheck(obj, "counter_value", json_integer((json_int_t)blstats->cnt_data));
 #endif
 
   return ret;
@@ -184,28 +183,19 @@ int bmp_log_msg_init(struct bgp_peer *peer, struct bmp_data *bdata, struct bmp_l
   char bmp_msg_type[] = "init";
   int ret = 0;
 #ifdef WITH_JANSSON
-  json_t *obj = (json_t *) vobj, *kv;
+  json_t *obj = (json_t *) vobj;
 
   if (!peer || !vobj) return ERR;
 
-  kv = json_pack("{ss}", "bmp_msg_type", bmp_msg_type);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "bmp_msg_type", json_string(bmp_msg_type));
 
   if (blinit) {
-    kv = json_pack("{sI}", "bmp_init_data_type", (json_int_t)blinit->type);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+    json_object_set_new_nocheck(obj, "bmp_init_data_type", json_integer((json_int_t)blinit->type));
 
-    kv = json_pack("{sI}", "bmp_init_data_len", (json_int_t)blinit->len);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+    json_object_set_new_nocheck(obj, "bmp_init_data_len", json_integer((json_int_t)blinit->len));
 
-    if (blinit->type == BMP_INIT_INFO_STRING || blinit->type == BMP_INIT_INFO_SYSDESCR || blinit->type == BMP_INIT_INFO_SYSNAME) {
-      kv = json_pack("{ss}", "bmp_init_data_val", blinit->val);
-      json_object_update_missing(obj, kv);
-      json_decref(kv);
-    }
+    if (blinit->type == BMP_INIT_INFO_STRING || blinit->type == BMP_INIT_INFO_SYSDESCR || blinit->type == BMP_INIT_INFO_SYSNAME)
+      json_object_set_new_nocheck(obj, "bmp_init_data_val", json_string(blinit->val));
   }
 #endif
 
@@ -217,38 +207,24 @@ int bmp_log_msg_term(struct bgp_peer *peer, struct bmp_data *bdata, struct bmp_l
   char bmp_msg_type[] = "term";
   int ret = 0;
 #ifdef WITH_JANSSON
-  json_t *obj = (json_t *) vobj, *kv;
+  json_t *obj = (json_t *) vobj;
 
   if (!peer || !vobj) return ERR;
 
-  kv = json_pack("{ss}", "bmp_msg_type", bmp_msg_type);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "bmp_msg_type", json_string(bmp_msg_type));
 
   if (blterm) {
-    kv = json_pack("{sI}", "bmp_term_data_type", (json_int_t)blterm->type);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+    json_object_set_new_nocheck(obj, "bmp_term_data_type", json_integer((json_int_t)blterm->type));
 
-    kv = json_pack("{sI}", "bmp_term_data_len", (json_int_t)blterm->len);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
+    json_object_set_new_nocheck(obj, "bmp_term_data_len", json_integer((json_int_t)blterm->len));
 
-    if (blterm->type == BMP_TERM_INFO_STRING) {
-      kv = json_pack("{ss}", "bmp_term_data_val_str", blterm->val);
-      json_object_update_missing(obj, kv);
-      json_decref(kv);
-    }
+    if (blterm->type == BMP_TERM_INFO_STRING)
+      json_object_set_new_nocheck(obj, "bmp_term_data_val_str", json_string(blterm->val));
     else if (blterm->type == BMP_TERM_INFO_REASON) {
-      kv = json_pack("{sI}", "bmp_term_data_val_reas_type", (json_int_t)blterm->reas_type);
-      json_object_update_missing(obj, kv);
-      json_decref(kv);
+      json_object_set_new_nocheck(obj, "bmp_term_data_val_reas_type", json_integer((json_int_t)blterm->reas_type));
 
-      if (blterm->reas_type <= BMP_TERM_REASON_MAX) {
-        kv = json_pack("{ss}", "bmp_term_data_val_reas_str", bmp_term_reason_types[blterm->reas_type]);
-        json_object_update_missing(obj, kv);
-        json_decref(kv);
-      }
+      if (blterm->reas_type <= BMP_TERM_REASON_MAX)
+	json_object_set_new_nocheck(obj, "bmp_term_data_val_reas_str", json_string(bmp_term_reason_types[blterm->reas_type]));
     }
   }
 #endif
@@ -262,43 +238,38 @@ int bmp_log_msg_peer_up(struct bgp_peer *peer, struct bmp_data *bdata, struct bm
   int ret = 0;
 #ifdef WITH_JANSSON
   char ip_address[INET6_ADDRSTRLEN];
-  json_t *obj = (json_t *) vobj, *kv;
+  json_t *obj = (json_t *) vobj;
 
   if (!peer || !bdata || !blpu || !vobj) return ERR;
 
-  kv = json_pack("{ss}", "bmp_msg_type", bmp_msg_type);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "bmp_msg_type", json_string(bmp_msg_type));
 
   addr_to_str(ip_address, &bdata->peer_ip);
-  kv = json_pack("{ss}", "peer_ip", ip_address);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "peer_ip", json_string(ip_address));
 
-  kv = json_pack("{sI}", "peer_asn", (json_int_t)bdata->peer_asn);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "peer_asn", json_integer((json_int_t)bdata->peer_asn));
 
-  kv = json_pack("{sI}", "peer_type", (json_int_t)bdata->peer_type);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "peer_type", json_integer((json_int_t)bdata->peer_type));
 
-  kv = json_pack("{ss}", "bgp_id", inet_ntoa(bdata->bgp_id.address.ipv4));
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  if (bdata->peer_type <= BMP_PEER_TYPE_MAX)
+    json_object_set_new_nocheck(obj, "peer_type_str", json_string(bmp_peer_types[bdata->peer_type]));
 
-  kv = json_pack("{sI}", "local_port", (json_int_t)blpu->loc_port);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  if (bdata->peer_type == BMP_PEER_TYPE_LOC_RIB) {
+    json_object_set_new_nocheck(obj, "is_filtered", json_integer((json_int_t)bdata->is_filtered));
+  }
+  else {
+    json_object_set_new_nocheck(obj, "is_post", json_integer((json_int_t)bdata->is_post));
+    json_object_set_new_nocheck(obj, "is_out", json_integer((json_int_t)bdata->is_out));
+  }
 
-  kv = json_pack("{sI}", "remote_port", (json_int_t)blpu->rem_port);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "bgp_id", json_string(inet_ntoa(bdata->bgp_id.address.ipv4)));
+
+  json_object_set_new_nocheck(obj, "local_port", json_integer((json_int_t)blpu->loc_port));
+
+  json_object_set_new_nocheck(obj, "remote_port", json_integer((json_int_t)blpu->rem_port));
 
   addr_to_str(ip_address, &blpu->local_ip);
-  kv = json_pack("{ss}", "local_ip", ip_address);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "local_ip", json_string(ip_address));
 #endif
 
   return ret;
@@ -310,36 +281,29 @@ int bmp_log_msg_peer_down(struct bgp_peer *peer, struct bmp_data *bdata, struct 
   int ret = 0;
 #ifdef WITH_JANSSON
   char ip_address[INET6_ADDRSTRLEN];
-  json_t *obj = (json_t *) vobj, *kv;
+  json_t *obj = (json_t *) vobj;
 
   if (!peer || !bdata || !blpd || !vobj) return ERR;
 
-  kv = json_pack("{ss}", "bmp_msg_type", bmp_msg_type);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "bmp_msg_type", json_string(bmp_msg_type));
 
   addr_to_str(ip_address, &bdata->peer_ip);
-  kv = json_pack("{ss}", "peer_ip", ip_address);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "peer_ip", json_string(ip_address));
 
-  kv = json_pack("{sI}", "peer_asn", (json_int_t)bdata->peer_asn);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "peer_asn", json_integer((json_int_t)bdata->peer_asn));
 
-  kv = json_pack("{sI}", "peer_type", (json_int_t)bdata->peer_type);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  json_object_set_new_nocheck(obj, "peer_type", json_integer((json_int_t)bdata->peer_type));
 
-  kv = json_pack("{sI}", "reason_type", (json_int_t)blpd->reason);
-  json_object_update_missing(obj, kv);
-  json_decref(kv);
+  if (bdata->peer_type <= BMP_PEER_TYPE_MAX)
+    json_object_set_new_nocheck(obj, "peer_type_str", json_string(bmp_peer_types[bdata->peer_type]));
 
-  if (blpd->reason == BMP_PEER_DOWN_LOC_CODE) {
-    kv = json_pack("{sI}", "reason_loc_code", (json_int_t)blpd->loc_code);
-    json_object_update_missing(obj, kv);
-    json_decref(kv);
-  }
+  json_object_set_new_nocheck(obj, "reason_type", json_integer((json_int_t)blpd->reason));
+
+  if (blpd->reason <= BMP_PEER_DOWN_MAX)
+    json_object_set_new_nocheck(obj, "reason_str", json_string(bmp_peer_down_reason_types[blpd->reason]));
+
+  if (blpd->reason == BMP_PEER_DOWN_LOC_CODE)
+    json_object_set_new_nocheck(obj, "reason_loc_code", json_integer((json_int_t)blpd->loc_code));
 #endif
 
   return ret;
@@ -359,7 +323,7 @@ void bmp_dump_init_peer(struct bgp_peer *peer)
 
   peer->bmp_se = malloc(sizeof(struct bmp_dump_se_ll));
   if (!peer->bmp_se) {
-    Log(LOG_ERR, "ERROR ( %s/core/%s ): Unable to malloc() bmp_se structure. Terminating thread.\n", config.name, bms->log_thread_str);
+    Log(LOG_ERR, "ERROR ( %s/%s ): Unable to malloc() bmp_se structure. Terminating thread.\n", config.name, bms->log_str);
     exit_all(1);
   }
 
@@ -382,6 +346,7 @@ void bmp_dump_close_peer(struct bgp_peer *peer)
 
 void bmp_dump_se_ll_append(struct bgp_peer *peer, struct bmp_data *bdata, void *extra, int log_type)
 {
+  struct bgp_misc_structs *bms = bgp_select_misc_db(FUNC_TYPE_BMP);
   struct bmp_dump_se_ll *se_ll;
   struct bmp_dump_se_ll_elem *se_ll_elem;
 
@@ -391,7 +356,7 @@ void bmp_dump_se_ll_append(struct bgp_peer *peer, struct bmp_data *bdata, void *
 
   se_ll_elem = malloc(sizeof(struct bmp_dump_se_ll_elem));
   if (!se_ll_elem) {
-    Log(LOG_ERR, "ERROR ( %s/core/BMP ): Unable to malloc() se_ll_elem structure. Terminating thread.\n", config.name);
+    Log(LOG_ERR, "ERROR ( %s/%s ): Unable to malloc() se_ll_elem structure. Terminating thread.\n", config.name, bms->log_str);
     exit_all(1);
   }
 
@@ -420,6 +385,7 @@ void bmp_dump_se_ll_append(struct bgp_peer *peer, struct bmp_data *bdata, void *
     }
   }
 
+  se_ll_elem->rec.seq = bms->log_seq;;
   se_ll_elem->rec.se_type = log_type;
   se_ll_elem->next = NULL; /* pedantic */
 
@@ -510,7 +476,7 @@ void bmp_handle_dump_event()
 #endif
 
     dumper_pid = getpid();
-    Log(LOG_INFO, "INFO ( %s/core/BMP ): *** Dumping BMP tables - START (PID: %u) ***\n", config.name, dumper_pid);
+    Log(LOG_INFO, "INFO ( %s/%s ): *** Dumping BMP tables - START (PID: %u) ***\n", config.name, bms->log_str, dumper_pid);
     start = time(NULL);
     tables_num = 0;
 
@@ -525,7 +491,7 @@ void bmp_handle_dump_event()
         if (config.bmp_dump_amqp_routing_key) bgp_peer_log_dynname(current_filename, SRVBUFLEN, config.bmp_dump_amqp_routing_key, peer);
         if (config.bmp_dump_kafka_topic) bgp_peer_log_dynname(current_filename, SRVBUFLEN, config.bmp_dump_kafka_topic, peer);
 
-        strftime_same(current_filename, SRVBUFLEN, tmpbuf, &bms->log_tstamp.tv_sec);
+        pm_strftime_same(current_filename, SRVBUFLEN, tmpbuf, &bms->dump.tstamp.tv_sec, config.timestamps_utc);
 
         /*
 	  we close last_filename and open current_filename in case they differ;
@@ -545,7 +511,7 @@ void bmp_handle_dump_event()
             peer->log->fd = open_output_file(current_filename, "w", TRUE);
             if (fd_buf) {
               if (setvbuf(peer->log->fd, fd_buf, _IOFBF, OUTPUT_FILE_BUFSZ))
-		Log(LOG_WARNING, "WARN ( %s/core/BMP ): [%s] setvbuf() failed: %s\n", config.name, current_filename, errno);
+		Log(LOG_WARNING, "WARN ( %s/%s ): [%s] setvbuf() failed: %s\n", config.name, bms->log_str, current_filename, errno);
               else memset(fd_buf, 0, OUTPUT_FILE_BUFSZ);
             }
           }
@@ -581,7 +547,7 @@ void bmp_handle_dump_event()
             node = bgp_table_top(peer, table);
 
             while (node) {
-              u_int32_t modulo = bms->route_info_modulo(peer, NULL);
+              u_int32_t modulo = bms->route_info_modulo(peer, NULL, bms->table_per_peer_buckets);
               u_int32_t peer_buckets;
               struct bgp_info *ri;
 
@@ -594,7 +560,7 @@ void bmp_handle_dump_event()
 
 		    ri->peer->log = peer->log;
 		    bms->peer_str = peer_str;
-                    bgp_peer_log_msg(node, ri, safi, event_type, config.bmp_dump_output, BGP_LOG_TYPE_MISC);
+                    bgp_peer_log_msg(node, ri, afi, safi, event_type, config.bmp_dump_output, NULL, BGP_LOG_TYPE_MISC);
 		    bms->peer_str = saved_peer_str;
                     dump_elems++;
                   }
@@ -613,19 +579,19 @@ void bmp_handle_dump_event()
 	  for (se_ll_elem = bdsell->start; se_ll_elem; se_ll_elem = se_ll_elem->next) {
 	    switch (se_ll_elem->rec.se_type) {
 	    case BMP_LOG_TYPE_STATS:
-	      bmp_log_msg(peer, &se_ll_elem->rec.bdata, &se_ll_elem->rec.se.stats, event_type, config.bmp_dump_output, BMP_LOG_TYPE_STATS);
+	      bmp_log_msg(peer, &se_ll_elem->rec.bdata, &se_ll_elem->rec.se.stats, se_ll_elem->rec.seq, event_type, config.bmp_dump_output, BMP_LOG_TYPE_STATS);
 	      break;
 	    case BMP_LOG_TYPE_INIT:
-	      bmp_log_msg(peer, &se_ll_elem->rec.bdata, &se_ll_elem->rec.se.init, event_type, config.bmp_dump_output, BMP_LOG_TYPE_INIT);
+	      bmp_log_msg(peer, &se_ll_elem->rec.bdata, &se_ll_elem->rec.se.init, se_ll_elem->rec.seq, event_type, config.bmp_dump_output, BMP_LOG_TYPE_INIT);
 	      break;
 	    case BMP_LOG_TYPE_TERM:
-	      bmp_log_msg(peer, &se_ll_elem->rec.bdata, &se_ll_elem->rec.se.term, event_type, config.bmp_dump_output, BMP_LOG_TYPE_TERM);
+	      bmp_log_msg(peer, &se_ll_elem->rec.bdata, &se_ll_elem->rec.se.term, se_ll_elem->rec.seq, event_type, config.bmp_dump_output, BMP_LOG_TYPE_TERM);
 	      break;
 	    case BMP_LOG_TYPE_PEER_UP:
-	      bmp_log_msg(peer, &se_ll_elem->rec.bdata, &se_ll_elem->rec.se.peer_up, event_type, config.bmp_dump_output, BMP_LOG_TYPE_PEER_UP);
+	      bmp_log_msg(peer, &se_ll_elem->rec.bdata, &se_ll_elem->rec.se.peer_up, se_ll_elem->rec.seq, event_type, config.bmp_dump_output, BMP_LOG_TYPE_PEER_UP);
 	      break;
 	    case BMP_LOG_TYPE_PEER_DOWN:
-	      bmp_log_msg(peer, &se_ll_elem->rec.bdata, &se_ll_elem->rec.se.peer_down, event_type, config.bmp_dump_output, BMP_LOG_TYPE_PEER_DOWN);
+	      bmp_log_msg(peer, &se_ll_elem->rec.bdata, &se_ll_elem->rec.se.peer_down, se_ll_elem->rec.seq, event_type, config.bmp_dump_output, BMP_LOG_TYPE_PEER_DOWN);
 	      break;
 	    default:
 	      break;
@@ -657,13 +623,14 @@ void bmp_handle_dump_event()
     }
 
     duration = time(NULL)-start;
-    Log(LOG_INFO, "INFO ( %s/core/BMP ): *** Dumping BMP tables - END (PID: %u, TABLES: %u ET: %u) ***\n",
-                config.name, dumper_pid, tables_num, duration);
+    Log(LOG_INFO, "INFO ( %s/%s ): *** Dumping BMP tables - END (PID: %u, TABLES: %u ET: %u) ***\n",
+                config.name, bms->log_str, dumper_pid, tables_num, duration);
 
     exit(0);
   default: /* Parent */
     if (ret == -1) { /* Something went wrong */
-      Log(LOG_WARNING, "WARN ( %s/core/BMP ): Unable to fork BMP table dump writer: %s\n", config.name, strerror(errno));
+      Log(LOG_WARNING, "WARN ( %s/%s ): Unable to fork BMP table dump writer: %s\n",
+		config.name, bms->log_str, strerror(errno));
     }
 
     /* destroy bmp_se linked-list content after dump event */
@@ -746,7 +713,7 @@ int bmp_daemon_msglog_init_kafka_host()
 {
   int ret;
 
-  p_kafka_init_host(&bmp_daemon_msglog_kafka_host);
+  p_kafka_init_host(&bmp_daemon_msglog_kafka_host, config.nfacctd_bmp_msglog_kafka_config_file);
   ret = p_kafka_connect_to_produce(&bmp_daemon_msglog_kafka_host);
 
   if (!config.nfacctd_bmp_msglog_kafka_broker_host) config.nfacctd_bmp_msglog_kafka_broker_host = default_kafka_broker_host;
@@ -756,6 +723,7 @@ int bmp_daemon_msglog_init_kafka_host()
   p_kafka_set_broker(&bmp_daemon_msglog_kafka_host, config.nfacctd_bmp_msglog_kafka_broker_host, config.nfacctd_bmp_msglog_kafka_broker_port);
   p_kafka_set_topic(&bmp_daemon_msglog_kafka_host, config.nfacctd_bmp_msglog_kafka_topic);
   p_kafka_set_partition(&bmp_daemon_msglog_kafka_host, config.nfacctd_bmp_msglog_kafka_partition);
+  p_kafka_set_key(&bmp_daemon_msglog_kafka_host, config.nfacctd_bmp_msglog_kafka_partition_key, config.nfacctd_bmp_msglog_kafka_partition_keylen);
   p_kafka_set_content_type(&bmp_daemon_msglog_kafka_host, PM_KAFKA_CNT_TYPE_STR);
   P_broker_timers_set_retry_interval(&bmp_daemon_msglog_kafka_host.btimers, config.nfacctd_bmp_msglog_kafka_retry);
 
@@ -773,7 +741,7 @@ int bmp_dump_init_kafka_host()
 {
   int ret;
 
-  p_kafka_init_host(&bmp_dump_kafka_host);
+  p_kafka_init_host(&bmp_dump_kafka_host, config.bmp_dump_kafka_config_file);
   ret = p_kafka_connect_to_produce(&bmp_dump_kafka_host);
 
   if (!config.bmp_dump_kafka_broker_host) config.bmp_dump_kafka_broker_host = default_kafka_broker_host;
@@ -782,6 +750,7 @@ int bmp_dump_init_kafka_host()
   p_kafka_set_broker(&bmp_dump_kafka_host, config.bmp_dump_kafka_broker_host, config.bmp_dump_kafka_broker_port);
   p_kafka_set_topic(&bmp_dump_kafka_host, config.bmp_dump_kafka_topic);
   p_kafka_set_partition(&bmp_dump_kafka_host, config.bmp_dump_kafka_partition);
+  p_kafka_set_key(&bmp_dump_kafka_host, config.bmp_dump_kafka_partition_key, config.bmp_dump_kafka_partition_keylen);
   p_kafka_set_content_type(&bmp_dump_kafka_host, PM_KAFKA_CNT_TYPE_STR);
 
   return ret;

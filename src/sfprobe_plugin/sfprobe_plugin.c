@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /* 
@@ -271,7 +271,8 @@ static void init_agent(SflSp *sp)
 
 static void readPacket(SflSp *sp, struct pkt_payload *hdr, const unsigned char *buf)
 {
-  SFLFlow_sample_element hdrElem, classHdrElem, gatewayHdrElem, routerHdrElem, tagHdrElem, switchHdrElem;
+  SFLFlow_sample_element hdrElem, classHdrElem, class2HdrElem, tagHdrElem;
+  SFLFlow_sample_element gatewayHdrElem, routerHdrElem, switchHdrElem;
   SFLExtended_as_path_segment as_path_segment;
   u_int32_t frame_len, header_len;
   int direction, sampledPackets, ethHdrLen, idx = 0;
@@ -314,38 +315,36 @@ static void readPacket(SflSp *sp, struct pkt_payload *hdr, const unsigned char *
   }
 
   // Let's determine the ifIndex
-  if (!hdr->ifindex_in && !hdr->ifindex_out) {
-    if (sp->ifIndex_Type) {
+  {
+    u_int32_t ifIndex;
+
+    if (hdr->ifindex_in && direction == SFL_DIRECTION_IN)
+      ifIndex = hdr->ifindex_in;
+    else if (hdr->ifindex_out && direction == SFL_DIRECTION_OUT)
+      ifIndex = hdr->ifindex_out; 
+    else if (sp->ifIndex_Type) {
       switch (sp->ifIndex_Type) {
+      case IFINDEX_STATIC:
+	ifIndex = config.nfprobe_ifindex;
+	break;
       case IFINDEX_TAG:
-        for (idx = 0; idx < SFL_MAX_INTERFACES; idx++) {
-          if (sp->counters[idx].ifIndex == hdr->tag || idx == (SFL_MAX_INTERFACES-1)) break;
-	  else if (sp->counters[idx].ifIndex == 0) {
-	    sp->counters[idx].ifIndex = hdr->tag;
-	    break;
-	  }
-	}
-        break;
+	ifIndex = hdr->tag;
+	break;
       case IFINDEX_TAG2:
-        for (idx = 0; idx < SFL_MAX_INTERFACES; idx++) {
-	  if (sp->counters[idx].ifIndex == hdr->tag2 || idx == (SFL_MAX_INTERFACES-1)) break;
-	  else if (sp->counters[idx].ifIndex == 0) {
-	    sp->counters[idx].ifIndex = hdr->tag2;
-	    break;
-	  }
-        }
-        break;
+	ifIndex = hdr->tag2;
+	break;
+      default:
+	ifIndex = 0x3FFFFFFF;
+	break;
       }
     }
-  }
-  else {
-    u_int32_t ifIndex = (direction == SFL_DIRECTION_IN) ? hdr->ifindex_in : hdr->ifindex_out;
+    else ifIndex = 0x3FFFFFFF;
 
     for (idx = 0; idx < SFL_MAX_INTERFACES; idx++) {
       if (sp->counters[idx].ifIndex == ifIndex || idx == (SFL_MAX_INTERFACES-1)) break;
       else if (sp->counters[idx].ifIndex == 0) {
-        sp->counters[idx].ifIndex = ifIndex;
-        break;
+	sp->counters[idx].ifIndex = ifIndex;
+	break;
       }
     }
   }
@@ -385,28 +384,43 @@ static void readPacket(SflSp *sp, struct pkt_payload *hdr, const unsigned char *
     SFL_FLOW_SAMPLE_TYPE fs;
     memset(&fs, 0, sizeof(fs));
 
-    if (!hdr->ifindex_in && !hdr->ifindex_out) {
-	if (sp->ifIndex_Type) {
-	  switch (sp->ifIndex_Type) {
-	  case IFINDEX_STATIC:
-          fs.input = (direction == SFL_DIRECTION_IN) ? sp->counters[0].ifIndex : 0x3FFFFFFF;
-          fs.output = (direction == SFL_DIRECTION_OUT) ? sp->counters[0].ifIndex : 0x3FFFFFFF;
-	    break;
-	  case IFINDEX_TAG:
-	    fs.input = (direction == SFL_DIRECTION_IN) ? hdr->tag : 0x3FFFFFFF;
-	    fs.output = (direction == SFL_DIRECTION_OUT) ? hdr->tag : 0x3FFFFFFF;
-	    break;
-	  case IFINDEX_TAG2:
-	    fs.input = (direction == SFL_DIRECTION_IN) ? hdr->tag2 : 0x3FFFFFFF;
-	    fs.output = (direction == SFL_DIRECTION_OUT) ? hdr->tag2 : 0x3FFFFFFF;
-	    break;
-	  }
-	}
+    if (hdr->ifindex_in) fs.input = hdr->ifindex_in;
+    else if (sp->ifIndex_Type && direction == SFL_DIRECTION_IN) {
+      switch (sp->ifIndex_Type) {
+      case IFINDEX_STATIC:
+	fs.input = sp->counters[idx].ifIndex;
+	break;
+      case IFINDEX_TAG:
+	fs.input = hdr->tag;
+	break;
+      case IFINDEX_TAG2:
+	fs.input = hdr->tag2;
+	break;
+      default:
+	fs.input = 0x3FFFFFFF;
+	break;
+      }
     }
-    else {
-      fs.input = (hdr->ifindex_in) ? hdr->ifindex_in : 0x3FFFFFFF;
-      fs.output = (hdr->ifindex_out) ? hdr->ifindex_out : 0x3FFFFFFF;
+    else fs.input = 0x3FFFFFFF;
+
+    if (hdr->ifindex_out) fs.output = hdr->ifindex_out;
+    else if (sp->ifIndex_Type && direction == SFL_DIRECTION_OUT) {
+      switch (sp->ifIndex_Type) {
+      case IFINDEX_STATIC:
+        fs.output = sp->counters[idx].ifIndex;
+        break;
+      case IFINDEX_TAG:
+        fs.output = hdr->tag;
+        break;
+      case IFINDEX_TAG2:
+        fs.output = hdr->tag2;
+        break;
+      default:
+        fs.output = 0x3FFFFFFF;
+        break;
+      }
     }
+    else fs.output = 0x3FFFFFFF;
     
     memset(&hdrElem, 0, sizeof(hdrElem));
 
@@ -446,11 +460,21 @@ static void readPacket(SflSp *sp, struct pkt_payload *hdr, const unsigned char *
     SFLADD_ELEMENT(&fs, &hdrElem);
 
     if (config.what_to_count & COUNT_CLASS) {
-	memset(&classHdrElem, 0, sizeof(classHdrElem));
-	classHdrElem.tag = SFLFLOW_EX_CLASS;
-	classHdrElem.flowType.class.class = hdr->class;
-	SFLADD_ELEMENT(&fs, &classHdrElem);
+      memset(&classHdrElem, 0, sizeof(classHdrElem));
+      classHdrElem.tag = SFLFLOW_EX_CLASS;
+      classHdrElem.flowType.class.class = hdr->class;
+      SFLADD_ELEMENT(&fs, &classHdrElem);
     }
+
+#if defined (WITH_NDPI)
+    if (config.what_to_count_2 & COUNT_NDPI_CLASS) {
+      memset(&class2HdrElem, 0, sizeof(class2HdrElem));
+      class2HdrElem.tag = SFLFLOW_EX_CLASS2;
+      class2HdrElem.flowType.ndpi_class.id.master_protocol = hdr->ndpi_class.master_protocol;
+      class2HdrElem.flowType.ndpi_class.id.app_protocol = hdr->ndpi_class.app_protocol;
+      SFLADD_ELEMENT(&fs, &class2HdrElem);
+    }
+#endif
 
     if (config.what_to_count & (COUNT_TAG|COUNT_TAG2)) {
       memset(&tagHdrElem, 0, sizeof(tagHdrElem));
@@ -477,21 +501,21 @@ static void readPacket(SflSp *sp, struct pkt_payload *hdr, const unsigned char *
 	as_path_segment.length = 1;
 	as_path_segment.as.set = &hdr->dst_as;
 	if (config.what_to_count & COUNT_PEER_DST_IP) {
-        switch (hdr->bgp_next_hop.family) {
-        case AF_INET:
-          gatewayHdrElem.flowType.gateway.nexthop.type = SFLADDRESSTYPE_IP_V4;
-          memcpy(&gatewayHdrElem.flowType.gateway.nexthop.address.ip_v4, &hdr->bgp_next_hop.address.ipv4, 4);
-          break;
+          switch (hdr->bgp_next_hop.family) {
+          case AF_INET:
+            gatewayHdrElem.flowType.gateway.nexthop.type = SFLADDRESSTYPE_IP_V4;
+            memcpy(&gatewayHdrElem.flowType.gateway.nexthop.address.ip_v4, &hdr->bgp_next_hop.address.ipv4, 4);
+            break;
 #if defined ENABLE_IPV6
-        case AF_INET6:
-          gatewayHdrElem.flowType.gateway.nexthop.type = SFLADDRESSTYPE_IP_V6;
-          memcpy(&gatewayHdrElem.flowType.gateway.nexthop.address.ip_v6, &hdr->bgp_next_hop.address.ipv6, 16);
-          break;
+          case AF_INET6:
+            gatewayHdrElem.flowType.gateway.nexthop.type = SFLADDRESSTYPE_IP_V6;
+            memcpy(&gatewayHdrElem.flowType.gateway.nexthop.address.ip_v6, &hdr->bgp_next_hop.address.ipv6, 16);
+            break;
 #endif
-        default:
-          memset(&gatewayHdrElem.flowType.gateway.nexthop, 0, sizeof(routerHdrElem.flowType.router.nexthop));
-          break;
-        }
+          default:
+            memset(&gatewayHdrElem.flowType.gateway.nexthop, 0, sizeof(routerHdrElem.flowType.router.nexthop));
+            break;
+          }
 	}
 	SFLADD_ELEMENT(&fs, &gatewayHdrElem);
     }
@@ -572,7 +596,7 @@ void sfprobe_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   struct timezone tz;
   unsigned char *pipebuf, *pipebuf_ptr;
   time_t now;
-  int timeout, refresh_timeout, amqp_timeout, ret, num;
+  int timeout, refresh_timeout, ret, num, recv_budget, poll_bypass;
   struct ring *rg = &((struct channels_list_entry *)ptr)->rg;
   struct ch_status *status = ((struct channels_list_entry *)ptr)->status;
   struct plugins_list_entry *plugin_data = ((struct channels_list_entry *)ptr)->plugin;
@@ -586,13 +610,14 @@ void sfprobe_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   time_t clk, test_clk;
   SflSp sp;
 
-#ifdef WITH_RABBITMQ
-  struct p_amqp_host *amqp_host = &((struct channels_list_entry *)ptr)->amqp_host;
+#ifdef WITH_ZMQ
+  struct p_zmq_host *zmq_host = &((struct channels_list_entry *)ptr)->zmq_host;
+#else
+  void *zmq_host = NULL;
 #endif
 
   memset(&sp, 0, sizeof(sp));
 
-  /* XXX: glue */
   memcpy(&config, cfgptr, sizeof(struct configuration));
   recollect_pipe_memory(ptr);
   pm_setproctitle("%s [%s]", "sFlow Probe Plugin", config.name);
@@ -648,53 +673,42 @@ void sfprobe_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   pipebuf = (unsigned char *) pm_malloc(config.buffer_size);
   memset(pipebuf, 0, config.buffer_size);
 
-  if (config.pipe_amqp) {
-    plugin_pipe_amqp_compile_check();
-#ifdef WITH_RABBITMQ
-    pipe_fd = plugin_pipe_amqp_connect_to_consume(amqp_host, plugin_data);
-    amqp_timeout = plugin_pipe_set_retry_timeout(&amqp_host->btimers, pipe_fd);
-#endif
-  }
+  if (config.pipe_zmq) P_zmq_pipe_init(zmq_host, &pipe_fd, &seq);
   else setnonblocking(pipe_fd);
 
   refresh_timeout = 60 * 1000; /* 1 min */
 
   for (;;) {
-poll_again:
+    poll_again:
     status->wakeup = TRUE;
+    poll_bypass = FALSE;
 
     pfd.fd = pipe_fd;
     pfd.events = POLLIN;
 
-    if (config.pipe_homegrown || config.pipe_amqp) {
-      timeout = MIN(refresh_timeout, (amqp_timeout ? amqp_timeout : INT_MAX));
-      ret = poll(&pfd, (pfd.fd == ERR ? 0 : 1), timeout);
-    }
-    else {
-      /* Preps for Kafka support */
-      Log(LOG_ERR, "ERROR ( %s/%s ): plugin_pipe method not supported. Exiting ..\n", config.name, config.type);
-      exit_plugin(1);
-    }
+    ret = poll(&pfd, (pfd.fd == ERR ? 0 : 1), refresh_timeout);
 
     if (ret < 0) goto poll_again;
 
+    poll_ops:
     if (reload_map) {
       load_networks(config.networks_file, &nt, &nc);
       reload_map = FALSE;
     }
 
-#ifdef WITH_RABBITMQ
-    if (config.pipe_amqp && pipe_fd == ERR) {
-      if (timeout == amqp_timeout) {
-        pipe_fd = plugin_pipe_amqp_connect_to_consume(amqp_host, plugin_data);
-        amqp_timeout = plugin_pipe_set_retry_timeout(&amqp_host->btimers, pipe_fd);
-      }
-      else amqp_timeout = plugin_pipe_calc_retry_timeout_diff(&amqp_host->btimers, clk);
+    recv_budget = 0;
+    if (poll_bypass) {
+      poll_bypass = FALSE;
+      goto read_data;
     }
-#endif
 
     if (ret > 0) { /* we received data */
-read_data:
+      read_data:
+      if (recv_budget == DEFAULT_PLUGIN_COMMON_RECV_BUDGET) {
+	poll_bypass = TRUE;
+	goto poll_ops;
+      }
+
       if (config.pipe_homegrown) {
         if (!pollagain) {
           seq++;
@@ -721,6 +735,8 @@ read_data:
               Log(LOG_WARNING, "WARN ( %s/%s ): Increase values or look for plugin_buffer_size, plugin_pipe_size in CONFIG-KEYS document.\n\n",
                         config.name, config.type);
   	    }
+
+	    rg->ptr = (rg->base + status->last_buf_off);
   	    seq = ((struct ch_buf_hdr *)rg->ptr)->seq;
   	  }
         }
@@ -729,13 +745,18 @@ read_data:
         memcpy(pipebuf, rg->ptr, bufsz);
         rg->ptr += bufsz;
       }
-#ifdef WITH_RABBITMQ
-      else if (config.pipe_amqp) {
-        ret = p_amqp_consume_binary(amqp_host, pipebuf, config.buffer_size);
-        if (ret) pipe_fd = ERR;
+#ifdef WITH_ZMQ
+      else if (config.pipe_zmq) {
+	ret = p_zmq_plugin_pipe_recv(zmq_host, pipebuf, config.buffer_size);
+	if (ret > 0) {
+	  if (seq && (((struct ch_buf_hdr *)pipebuf)->seq != ((seq + 1) % MAX_SEQNUM))) {
+	    Log(LOG_WARNING, "WARN ( %s/%s ): Missing data detected. Sequence received=%u expected=%u\n",
+		config.name, config.type, ((struct ch_buf_hdr *)pipebuf)->seq, ((seq + 1) % MAX_SEQNUM));
+	  }
 
-        seq = ((struct ch_buf_hdr *)pipebuf)->seq;
-        amqp_timeout = plugin_pipe_set_retry_timeout(&amqp_host->btimers, pipe_fd);
+	  seq = ((struct ch_buf_hdr *)pipebuf)->seq;
+	}
+	else goto poll_again;
       }
 #endif
 
@@ -743,8 +764,9 @@ read_data:
       pipebuf_ptr = (unsigned char *) pipebuf+ChBufHdrSz+PpayloadSz;
 
       if (config.debug_internal_msg) 
-        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received cpid=%u seq=%u num_entries=%u\n",
-                config.name, config.type, core_pid, seq, ((struct ch_buf_hdr *)pipebuf)->num);
+	Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received cpid=%u len=%llu seq=%u num_entries=%u\n",
+		config.name, config.type, core_pid, ((struct ch_buf_hdr *)pipebuf)->len,
+		seq, ((struct ch_buf_hdr *)pipebuf)->num);
 
       if (!config.pipe_check_core_pid || ((struct ch_buf_hdr *)pipebuf)->core_pid == core_pid) {
       while (((struct ch_buf_hdr *)pipebuf)->num > 0) {
@@ -789,8 +811,11 @@ read_data:
 	}
       }
       }
-      if (config.pipe_homegrown) goto read_data;
+
+      recv_budget++;
+      goto read_data;
     }
+
 handle_tick:
     test_clk = time(NULL);
     while(clk < test_clk) sfl_agent_tick(sp.agent, clk++);

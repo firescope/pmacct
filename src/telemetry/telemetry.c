@@ -1,6 +1,6 @@
-/*  
+/*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -24,7 +24,9 @@
 
 /* includes */
 #include "pmacct.h"
+#include "addr.h"
 #include "thread_pool.h"
+#include "../bgp/bgp.h"
 #include "telemetry.h"
 #if defined WITH_RABBITMQ
 #include "amqp_common.h"
@@ -37,7 +39,6 @@
 thread_pool_t *telemetry_pool;
 
 /* Functions */
-#if defined ENABLE_THREADS
 void telemetry_wrapper()
 {
   struct telemetry_data *t_data;
@@ -57,7 +58,6 @@ void telemetry_wrapper()
   /* giving a kick to the telemetry thread */
   send_to_pool(telemetry_pool, telemetry_daemon, t_data);
 }
-#endif
 
 void telemetry_daemon(void *t_data_void)
 {
@@ -66,10 +66,10 @@ void telemetry_daemon(void *t_data_void)
 
   int slen, clen, ret, rc, peers_idx, allowed, yes=1, no=0;
   int peers_idx_rr = 0, max_peers_idx = 0, peers_num = 0;
-  int decoder = 0, recv_flags = 0;
+  int decoder = 0, data_decoder = 0, recv_flags = 0;
   u_int16_t port = 0;
   char *srv_proto = NULL;
-  time_t now, last_udp_timeout_check;
+  time_t last_udp_timeout_check;
 
   telemetry_peer *peer = NULL;
   telemetry_peer_z *peer_z = NULL;
@@ -96,6 +96,7 @@ void telemetry_daemon(void *t_data_void)
   }
 
   /* initial cleanups */
+  reload_map_telemetry_thread = FALSE;
   reload_log_telemetry_thread = FALSE;
   memset(&server, 0, sizeof(server));
   memset(&client, 0, sizeof(client));
@@ -120,7 +121,7 @@ void telemetry_daemon(void *t_data_void)
   }
   else {
     if (config.telemetry_port_tcp) {
-      port = config.telemetry_port_tcp; 
+      port = config.telemetry_port_tcp;
       srv_proto = malloc(strlen("tcp") + 1);
       strcpy(srv_proto, "tcp");
     }
@@ -184,6 +185,9 @@ void telemetry_daemon(void *t_data_void)
       exit_all(1);
 #endif
     }
+    else if (!strcmp(config.telemetry_decoder, "cisco")) decoder = TELEMETRY_DECODER_CISCO;
+    else if (!strcmp(config.telemetry_decoder, "cisco_gpb")) decoder = TELEMETRY_DECODER_CISCO_GPB;
+    else if (!strcmp(config.telemetry_decoder, "cisco_gpb_kv")) decoder = TELEMETRY_DECODER_CISCO_GPB_KV;
     else {
       Log(LOG_ERR, "ERROR ( %s/%s ): telemetry_daemon_decoder set to unknown value. Terminating.\n", config.name, t_data->log_str);
       exit_all(1);
@@ -245,6 +249,9 @@ void telemetry_daemon(void *t_data_void)
     }
   }
 
+  if (telemetry_misc_db->msglog_backend_methods || telemetry_misc_db->dump_backend_methods)
+    telemetry_log_seq_init(&telemetry_misc_db->log_seq);
+
   if (telemetry_misc_db->msglog_backend_methods) {
     telemetry_misc_db->peers_log = malloc(config.telemetry_max_peers*sizeof(telemetry_peer_log));
     if (!telemetry_misc_db->peers_log) {
@@ -252,7 +259,6 @@ void telemetry_daemon(void *t_data_void)
       exit_all(1);
     }
     memset(telemetry_misc_db->peers_log, 0, config.telemetry_max_peers*sizeof(telemetry_peer_log));
-    telemetry_peer_log_seq_init(&telemetry_misc_db->log_seq);
 
     if (config.telemetry_msglog_amqp_routing_key) {
 #ifdef WITH_RABBITMQ
@@ -307,8 +313,13 @@ void telemetry_daemon(void *t_data_void)
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for IP_TOS (errno: %d).\n", config.name, t_data->log_str, errno);
   }
 
+#if (defined LINUX) && (defined HAVE_SO_REUSEPORT)
+  rc = setsockopt(config.telemetry_sock, SOL_SOCKET, SO_REUSEADDR|SO_REUSEPORT, (char *)&yes, sizeof(yes));
+  if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEADDR|SO_REUSEPORT (errno: %d).\n", config.name, t_data->log_str, errno);
+#else
   rc = setsockopt(config.telemetry_sock, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, sizeof(yes));
   if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEADDR (errno: %d).\n", config.name, t_data->log_str, errno);
+#endif
 
 #if (defined ENABLE_IPV6) && (defined IPV6_BINDV6ONLY)
   rc = setsockopt(config.telemetry_sock, IPPROTO_IPV6, IPV6_BINDV6ONLY, (char *) &no, (socklen_t) sizeof(no));
@@ -358,7 +369,7 @@ void telemetry_daemon(void *t_data_void)
     struct host_addr srv_addr;
     u_int16_t srv_port;
 
-    sa_to_addr(&server, &srv_addr, &srv_port);
+    sa_to_addr((struct sockaddr *)&server, &srv_addr, &srv_port);
     addr_to_str(srv_string, &srv_addr);
     Log(LOG_INFO, "INFO ( %s/%s ): waiting for telemetry data on %s:%u/%s\n", config.name, t_data->log_str, srv_string, srv_port, srv_proto);
   }
@@ -447,11 +458,11 @@ void telemetry_daemon(void *t_data_void)
     select_num = select(select_fd, &read_descs, NULL, NULL, drt_ptr);
     if (select_num < 0) goto select_again;
 
+    t_data->now = time(NULL);
+
     // XXX: UDP case: timeout handling (to be tested)
     if (config.telemetry_port_udp) {
-      now = time(NULL);
-
-      if (now > (last_udp_timeout_check + TELEMETRY_UDP_TIMEOUT_INTERVAL)) {
+      if (t_data->now > (last_udp_timeout_check + TELEMETRY_UDP_TIMEOUT_INTERVAL)) {
 	for (peers_idx = 0; peers_idx < config.telemetry_max_peers; peers_idx++) {
 	  telemetry_peer_udp_timeout *peer_udp_timeout;
 
@@ -460,7 +471,7 @@ void telemetry_daemon(void *t_data_void)
 	  peer_udp_timeout = &telemetry_peers_udp_timeout[peers_idx];
 
 	  if (peer->fd) {
-	    if (now > (peer_udp_timeout->last_msg + config.telemetry_udp_timeout)) {
+	    if (t_data->now > (peer_udp_timeout->last_msg + config.telemetry_udp_timeout)) {
 	      Log(LOG_INFO, "INFO ( %s/%s ): [%s] telemetry UDP peer removed (timeout).\n", config.name, t_data->log_str, peer->addr_str);
 	      telemetry_peer_close(peer, FUNC_TYPE_TELEMETRY);
 	      if (telemetry_is_zjson(decoder)) telemetry_peer_z_close(peer_z);
@@ -469,6 +480,12 @@ void telemetry_daemon(void *t_data_void)
 	  }
 	}
       }
+    }
+
+    if (reload_map_telemetry_thread) {
+      if (config.telemetry_allow_file) load_allow_file(config.telemetry_allow_file, &allow);
+
+      reload_map_telemetry_thread = FALSE;
     }
 
     if (reload_log_telemetry_thread) {
@@ -480,14 +497,23 @@ void telemetry_daemon(void *t_data_void)
         }
         else break;
       }
+
+      reload_log_telemetry_thread = FALSE;
     }
 
     if (telemetry_misc_db->msglog_backend_methods || telemetry_misc_db->dump_backend_methods) {
       gettimeofday(&telemetry_misc_db->log_tstamp, NULL);
-      compose_timestamp(telemetry_misc_db->log_tstamp_str, SRVBUFLEN, &telemetry_misc_db->log_tstamp, TRUE, config.timestamps_since_epoch);
+      compose_timestamp(telemetry_misc_db->log_tstamp_str, SRVBUFLEN, &telemetry_misc_db->log_tstamp, TRUE,
+			config.timestamps_since_epoch, config.timestamps_rfc3339, config.timestamps_utc);
 
       if (telemetry_misc_db->dump_backend_methods) {
         while (telemetry_misc_db->log_tstamp.tv_sec > dump_refresh_deadline) {
+          telemetry_misc_db->dump.tstamp.tv_sec = dump_refresh_deadline;
+          telemetry_misc_db->dump.tstamp.tv_usec = 0;
+          compose_timestamp(telemetry_misc_db->dump.tstamp_str, SRVBUFLEN, &telemetry_misc_db->dump.tstamp, FALSE,
+			    config.timestamps_since_epoch, config.timestamps_rfc3339, config.timestamps_utc);
+	  telemetry_misc_db->dump.period = config.telemetry_dump_refresh_time;
+
           telemetry_handle_dump_event(t_data);
           dump_refresh_deadline += config.telemetry_dump_refresh_time;
         }
@@ -514,10 +540,30 @@ void telemetry_daemon(void *t_data_void)
 #endif
     }
 
-    /* 
+    /* Logging stats */
+    if (!t_data->global_stats.last_check || ((t_data->global_stats.last_check + TELEMETRY_LOG_STATS_INTERVAL) <= t_data->now)) {
+      if (t_data->global_stats.last_check) {
+	telemetry_peer *stats_peer;
+	int peers_idx;
+
+	for (stats_peer = NULL, peers_idx = 0; peers_idx < config.telemetry_max_peers; peers_idx++) {
+	  if (telemetry_peers[peers_idx].fd) {
+	    stats_peer = &telemetry_peers[peers_idx];
+	    telemetry_log_peer_stats(stats_peer, t_data);
+	    stats_peer->stats.last_check = t_data->now;
+	  }
+	}
+
+	telemetry_log_global_stats(t_data);
+      }
+
+      t_data->global_stats.last_check = t_data->now;
+    }
+
+    /*
        If select_num == 0 then we got out of select() due to a timeout rather
-       than because we had a message from a peeer to handle. By now we did all
-       routine checks and can happily return to selet() again.
+       than because we had a message from a peer to handle. By now we did all
+       routine checks and can happily return to select() again.
     */
     if (!select_num) goto select_again;
 
@@ -528,7 +574,7 @@ void telemetry_daemon(void *t_data_void)
         if (fd == ERR) goto read_data;
       }
       else if (config.telemetry_port_udp) {
-	char dummy_local_buf[TRUE];	
+	char dummy_local_buf[TRUE];
 
 	ret = recvfrom(config.telemetry_sock, dummy_local_buf, TRUE, MSG_PEEK, (struct sockaddr *) &client, &clen);
 	if (ret <= 0) goto select_again;
@@ -553,12 +599,12 @@ void telemetry_daemon(void *t_data_void)
 	telemetry_peer_udp_cache *tpuc_ret;
 	u_int16_t client_port;
 
-        sa_to_addr(&client, &tpuc.addr, &client_port);
+        sa_to_addr((struct sockaddr *)&client, &tpuc.addr, &client_port);
 	tpuc_ret = pm_tfind(&tpuc, &telemetry_peers_udp_cache, telemetry_tpuc_addr_cmp);
 
 	if (tpuc_ret) {
 	  peer = &telemetry_peers[tpuc_ret->index];
-	  telemetry_peers_udp_timeout[tpuc_ret->index].last_msg = now;
+	  telemetry_peers_udp_timeout[tpuc_ret->index].last_msg = t_data->now;
 
 	  goto read_data;
 	}
@@ -580,10 +626,10 @@ void telemetry_daemon(void *t_data_void)
 
 	  if (peer) {
 	    recalc_fds = TRUE;
-	
+
 	    if (config.telemetry_port_udp) {
 	      tpuc.index = peers_idx;
-	      telemetry_peers_udp_timeout[peers_idx].last_msg = now;
+	      telemetry_peers_udp_timeout[peers_idx].last_msg = t_data->now;
 
 	      if (!pm_tsearch(&tpuc, &telemetry_peers_udp_cache, telemetry_tpuc_addr_cmp, sizeof(telemetry_peer_udp_cache)))
 		Log(LOG_WARNING, "WARN ( %s/%s ): tsearch() unable to insert in UDP peers cache.\n", config.name, t_data->log_str);
@@ -595,8 +641,6 @@ void telemetry_daemon(void *t_data_void)
       }
 
       if (!peer) {
-        int fd;
-
         /* We briefly accept the new connection to be able to drop it */
         Log(LOG_ERR, "ERROR ( %s/%s ): Insufficient number of telemetry peers has been configured by telemetry_max_peers (%d).\n",
                         config.name, t_data->log_str, config.telemetry_max_peers);
@@ -654,20 +698,39 @@ void telemetry_daemon(void *t_data_void)
 
     if (!peer) goto select_again;
 
+    recv_flags = 0;
+
     switch (decoder) {
     case TELEMETRY_DECODER_JSON:
       ret = telemetry_recv_json(peer, 0, &recv_flags);
+      data_decoder = TELEMETRY_DATA_DECODER_JSON;
       break;
     case TELEMETRY_DECODER_ZJSON:
       ret = telemetry_recv_zjson(peer, peer_z, 0, &recv_flags);
+      data_decoder = TELEMETRY_DATA_DECODER_JSON;
+      break;
+    case TELEMETRY_DECODER_CISCO:
+      ret = telemetry_recv_cisco(peer, &recv_flags, &data_decoder);
       break;
     case TELEMETRY_DECODER_CISCO_JSON:
       ret = telemetry_recv_cisco_json(peer, &recv_flags);
+      data_decoder = TELEMETRY_DATA_DECODER_JSON;
       break;
     case TELEMETRY_DECODER_CISCO_ZJSON:
       ret = telemetry_recv_cisco_zjson(peer, peer_z, &recv_flags);
+      data_decoder = TELEMETRY_DATA_DECODER_JSON;
+      break;
+    case TELEMETRY_DECODER_CISCO_GPB:
+      ret = telemetry_recv_cisco_gpb(peer);
+      data_decoder = TELEMETRY_DATA_DECODER_GPB;
+      break;
+    case TELEMETRY_DECODER_CISCO_GPB_KV:
+      ret = telemetry_recv_cisco_gpb_kv(peer, &recv_flags);
+      data_decoder = TELEMETRY_DATA_DECODER_GPB;
       break;
     default:
+      ret = TRUE; recv_flags = ERR;
+      data_decoder = TELEMETRY_DATA_DECODER_UNKNOWN;
       break;
     }
 
@@ -679,12 +742,16 @@ void telemetry_daemon(void *t_data_void)
       recalc_fds = TRUE;
     }
     else {
-      if (recv_flags != ERR) telemetry_process_data(peer, t_data);
+      peer->stats.packets++;
+      if (recv_flags != ERR) {
+        peer->stats.msg_bytes += ret;
+        telemetry_process_data(peer, t_data, data_decoder);
+      }
     }
   }
 }
 
-void telemetry_prepare_thread(struct telemetry_data *t_data) 
+void telemetry_prepare_thread(struct telemetry_data *t_data)
 {
   if (!t_data) return;
 
@@ -694,7 +761,7 @@ void telemetry_prepare_thread(struct telemetry_data *t_data)
   strcpy(t_data->log_str, "core/TELE");
 }
 
-void telemetry_prepare_daemon(struct telemetry_data *t_data)   
+void telemetry_prepare_daemon(struct telemetry_data *t_data)
 {
   if (!t_data) return;
 

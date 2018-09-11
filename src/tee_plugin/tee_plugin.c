@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -21,7 +21,8 @@
 
 #define __TEE_PLUGIN_C
 
-#include "../pmacct.h"
+#include "pmacct.h"
+#include "addr.h"
 #include "tee_plugin.h"
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
@@ -31,8 +32,8 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   struct pkt_msg *msg;
   unsigned char *pipebuf;
   struct pollfd pfd;
-  int timeout, refresh_timeout, amqp_timeout, err, ret, num;
-  int fd, pool_idx, recv_idx;
+  int timeout, refresh_timeout, err, ret, num;
+  int fd, pool_idx, recv_idx, recv_budget, poll_bypass;
   struct ring *rg = &((struct channels_list_entry *)ptr)->rg;
   struct ch_status *status = ((struct channels_list_entry *)ptr)->status;
   struct plugins_list_entry *plugin_data = ((struct channels_list_entry *)ptr)->plugin;
@@ -47,8 +48,10 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   u_int32_t seq = 1, rg_err_count = 0;
   time_t now;
 
-#ifdef WITH_RABBITMQ
-  struct p_amqp_host *amqp_host = &((struct channels_list_entry *)ptr)->amqp_host;
+#ifdef WITH_ZMQ
+  struct p_zmq_host *zmq_host = &((struct channels_list_entry *)ptr)->zmq_host;
+#else
+  void *zmq_host = NULL;
 #endif
 
   memcpy(&config, cfgptr, sizeof(struct configuration));
@@ -80,12 +83,8 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
     exit_plugin(1);
   }
 
-  if (config.nfprobe_receiver && config.tee_receivers) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): tee_receiver and tee_receivers are mutually exclusive. Exiting ...\n", config.name, config.type);
-    exit_plugin(1);
-  }
-  else if (!config.nfprobe_receiver && !config.tee_receivers) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): No receivers specified: tee_receiver or tee_receivers is required. Exiting ...\n", config.name, config.type);
+  if (!config.tee_receivers) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): No receivers specified: tee_receivers is required. Exiting ...\n", config.name, config.type);
     exit_plugin(1);
   }
 
@@ -106,7 +105,7 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   /* Setting up receivers per pool */
   if (!config.tee_max_receivers) config.tee_max_receivers = MAX_TEE_RECEIVERS;
 
-  for (pool_idx = 0; pool_idx < MAX_TEE_POOLS; pool_idx++) { 
+  for (pool_idx = 0; pool_idx < config.tee_max_receiver_pools; pool_idx++) { 
     receivers.pools[pool_idx].receivers = malloc(config.tee_max_receivers*sizeof(struct tee_receivers));
     if (!receivers.pools[pool_idx].receivers) {
       Log(LOG_ERR, "ERROR ( %s/%s ): unable to allocate receivers for pool #%u. Exiting ...\n", config.name, config.type, pool_idx);
@@ -115,21 +114,7 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
     else memset(receivers.pools[pool_idx].receivers, 0, config.tee_max_receivers*sizeof(struct tee_receivers));
   }
 
-  if (config.nfprobe_receiver) {
-    pool_idx = 0; recv_idx = 0;
-
-    target = &receivers.pools[pool_idx].receivers[recv_idx];
-    target->dest_len = sizeof(target->dest);
-    if (Tee_parse_hostport(config.nfprobe_receiver, (struct sockaddr *) &target->dest, &target->dest_len)) {
-      Log(LOG_ERR, "ERROR ( %s/%s ): Invalid receiver %s . ", config.name, config.type, config.nfprobe_receiver);
-      exit_plugin(1);
-    }
-    else {
-      recv_idx++; receivers.pools[pool_idx].num = recv_idx;
-      pool_idx++; receivers.num = pool_idx;
-    }
-  }
-  else if (config.tee_receivers) {
+  if (config.tee_receivers) {
     int recvs_allocated = FALSE;
 
     req.key_value_table = (void *) &receivers;
@@ -141,13 +126,7 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 
   pipebuf = (unsigned char *) pm_malloc(config.buffer_size);
 
-  if (config.pipe_amqp) {
-    plugin_pipe_amqp_compile_check();
-#ifdef WITH_RABBITMQ
-    pipe_fd = plugin_pipe_amqp_connect_to_consume(amqp_host, plugin_data);
-    amqp_timeout = plugin_pipe_set_retry_timeout(&amqp_host->btimers, pipe_fd);
-#endif
-  }
+  if (config.pipe_zmq) P_zmq_pipe_init(zmq_host, &pipe_fd, &seq);
   else setnonblocking(pipe_fd);
 
   now = time(NULL);
@@ -162,43 +141,36 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   for (;;) {
     poll_again:
     status->wakeup = TRUE;
+    poll_bypass = FALSE;
 
     pfd.fd = pipe_fd;
     pfd.events = POLLIN;
 
-    if (config.pipe_homegrown || config.pipe_amqp) {
-      timeout = MIN(refresh_timeout, (amqp_timeout ? amqp_timeout : INT_MAX));
-      ret = poll(&pfd, (pfd.fd == ERR ? 0 : 1), timeout);
-    }
-    else {
-      /* Preps for Kafka support */
-      Log(LOG_ERR, "ERROR ( %s/%s ): plugin_pipe method not supported. Exiting ..\n", config.name, config.type);
-      exit_plugin(1);
-    }
+    ret = poll(&pfd, (pfd.fd == ERR ? 0 : 1), refresh_timeout);
 
     if (ret < 0) goto poll_again;
 
+    poll_ops:
     if (reload_map) {
-      int recvs_allocated = FALSE;
+      if (config.tee_receivers) {
+        int recvs_allocated = FALSE;
 
-      Tee_destroy_recvs();
-      load_id_file(MAP_TEE_RECVS, config.tee_receivers, NULL, &req, &recvs_allocated);
+        Tee_destroy_recvs();
+        load_id_file(MAP_TEE_RECVS, config.tee_receivers, NULL, &req, &recvs_allocated);
 
-      Tee_init_socks();
+        Tee_init_socks();
+      }
+
       reload_map = FALSE;
     }
 
     now = time(NULL);
 
-#ifdef WITH_RABBITMQ
-    if (config.pipe_amqp && pipe_fd == ERR) {
-      if (timeout == amqp_timeout) {
-        pipe_fd = plugin_pipe_amqp_connect_to_consume(amqp_host, plugin_data);
-        amqp_timeout = plugin_pipe_set_retry_timeout(&amqp_host->btimers, pipe_fd);
-      }
-      else amqp_timeout = plugin_pipe_calc_retry_timeout_diff(&amqp_host->btimers, now);
+    recv_budget = 0;
+    if (poll_bypass) {
+      poll_bypass = FALSE;
+      goto read_data;
     }
-#endif
 
     switch (ret) {
     case 0: /* timeout */
@@ -206,6 +178,11 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       break;
     default: /* we received data */
       read_data:
+      if (recv_budget == DEFAULT_PLUGIN_COMMON_RECV_BUDGET) {
+	poll_bypass = TRUE;
+	goto poll_ops;
+      }
+
       if (config.pipe_homegrown) {
         if (!pollagain) {
           seq++;
@@ -232,6 +209,8 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
               Log(LOG_WARNING, "WARN ( %s/%s ): Increase values or look for plugin_buffer_size, plugin_pipe_size in CONFIG-KEYS document.\n\n",
                         config.name, config.type);
             }
+
+	    rg->ptr = (rg->base + status->last_buf_off);
             seq = ((struct ch_buf_hdr *)rg->ptr)->seq;
           }
         }
@@ -240,21 +219,28 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
         memcpy(pipebuf, rg->ptr, bufsz);
         rg->ptr += bufsz;
       }
-#ifdef WITH_RABBITMQ
-      else if (config.pipe_amqp) {
-        ret = p_amqp_consume_binary(amqp_host, pipebuf, config.buffer_size);
-        if (ret) pipe_fd = ERR;
+#ifdef WITH_ZMQ
+      else if (config.pipe_zmq) {
+	ret = p_zmq_plugin_pipe_recv(zmq_host, pipebuf, config.buffer_size);
+	if (ret > 0) {
+	  if (seq && (((struct ch_buf_hdr *)pipebuf)->seq != ((seq + 1) % MAX_SEQNUM))) {
+	    Log(LOG_WARNING, "WARN ( %s/%s ): Missing data detected. Sequence received=%u expected=%u\n",
+		config.name, config.type, ((struct ch_buf_hdr *)pipebuf)->seq, ((seq + 1) % MAX_SEQNUM));
+	  }
 
-        seq = ((struct ch_buf_hdr *)pipebuf)->seq;
-        amqp_timeout = plugin_pipe_set_retry_timeout(&amqp_host->btimers, pipe_fd);
+	  seq = ((struct ch_buf_hdr *)pipebuf)->seq;
+	}
+	else goto poll_again;
       }
 #endif
 
       msg = (struct pkt_msg *) (pipebuf+sizeof(struct ch_buf_hdr));
+      msg->payload = (pipebuf+sizeof(struct ch_buf_hdr)+PmsgSz);
 
       if (config.debug_internal_msg) 
-        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received cpid=%u seq=%u num_entries=%u\n",
-                config.name, config.type, core_pid, seq, ((struct ch_buf_hdr *)pipebuf)->num);
+        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received cpid=%u len=%llu seq=%u num_entries=%u\n",
+                config.name, config.type, core_pid, ((struct ch_buf_hdr *)pipebuf)->len,
+                seq, ((struct ch_buf_hdr *)pipebuf)->num);
 
       if (!config.pipe_check_core_pid || ((struct ch_buf_hdr *)pipebuf)->core_pid == core_pid) {
       while (((struct ch_buf_hdr *)pipebuf)->num > 0) {
@@ -276,13 +262,15 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
         ((struct ch_buf_hdr *)pipebuf)->num--;
         if (((struct ch_buf_hdr *)pipebuf)->num) {
 	  dataptr = (unsigned char *) msg;
-          dataptr += PmsgSz;
+          dataptr += (PmsgSz + msg->len);
 	  msg = (struct pkt_msg *) dataptr;
+	  msg->payload = (dataptr + PmsgSz);
 	}
       }
       }
 
-      if (config.pipe_homegrown) goto read_data;
+      recv_budget++;
+      goto read_data;
     }
   }  
 }
@@ -300,6 +288,7 @@ void Tee_send(struct pkt_msg *msg, struct sockaddr *target, int fd)
   u_int16_t recv_port;
 
   if (config.debug) {
+    char *flow = NULL, netflow[] = "NetFlow/IPFIX", sflow[] = "sFlow";
     struct host_addr a;
     u_char agent_addr[50];
     u_int16_t agent_port;
@@ -310,8 +299,12 @@ void Tee_send(struct pkt_msg *msg, struct sockaddr *target, int fd)
     sa_to_addr((struct sockaddr *)target, &r, &recv_port);
     addr_to_str(recv_addr, &r);
 
-    Log(LOG_DEBUG, "DEBUG ( %s/%s ): Sending NetFlow packet from [%s:%u] seqno [%u] to [%s]\n",
-                        config.name, config.type, agent_addr, agent_port, msg->seqno, recv_addr);
+    if (config.acct_type == ACCT_NF) flow = netflow;
+    else if (config.acct_type == ACCT_SF) flow = sflow;
+
+    Log(LOG_DEBUG, "DEBUG ( %s/%s ): Sending %s packet from [%s:%u] seqno [%u] to [%s:%u]\n",
+                        config.name, config.type, flow, agent_addr, agent_port, msg->seqno,
+			recv_addr, recv_port);
   }
 
   if (!config.tee_transparent) {
@@ -326,32 +319,33 @@ void Tee_send(struct pkt_msg *msg, struct sockaddr *target, int fd)
       sa_to_addr((struct sockaddr *)target, &r, &recv_port);
       addr_to_str(recv_addr, &r);
 
-      Log(LOG_ERR, "ERROR ( %s/%s ): send() from [%s:%u] seqno [%u] to [%s] failed (%s)\n",
-			config.name, config.type, agent_addr, agent_port, msg->seqno, recv_addr, strerror(errno));
+      Log(LOG_ERR, "ERROR ( %s/%s ): send() from [%s:%u] seqno [%u] to [%s:%u] failed (%s)\n",
+			config.name, config.type, agent_addr, agent_port, msg->seqno, recv_addr,
+			recv_port, strerror(errno));
     }
   }
   else {
     char *buf_ptr = tee_send_buf;
     struct sockaddr_in *sa = (struct sockaddr_in *) &msg->agent;
-    struct my_iphdr *i4h = (struct my_iphdr *) buf_ptr;
+    struct pm_iphdr *i4h = (struct pm_iphdr *) buf_ptr;
 #if defined ENABLE_IPV6
     struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *) &msg->agent;
     struct ip6_hdr *i6h = (struct ip6_hdr *) buf_ptr;
 #endif
-    struct my_udphdr *uh;
+    struct pm_udphdr *uh;
 
     if (msg->agent.sa_family == target->sa_family) {
       /* UDP header first */
       if (target->sa_family == AF_INET) {
         buf_ptr += IP4HdrSz;
-        uh = (struct my_udphdr *) buf_ptr;
+        uh = (struct pm_udphdr *) buf_ptr;
         uh->uh_sport = sa->sin_port;
         uh->uh_dport = ((struct sockaddr_in *)target)->sin_port;
       }
 #if defined ENABLE_IPV6
       else if (target->sa_family == AF_INET6) {
         buf_ptr += IP6HdrSz;
-        uh = (struct my_udphdr *) buf_ptr;
+        uh = (struct pm_udphdr *) buf_ptr;
         uh->uh_sport = sa6->sin6_port;
         uh->uh_dport = ((struct sockaddr_in6 *)target)->sin6_port;
       }
@@ -412,8 +406,9 @@ void Tee_send(struct pkt_msg *msg, struct sockaddr *target, int fd)
 	sa_to_addr((struct sockaddr *)target, &r, &recv_port);
 	addr_to_str(recv_addr, &r);
 
-        Log(LOG_ERR, "ERROR ( %s/%s ): raw send() from [%s:%u] seqno [%u] to [%s] failed (%s)\n",
-			config.name, config.type, agent_addr, agent_port, msg->seqno, recv_addr, strerror(errno));
+        Log(LOG_ERR, "ERROR ( %s/%s ): raw send() from [%s:%u] seqno [%u] to [%s:%u] failed (%s)\n",
+			config.name, config.type, agent_addr, agent_port, msg->seqno, recv_addr,
+			recv_port, strerror(errno));
       }
     }
     else {
@@ -469,14 +464,14 @@ void Tee_init_socks()
         }
       }
 
-      target->fd = Tee_prepare_sock((struct sockaddr *) &target->dest, target->dest_len);
+      target->fd = Tee_prepare_sock((struct sockaddr *) &target->dest, target->dest_len, receivers.pools[pool_idx].src_port);
 
       if (config.debug) {
 	struct host_addr recv_addr;
         u_char recv_addr_str[INET6_ADDRSTRLEN];
 	u_int16_t recv_port;
 
-	sa_to_addr(&target->dest, &recv_addr, &recv_port); 
+	sa_to_addr((struct sockaddr *)&target->dest, &recv_addr, &recv_port); 
         addr_to_str(recv_addr_str, &recv_addr);
         Log(LOG_DEBUG, "DEBUG ( %s/%s ): pool ID: %u :: receiver: %s :: fd: %d.\n",
                 config.name, config.type, receivers.pools[pool_idx].id, recv_addr_str, target->fd);
@@ -485,7 +480,7 @@ void Tee_init_socks()
   }
 }
 
-int Tee_prepare_sock(struct sockaddr *addr, socklen_t len)
+int Tee_prepare_sock(struct sockaddr *addr, socklen_t len, u_int16_t src_port)
 {
   int s, ret = 0;
 
@@ -497,9 +492,18 @@ int Tee_prepare_sock(struct sockaddr *addr, socklen_t len)
     struct sockaddr ssource_ip;
 #endif
 
+    memset(&source_ip, 0, sizeof(source_ip));
+    memset(&ssource_ip, 0, sizeof(ssource_ip));
+
     if (config.nfprobe_source_ip) {
       ret = str_to_addr(config.nfprobe_source_ip, &source_ip);
-      addr_to_sa((struct sockaddr *) &ssource_ip, &source_ip, 0);
+      addr_to_sa((struct sockaddr *) &ssource_ip, &source_ip, src_port);
+    }
+    else {
+      if (src_port) { 
+	source_ip.family = addr->sa_family; 
+	ret = addr_to_sa((struct sockaddr *) &ssource_ip, &source_ip, src_port);
+      }
     }
 
     if ((s = socket(addr->sa_family, SOCK_DGRAM, 0)) == -1) {
@@ -516,10 +520,10 @@ int Tee_prepare_sock(struct sockaddr *addr, socklen_t len)
     }
 
     if (ret && bind(s, (struct sockaddr *) &ssource_ip, sizeof(ssource_ip)) == -1)
-      Log(LOG_ERR, "ERROR ( %s/%s ): bind() error: %s\n", config.name, config.type, strerror(errno));
+      Log(LOG_WARNING, "WARN ( %s/%s ): bind() error: %s\n", config.name, config.type, strerror(errno));
   }
   else {
-    int hincl = 1;                  /* 1 = on, 0 = off */
+    int hincl = TRUE;
 
     if ((s = socket(addr->sa_family, SOCK_RAW, IPPROTO_RAW)) == -1) {
       Log(LOG_ERR, "ERROR ( %s/%s ): socket() error: %s\n", config.name, config.type, strerror(errno));
@@ -555,9 +559,9 @@ int Tee_prepare_sock(struct sockaddr *addr, socklen_t len)
   return(s);
 }
 
-int Tee_parse_hostport(const char *s, struct sockaddr *addr, socklen_t *len)
+int Tee_parse_hostport(const char *s, struct sockaddr *addr, socklen_t *len, int dont_check_port)
 {
-  char *orig, *host, *port;
+  char *orig, *host, *port, zero_port[] = "]:0";
   struct addrinfo hints, *res;
   int herr;
 
@@ -571,11 +575,20 @@ int Tee_parse_hostport(const char *s, struct sockaddr *addr, socklen_t *len)
   trim_spaces(host);
   trim_spaces(orig);
 
-  if ((port = strrchr(host, ':')) == NULL || *(++port) == '\0' || *host == '\0') return TRUE;
+  if ((port = strrchr(host, ':')) == NULL || *(++port) == '\0') {
+    if (dont_check_port) {
+      port = zero_port;
+      ++port; ++port;
+    }
+    else return TRUE;
+  }
+
+  if (*host == '\0') return TRUE;
 
   *(port - 1) = '\0';
 
-  /* Accept [host]:port for numeric IPv6 addresses */
+  /* Accept [host]:port for numeric IPv6 addresses;
+     XXX: if dont_check_port is set to true, check for ']' will be inaccurate */
   if (*host == '[' && *(port - 2) == ']') {
     host++;
     *(port - 2) = '\0';

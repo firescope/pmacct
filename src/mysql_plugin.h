@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2009 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -41,10 +41,12 @@ void MY_get_errmsg(struct DBdesc *);
 void MY_create_backend(struct DBdesc *);
 void MY_set_callbacks(struct sqlfunc_cb_registry *);
 void MY_init_default_values(struct insert_data *);
+void MY_mysql_get_version();
 
 /* variables */
 static char mysql_user[] = "pmacct";
 static char mysql_pwd[] = "arealsmartpwd";
+static unsigned int mysql_prt = 3306;
 static char mysql_db[] = "pmacct";
 static char mysql_table[] = "acct";
 static char mysql_table_v2[] = "acct_v2";

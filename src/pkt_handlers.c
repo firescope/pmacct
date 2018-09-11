@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -35,6 +35,9 @@
 #include "bgp/bgp.h"
 #include "isis/prefix.h"
 #include "isis/table.h"
+#if defined (WITH_NDPI)
+#include "ndpi/ndpi.h"
+#endif
 
 #include "fqdn_cache.h"
 
@@ -381,12 +384,13 @@ void evaluate_packet_handlers()
       }
     }
 
-    if (channels_list[index].aggregation & (COUNT_STD_COMM|COUNT_EXT_COMM|COUNT_LOCAL_PREF|COUNT_MED|
+    if ((channels_list[index].aggregation & (COUNT_STD_COMM|COUNT_EXT_COMM|COUNT_LOCAL_PREF|COUNT_MED|
                                             COUNT_AS_PATH|COUNT_PEER_DST_AS|COUNT_SRC_AS_PATH|COUNT_SRC_STD_COMM|
                                             COUNT_SRC_EXT_COMM|COUNT_SRC_MED|COUNT_SRC_LOCAL_PREF|COUNT_SRC_AS|
-                                            COUNT_DST_AS|COUNT_PEER_SRC_AS) &&
+					    COUNT_DST_AS|COUNT_PEER_SRC_AS) ||
+	channels_list[index].aggregation_2 & (COUNT_LRG_COMM|COUNT_SRC_LRG_COMM)) &&
         channels_list[index].plugin->cfg.nfacctd_as & NF_AS_BGP) {
-      if (config.acct_type == ACCT_PM && config.nfacctd_bgp) {
+      if (config.acct_type == ACCT_PM && (config.nfacctd_bgp || config.nfacctd_bmp)) {
         if (channels_list[index].plugin->type.id == PLUGIN_ID_SFPROBE) {
           channels_list[index].phandler[primitives] = sfprobe_bgp_ext_handler;
         }
@@ -398,11 +402,11 @@ void evaluate_packet_handlers()
         }
         primitives++;
       }
-      else if (config.acct_type == ACCT_NF && config.nfacctd_bgp) {
+      else if (config.acct_type == ACCT_NF && (config.nfacctd_bgp || config.nfacctd_bmp)) {
         channels_list[index].phandler[primitives] = bgp_ext_handler;
         primitives++;
       }
-      else if (config.acct_type == ACCT_SF && config.nfacctd_bgp) {
+      else if (config.acct_type == ACCT_SF && (config.nfacctd_bgp || config.nfacctd_bmp)) {
         channels_list[index].phandler[primitives] = bgp_ext_handler;
         primitives++;
       }
@@ -413,8 +417,9 @@ void evaluate_packet_handlers()
         channels_list[index].phandler[primitives] = mpls_vpn_rd_frommap_handler;
         primitives++;
       } 
+
       if (config.acct_type == ACCT_NF) {
-        channels_list[index].phandler[primitives] = NF_mpls_vpn_rd_handler;
+        channels_list[index].phandler[primitives] = NF_mpls_vpn_id_handler;
         primitives++;
       }
     }
@@ -520,7 +525,7 @@ void evaluate_packet_handlers()
     if (channels_list[index].aggregation & COUNT_FLOWS) {
       if (config.acct_type == ACCT_PM) channels_list[index].phandler[primitives] = flows_handler;
       else if (config.acct_type == ACCT_NF) channels_list[index].phandler[primitives] = NF_flows_handler;
-      else if (config.acct_type == ACCT_SF) primitives--; /* NO flows handling for sFlow */
+      else if (config.acct_type == ACCT_SF) channels_list[index].phandler[primitives] = SF_flows_handler;
       primitives++;
     }
 
@@ -530,6 +535,15 @@ void evaluate_packet_handlers()
       else if (config.acct_type == ACCT_SF) channels_list[index].phandler[primitives] = SF_class_handler; 
       primitives++;
     }
+
+#if defined (WITH_NDPI)
+    if (channels_list[index].aggregation_2 & COUNT_NDPI_CLASS) {
+      if (config.acct_type == ACCT_PM) channels_list[index].phandler[primitives] = ndpi_class_handler;
+      else if (config.acct_type == ACCT_NF) channels_list[index].phandler[primitives] = NF_ndpi_class_handler;
+      else if (config.acct_type == ACCT_SF) channels_list[index].phandler[primitives] = SF_ndpi_class_handler;
+      primitives++;
+    }
+#endif
 
     if (channels_list[index].aggregation & COUNT_IN_IFACE) {
       if (config.acct_type == ACCT_PM) channels_list[index].phandler[primitives] = in_iface_handler;
@@ -581,7 +595,7 @@ void evaluate_packet_handlers()
 #if defined (WITH_GEOIPV2)
     pm_geoipv2_init();
 
-    if (channels_list[index].aggregation_2 & COUNT_SRC_HOST_COUNTRY /* other GeoIP primitives here */) {
+    if (channels_list[index].aggregation_2 & (COUNT_SRC_HOST_COUNTRY|COUNT_SRC_HOST_POCODE) /* other GeoIP primitives here */) {
       channels_list[index].phandler[primitives] = src_host_geoipv2_lookup_handler;
       primitives++;
 
@@ -589,14 +603,24 @@ void evaluate_packet_handlers()
         channels_list[index].phandler[primitives] = src_host_country_geoipv2_handler;
         primitives++;
       }
+
+      if (channels_list[index].aggregation_2 & COUNT_SRC_HOST_POCODE) {
+        channels_list[index].phandler[primitives] = src_host_pocode_geoipv2_handler;
+        primitives++;
+      }
     }
 
-    if (channels_list[index].aggregation_2 & COUNT_DST_HOST_COUNTRY /* other GeoIP primitives here */) {
+    if (channels_list[index].aggregation_2 & (COUNT_DST_HOST_COUNTRY|COUNT_DST_HOST_POCODE) /* other GeoIP primitives here */) {
       channels_list[index].phandler[primitives] = dst_host_geoipv2_lookup_handler;
       primitives++;
 
       if (channels_list[index].aggregation_2 & COUNT_DST_HOST_COUNTRY) {
         channels_list[index].phandler[primitives] = dst_host_country_geoipv2_handler;
+        primitives++;
+      }
+
+      if (channels_list[index].aggregation_2 & COUNT_DST_HOST_POCODE) {
+        channels_list[index].phandler[primitives] = dst_host_pocode_geoipv2_handler;
         primitives++;
       }
     }
@@ -632,16 +656,41 @@ void evaluate_packet_handlers()
       primitives++;
     }
 
+    if (channels_list[index].aggregation_2 & COUNT_TUNNEL_SRC_HOST) {
+      if (config.acct_type == ACCT_SF) channels_list[index].phandler[primitives] = SF_tunnel_src_host_handler;
+      else primitives--;
+      primitives++;
+    }
+
+    if (channels_list[index].aggregation_2 & COUNT_TUNNEL_DST_HOST) {
+      if (config.acct_type == ACCT_SF) channels_list[index].phandler[primitives] = SF_tunnel_dst_host_handler;
+      else primitives--;
+      primitives++;
+    }
+
+    if (channels_list[index].aggregation_2 & COUNT_TUNNEL_IP_PROTO) {
+      if (config.acct_type == ACCT_SF) channels_list[index].phandler[primitives] = SF_tunnel_ip_proto_handler;
+      else primitives--;
+      primitives++;
+    }
+
+    if (channels_list[index].aggregation_2 & COUNT_TUNNEL_IP_TOS) {
+      if (config.acct_type == ACCT_SF) channels_list[index].phandler[primitives] = SF_tunnel_ip_tos_handler;
+      else primitives--;
+      primitives++;
+    }
+
     if (channels_list[index].aggregation_2 & COUNT_MPLS_LABEL_TOP) {
       if (config.acct_type == ACCT_PM) channels_list[index].phandler[primitives] = mpls_label_top_handler;
       else if (config.acct_type == ACCT_NF) channels_list[index].phandler[primitives] = NF_mpls_label_top_handler;
-      else primitives--;
+      else if (config.acct_type == ACCT_SF) channels_list[index].phandler[primitives] = SF_mpls_label_top_handler;
       primitives++;
     }
 
     if (channels_list[index].aggregation_2 & COUNT_MPLS_LABEL_BOTTOM) {
       if (config.acct_type == ACCT_PM) channels_list[index].phandler[primitives] = mpls_label_bottom_handler;
       else if (config.acct_type == ACCT_NF) channels_list[index].phandler[primitives] = NF_mpls_label_bottom_handler;
+      else if (config.acct_type == ACCT_SF) channels_list[index].phandler[primitives] = SF_mpls_label_bottom_handler;
       else primitives--;
       primitives++;
     }
@@ -649,6 +698,7 @@ void evaluate_packet_handlers()
     if (channels_list[index].aggregation_2 & COUNT_MPLS_STACK_DEPTH) {
       if (config.acct_type == ACCT_PM) channels_list[index].phandler[primitives] = mpls_stack_depth_handler;
       else if (config.acct_type == ACCT_NF) channels_list[index].phandler[primitives] = NF_mpls_stack_depth_handler;
+      else if (config.acct_type == ACCT_SF) channels_list[index].phandler[primitives] = SF_mpls_stack_depth_handler;
       else primitives--;
       primitives++;
     }
@@ -687,6 +737,13 @@ void evaluate_packet_handlers()
       primitives++;
     }
 
+    if (channels_list[index].aggregation_2 & COUNT_EXPORT_PROTO_SYSID) {
+      if (config.acct_type == ACCT_NF) channels_list[index].phandler[primitives] = NF_sysid_handler;
+      else if (config.acct_type == ACCT_SF) channels_list[index].phandler[primitives] = SF_sysid_handler;
+      else primitives--;
+      primitives++;
+    }
+
     /* if cpptrs.num > 0 one or multiple custom primitives are defined */
     if (channels_list[index].plugin->cfg.cpptrs.num) {
       if (config.acct_type == ACCT_PM) {
@@ -697,20 +754,33 @@ void evaluate_packet_handlers()
 	channels_list[index].phandler[primitives] = NF_custom_primitives_handler;
 	primitives++;
       }
+      else if (config.acct_type == ACCT_SF) {
+        channels_list[index].phandler[primitives] = SF_custom_primitives_handler;
+        primitives++;
+      }
     }
 
     if (channels_list[index].aggregation & COUNT_COUNTERS) {
       if (config.acct_type == ACCT_PM) {
 	channels_list[index].phandler[primitives] = counters_handler;
+
+	primitives++;
+	if (config.nfacctd_time == NF_TIME_NEW) channels_list[index].phandler[primitives] = time_new_handler;
+	else channels_list[index].phandler[primitives] = time_pcap_handler; /* default */
+
 	if (config.sfacctd_renormalize && config.ext_sampling_rate) {
 	  primitives++;
 	  channels_list[index].phandler[primitives] = counters_renormalize_handler;
 	}
       }
       else if (config.acct_type == ACCT_NF) {
-	if (config.nfacctd_time == NF_TIME_SECS) channels_list[index].phandler[primitives] = NF_counters_secs_handler;
-	else if (config.nfacctd_time == NF_TIME_NEW) channels_list[index].phandler[primitives] = NF_counters_new_handler;
-	else channels_list[index].phandler[primitives] = NF_counters_msecs_handler; /* default */
+	channels_list[index].phandler[primitives] = NF_counters_handler;
+
+	primitives++;
+	if (config.nfacctd_time == NF_TIME_SECS) channels_list[index].phandler[primitives] = NF_time_secs_handler;
+	else if (config.nfacctd_time == NF_TIME_NEW) channels_list[index].phandler[primitives] = NF_time_new_handler;
+	else channels_list[index].phandler[primitives] = NF_time_msecs_handler; /* default */
+
 	if (config.sfacctd_renormalize) {
 	  primitives++;
 	  if (config.ext_sampling_rate) channels_list[index].phandler[primitives] = counters_renormalize_handler;
@@ -725,7 +795,7 @@ void evaluate_packet_handlers()
 	}
       }
       else if (config.acct_type == ACCT_SF) {
-	channels_list[index].phandler[primitives] = SF_counters_new_handler;
+	channels_list[index].phandler[primitives] = SF_counters_handler;
 	if (config.sfacctd_renormalize) {
 	  primitives++;
 	  if (config.ext_sampling_rate) channels_list[index].phandler[primitives] = counters_renormalize_handler;
@@ -830,8 +900,8 @@ void evaluate_packet_handlers()
     /* tee plugin: struct pkt_msg handling */
     if (channels_list[index].aggregation & COUNT_NONE) {
       if (channels_list[index].plugin->type.id == PLUGIN_ID_TEE) {
-        if (config.acct_type == ACCT_SF) channels_list[index].phandler[primitives] = tee_payload_handler;
-        if (config.acct_type == ACCT_NF) channels_list[index].phandler[primitives] = tee_payload_handler;
+        if (config.acct_type == ACCT_SF) channels_list[index].phandler[primitives] = SF_tee_payload_handler;
+        if (config.acct_type == ACCT_NF) channels_list[index].phandler[primitives] = NF_tee_payload_handler;
         else primitives--; /* This case is filtered out at startup: getting out silently */
       }
       primitives++;
@@ -1027,7 +1097,7 @@ void src_host_handler(struct channels_list_entry *chptr, struct packet_ptrs *ppt
   struct pkt_data *pdata = (struct pkt_data *) *data;
 
   if (pptrs->l3_proto == ETHERTYPE_IP) {
-    pdata->primitives.src_ip.address.ipv4.s_addr = ((struct my_iphdr *) pptrs->iph_ptr)->ip_src.s_addr;
+    pdata->primitives.src_ip.address.ipv4.s_addr = ((struct pm_iphdr *) pptrs->iph_ptr)->ip_src.s_addr;
     pdata->primitives.src_ip.family = AF_INET;
   }
 #if defined ENABLE_IPV6 
@@ -1043,7 +1113,7 @@ void dst_host_handler(struct channels_list_entry *chptr, struct packet_ptrs *ppt
   struct pkt_data *pdata = (struct pkt_data *) *data;
 
   if (pptrs->l3_proto == ETHERTYPE_IP) {
-    pdata->primitives.dst_ip.address.ipv4.s_addr = ((struct my_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr;
+    pdata->primitives.dst_ip.address.ipv4.s_addr = ((struct pm_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr;
     pdata->primitives.dst_ip.family = AF_INET;
   }
 #if defined ENABLE_IPV6 
@@ -1059,7 +1129,7 @@ void src_port_handler(struct channels_list_entry *chptr, struct packet_ptrs *ppt
   struct pkt_data *pdata = (struct pkt_data *) *data;
 
   if (pptrs->l4_proto == IPPROTO_UDP || pptrs->l4_proto == IPPROTO_TCP)
-    pdata->primitives.src_port = ntohs(((struct my_tlhdr *) pptrs->tlh_ptr)->src_port);
+    pdata->primitives.src_port = ntohs(((struct pm_tlhdr *) pptrs->tlh_ptr)->src_port);
   else pdata->primitives.src_port = 0;
 }
 
@@ -1068,7 +1138,7 @@ void dst_port_handler(struct channels_list_entry *chptr, struct packet_ptrs *ppt
   struct pkt_data *pdata = (struct pkt_data *) *data;
 
   if (pptrs->l4_proto == IPPROTO_UDP || pptrs->l4_proto == IPPROTO_TCP)
-    pdata->primitives.dst_port = ntohs(((struct my_tlhdr *) pptrs->tlh_ptr)->dst_port);
+    pdata->primitives.dst_port = ntohs(((struct pm_tlhdr *) pptrs->tlh_ptr)->dst_port);
   else pdata->primitives.dst_port = 0;
 }
 
@@ -1078,7 +1148,7 @@ void ip_tos_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs
   u_int32_t tos = 0;
 
   if (pptrs->l3_proto == ETHERTYPE_IP) {
-    pdata->primitives.tos = ((struct my_iphdr *) pptrs->iph_ptr)->ip_tos;
+    pdata->primitives.tos = ((struct pm_iphdr *) pptrs->iph_ptr)->ip_tos;
   }
 #if defined ENABLE_IPV6
   else if (pptrs->l3_proto == ETHERTYPE_IPV6) {
@@ -1107,19 +1177,20 @@ void counters_handler(struct channels_list_entry *chptr, struct packet_ptrs *ppt
 {
   struct pkt_data *pdata = (struct pkt_data *) *data;
 
-  if (pptrs->l3_proto == ETHERTYPE_IP) pdata->pkt_len = ntohs(((struct my_iphdr *) pptrs->iph_ptr)->ip_len);
+  if (pptrs->l3_proto == ETHERTYPE_IP) pdata->pkt_len = ntohs(((struct pm_iphdr *) pptrs->iph_ptr)->ip_len);
 #if defined ENABLE_IPV6
   else if (pptrs->l3_proto == ETHERTYPE_IPV6) pdata->pkt_len = ntohs(((struct ip6_hdr *) pptrs->iph_ptr)->ip6_plen)+IP6HdrSz;
 #endif
-  if (pptrs->pf) {
-    pdata->pkt_num = pptrs->pf+1;
-    pptrs->pf = 0;
+  if (pptrs->frag_sum_bytes) {
+    pdata->pkt_len += pptrs->frag_sum_bytes;
+    pptrs->frag_sum_bytes = 0;
   }
-  else pdata->pkt_num = 1; 
-  pdata->time_start.tv_sec = ((struct pcap_pkthdr *)pptrs->pkthdr)->ts.tv_sec;
-  pdata->time_start.tv_usec = ((struct pcap_pkthdr *)pptrs->pkthdr)->ts.tv_usec;
-  pdata->time_end.tv_sec = 0;
-  pdata->time_end.tv_usec = 0;
+
+  pdata->pkt_num = 1;
+  if (pptrs->frag_sum_pkts) {
+    pdata->pkt_num += pptrs->frag_sum_pkts;
+    pptrs->frag_sum_pkts = 0;
+  }
 
   pdata->flow_type = pptrs->flow_type;
 }
@@ -1134,6 +1205,26 @@ void counters_renormalize_handler(struct channels_list_entry *chptr, struct pack
   pdata->pkt_num = pdata->pkt_num*config.ext_sampling_rate; 
 
   pptrs->renormalized = TRUE;
+}
+
+void time_new_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+
+  pdata->time_start.tv_sec = 0;
+  pdata->time_start.tv_usec = 0;
+  pdata->time_end.tv_sec = 0;
+  pdata->time_end.tv_usec = 0;
+}
+
+void time_pcap_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+
+  pdata->time_start.tv_sec = ((struct pcap_pkthdr *)pptrs->pkthdr)->ts.tv_sec;
+  pdata->time_start.tv_usec = ((struct pcap_pkthdr *)pptrs->pkthdr)->ts.tv_usec;
+  pdata->time_end.tv_sec = 0;
+  pdata->time_end.tv_usec = 0;
 }
 
 void post_tag_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
@@ -1171,16 +1262,28 @@ void class_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs,
   pdata->cst.tentatives = pptrs->cst.tentatives;
 }
 
+#if defined (WITH_NDPI)
+void ndpi_class_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+
+  memcpy(&pdata->primitives.ndpi_class, &pptrs->ndpi_class, sizeof(pm_class2_t));
+}
+#endif
+
 void sfprobe_payload_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
 {
   struct pkt_payload *payload = (struct pkt_payload *) *data;
   struct pkt_data tmp;
+  struct pkt_bgp_primitives tmp_bgp;
   struct eth_header eh;
   char *buf = (char *) *data, *tmpp = (char *) &tmp;
+  char *tmp_bgpp = (char *) &tmp_bgp;
   int space = (chptr->bufend - chptr->bufptr) - PpayloadSz;
   int ethHdrLen = 0;
 
   memset(&tmp, 0, sizeof(tmp));
+  memset(&tmp_bgp, 0, sizeof(tmp_bgp));
 
   if (chptr->plugin->cfg.nfacctd_as & NF_AS_NEW ||
       chptr->plugin->cfg.nfacctd_net == NF_NET_NEW) {
@@ -1195,6 +1298,9 @@ void sfprobe_payload_handler(struct channels_list_entry *chptr, struct packet_pt
     bgp_dst_nmask_handler(chptr, pptrs, &tmpp);
     payload->src_nmask = tmp.primitives.src_nmask;
     payload->dst_nmask = tmp.primitives.dst_nmask;
+
+    bgp_peer_dst_ip_handler(chptr, pptrs, &tmp_bgpp);
+    memcpy(&payload->bgp_next_hop, &tmp_bgp.peer_dst_ip, HostAddrSz);
   }
 
   payload->cap_len = ((struct pcap_pkthdr *)pptrs->pkthdr)->caplen;
@@ -1202,6 +1308,9 @@ void sfprobe_payload_handler(struct channels_list_entry *chptr, struct packet_pt
   payload->pkt_num = 1; 
   payload->time_start = ((struct pcap_pkthdr *)pptrs->pkthdr)->ts.tv_sec;
   payload->class = pptrs->class;
+#if defined (WITH_NDPI)
+  memcpy(&payload->ndpi_class, &pptrs->ndpi_class, sizeof(pm_class2_t));
+#endif
   payload->tag = pptrs->tag;
   payload->tag2 = pptrs->tag2;
   if (pptrs->ifindex_in > 0)  payload->ifindex_in  = pptrs->ifindex_in;
@@ -1245,16 +1354,52 @@ void sfprobe_payload_handler(struct channels_list_entry *chptr, struct packet_pt
   }
 }
 
-void tee_payload_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+void NF_tee_payload_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
 {
   struct pkt_msg *pmsg = (struct pkt_msg *) *data;
+  char *ppayload = ((*data) + PmsgSz);
 
   pmsg->seqno = pptrs->seqno;
   pmsg->len = pptrs->f_len;
+  pmsg->payload = NULL;
   memcpy(&pmsg->agent, pptrs->f_agent, sizeof(pmsg->agent));
-  memcpy(&pmsg->payload, pptrs->f_header, MIN(sizeof(pmsg->payload), pptrs->f_len));
   pmsg->tag = pptrs->tag;
   pmsg->tag2 = pptrs->tag2;
+  if (!check_pipe_buffer_space(chptr, NULL, pptrs->f_len)) {
+    memcpy(ppayload, pptrs->f_header, pptrs->f_len);
+  }
+}
+
+void SF_tee_payload_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_msg *pmsg = (struct pkt_msg *) *data;
+  char *ppayload = ((*data) + PmsgSz);
+
+  if (!pptrs->tee_dissect) {
+    pmsg->seqno = pptrs->seqno;
+    pmsg->len = pptrs->f_len;
+    pmsg->payload = NULL;
+    memcpy(&pmsg->agent, pptrs->f_agent, sizeof(pmsg->agent));
+    pmsg->tag = pptrs->tag;
+    pmsg->tag2 = pptrs->tag2;
+    if (!check_pipe_buffer_space(chptr, NULL, pptrs->f_len)) {
+      memcpy(ppayload, pptrs->f_header, pptrs->f_len);
+    }
+  }
+  else {
+    struct SF_dissect *dissect = (struct SF_dissect *) pptrs->tee_dissect;
+
+    pmsg->seqno = pptrs->seqno;
+    pmsg->len = (dissect->hdrLen + dissect->flowLen); 
+    pmsg->payload = NULL;
+    memcpy(&pmsg->agent, pptrs->f_agent, sizeof(pmsg->agent));
+    pmsg->tag = pptrs->tag;
+    pmsg->tag2 = pptrs->tag2;
+    if (!check_pipe_buffer_space(chptr, NULL, pmsg->len)) {
+      memcpy(ppayload, dissect->hdrBasePtr, dissect->hdrLen);
+      memcpy((ppayload + dissect->hdrLen), dissect->flowBasePtr, dissect->flowLen);
+    }
+  }
 }
 
 void nfprobe_extras_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
@@ -1264,7 +1409,6 @@ void nfprobe_extras_handler(struct channels_list_entry *chptr, struct packet_ptr
 
   --pdata; /* Bringing back to original place */
 
-  if (pptrs->mpls_ptr) memcpy(&pextras->mpls_top_label, pptrs->mpls_ptr, 4);
   if (pptrs->l4_proto == IPPROTO_TCP) pextras->tcp_flags = pptrs->tcp_flags;
 }
 
@@ -1366,11 +1510,11 @@ void custom_primitives_handler(struct channels_list_entry *chptr, struct packet_
 		  str_len = strlen(str_ptr);
 
 		  if (str_len) {
-                    if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + str_len)) {
+                    if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + str_len + 1 /* terminating zero */)) {
                       vlen_prims_init(pvlen, 0);
                       return;
                     }
-                    else vlen_prims_insert(pvlen, cpe->type, str_len, str_ptr);
+                    else vlen_prims_insert(pvlen, cpe->type, str_len, str_ptr, PM_MSG_STR_COPY_ZERO);
 		  }
 		}
 	      }
@@ -1401,6 +1545,9 @@ void NF_src_mac_handler(struct channels_list_entry *chptr, struct packet_ptrs *p
       memcpy(&pdata->primitives.eth_shost, pptrs->f_data+tpl->tpl[NF9_IN_SRC_MAC].off, MIN(tpl->tpl[NF9_IN_SRC_MAC].len, 6));
     else if (tpl->tpl[NF9_OUT_SRC_MAC].len)
       memcpy(&pdata->primitives.eth_shost, pptrs->f_data+tpl->tpl[NF9_OUT_SRC_MAC].off, MIN(tpl->tpl[NF9_OUT_SRC_MAC].len, 6));
+    else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len) 
+      src_mac_handler(chptr, pptrs, data);
+
     break;
   default:
     break;
@@ -1420,6 +1567,9 @@ void NF_dst_mac_handler(struct channels_list_entry *chptr, struct packet_ptrs *p
       memcpy(&pdata->primitives.eth_dhost, pptrs->f_data+tpl->tpl[NF9_IN_DST_MAC].off, MIN(tpl->tpl[NF9_IN_DST_MAC].len, 6));
     else if (tpl->tpl[NF9_OUT_DST_MAC].len)
       memcpy(&pdata->primitives.eth_dhost, pptrs->f_data+tpl->tpl[NF9_OUT_DST_MAC].off, MIN(tpl->tpl[NF9_OUT_DST_MAC].len, 6));
+    else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len)
+      dst_mac_handler(chptr, pptrs, data);
+
     break;
   default:
     break;
@@ -1461,6 +1611,10 @@ void NF_vlan_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptr
         memcpy(&pdata->primitives.vlan_id, pptrs->f_data+tpl->tpl[NF9_DOT1QVLANID].off, MIN(tpl->tpl[NF9_DOT1QVLANID].len, 2));
       else if (tpl->tpl[NF9_POST_DOT1QVLANID].len)
         memcpy(&pdata->primitives.vlan_id, pptrs->f_data+tpl->tpl[NF9_POST_DOT1QVLANID].off, MIN(tpl->tpl[NF9_POST_DOT1QVLANID].len, 2));
+      else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len) {
+        vlan_handler(chptr, pptrs, data);
+	break;
+      }
     }
 
     pdata->primitives.vlan_id = ntohs(pdata->primitives.vlan_id);
@@ -1481,6 +1635,8 @@ void NF_cos_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs
   case 9:
     if (tpl->tpl[NF9_DOT1QPRIORITY].len)
       memcpy(&pdata->primitives.cos, pptrs->f_data+tpl->tpl[NF9_DOT1QPRIORITY].off, MIN(tpl->tpl[NF9_DOT1QPRIORITY].len, 1));
+    else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len)
+      cos_handler(chptr, pptrs, data);
 
     break;
   default:
@@ -1501,7 +1657,11 @@ void NF_etype_handler(struct channels_list_entry *chptr, struct packet_ptrs *ppt
       memcpy(&pdata->primitives.etype, pptrs->f_data+tpl->tpl[NF9_ETHERTYPE].off, MIN(tpl->tpl[NF9_ETHERTYPE].len, 2));
       pdata->primitives.etype = ntohs(pdata->primitives.etype);
     }
-    else pdata->primitives.etype = pptrs->l3_proto;
+    else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len)
+      etype_handler(chptr, pptrs, data);
+    else
+      pdata->primitives.etype = pptrs->l3_proto;
+
     break;
   default:
     pdata->primitives.etype = pptrs->l3_proto; 
@@ -1528,6 +1688,8 @@ void NF_src_host_handler(struct channels_list_entry *chptr, struct packet_ptrs *
         memcpy(&pdata->primitives.src_ip.address.ipv4, pptrs->f_data+tpl->tpl[NF9_IPV4_SRC_PREFIX].off, MIN(tpl->tpl[NF9_IPV4_SRC_PREFIX].len, 4)); 
         pdata->primitives.src_ip.family = AF_INET;
       }
+      else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len)
+	src_host_handler(chptr, pptrs, data);
     }
 #if defined ENABLE_IPV6
     if (pptrs->l3_proto == ETHERTYPE_IPV6 || pptrs->flow_type == NF9_FTYPE_NAT_EVENT /* NAT64 case */) {
@@ -1539,6 +1701,8 @@ void NF_src_host_handler(struct channels_list_entry *chptr, struct packet_ptrs *
 	memcpy(&pdata->primitives.src_ip.address.ipv6, pptrs->f_data+tpl->tpl[NF9_IPV6_SRC_PREFIX].off, MIN(tpl->tpl[NF9_IPV6_SRC_PREFIX].len, 16));
         pdata->primitives.src_ip.family = AF_INET6;
       }
+      else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len)
+	src_host_handler(chptr, pptrs, data);
     }
 #endif
     break;
@@ -1603,6 +1767,8 @@ void NF_dst_host_handler(struct channels_list_entry *chptr, struct packet_ptrs *
         memcpy(&pdata->primitives.dst_ip.address.ipv4, pptrs->f_data+tpl->tpl[NF9_IPV4_DST_PREFIX].off, MIN(tpl->tpl[NF9_IPV4_DST_PREFIX].len, 4));
         pdata->primitives.dst_ip.family = AF_INET;
       }
+      else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len)
+	dst_host_handler(chptr, pptrs, data);
     }
 #if defined ENABLE_IPV6
     if (pptrs->l3_proto == ETHERTYPE_IPV6 || pptrs->flow_type == NF9_FTYPE_NAT_EVENT /* NAT64 case */) {
@@ -1614,6 +1780,8 @@ void NF_dst_host_handler(struct channels_list_entry *chptr, struct packet_ptrs *
         memcpy(&pdata->primitives.dst_ip.address.ipv6, pptrs->f_data+tpl->tpl[NF9_IPV6_DST_PREFIX].off, MIN(tpl->tpl[NF9_IPV6_DST_PREFIX].len, 16));
         pdata->primitives.dst_ip.family = AF_INET6;
       }
+      else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len)
+	dst_host_handler(chptr, pptrs, data);
     }
 #endif
     break;
@@ -1677,13 +1845,13 @@ void NF_src_nmask_handler(struct channels_list_entry *chptr, struct packet_ptrs 
   case 10:
   case 9:
     if (pptrs->l3_proto == ETHERTYPE_IP) {
-      memcpy(&pdata->primitives.src_nmask, pptrs->f_data+tpl->tpl[NF9_SRC_MASK].off, tpl->tpl[NF9_SRC_MASK].len); 
-      break;
+      if (tpl->tpl[NF9_SRC_MASK].len)
+        memcpy(&pdata->primitives.src_nmask, pptrs->f_data+tpl->tpl[NF9_SRC_MASK].off, tpl->tpl[NF9_SRC_MASK].len); 
     }
 #if defined ENABLE_IPV6
-    if (pptrs->l3_proto == ETHERTYPE_IPV6) {
-      memcpy(&pdata->primitives.src_nmask, pptrs->f_data+tpl->tpl[NF9_IPV6_SRC_MASK].off, tpl->tpl[NF9_IPV6_SRC_MASK].len); 
-      break;
+    else if (pptrs->l3_proto == ETHERTYPE_IPV6) {
+      if (tpl->tpl[NF9_IPV6_SRC_MASK].len)
+        memcpy(&pdata->primitives.src_nmask, pptrs->f_data+tpl->tpl[NF9_IPV6_SRC_MASK].off, tpl->tpl[NF9_IPV6_SRC_MASK].len); 
     }
 #endif
     break;
@@ -1728,13 +1896,13 @@ void NF_dst_nmask_handler(struct channels_list_entry *chptr, struct packet_ptrs 
   case 10:
   case 9:
     if (pptrs->l3_proto == ETHERTYPE_IP) {
-      memcpy(&pdata->primitives.dst_nmask, pptrs->f_data+tpl->tpl[NF9_DST_MASK].off, tpl->tpl[NF9_DST_MASK].len);
-      break;
+      if (tpl->tpl[NF9_DST_MASK].len) 
+        memcpy(&pdata->primitives.dst_nmask, pptrs->f_data+tpl->tpl[NF9_DST_MASK].off, tpl->tpl[NF9_DST_MASK].len);
     }
 #if defined ENABLE_IPV6
-    if (pptrs->l3_proto == ETHERTYPE_IPV6) {
-      memcpy(&pdata->primitives.dst_nmask, pptrs->f_data+tpl->tpl[NF9_IPV6_DST_MASK].off, tpl->tpl[NF9_IPV6_DST_MASK].len);
-      break;
+    else if (pptrs->l3_proto == ETHERTYPE_IPV6) {
+      if (tpl->tpl[NF9_IPV6_DST_MASK].len) 
+        memcpy(&pdata->primitives.dst_nmask, pptrs->f_data+tpl->tpl[NF9_IPV6_DST_MASK].off, tpl->tpl[NF9_IPV6_DST_MASK].len);
     }
 #endif
     break;
@@ -1948,22 +2116,48 @@ void NF_peer_dst_as_handler(struct channels_list_entry *chptr, struct packet_ptr
 
 void NF_peer_src_ip_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
 {
+  struct xflow_status_entry *entry = (struct xflow_status_entry *) pptrs->f_status;
   struct pkt_data *pdata = (struct pkt_data *) *data;
   struct struct_header_v8 *hdr = (struct struct_header_v8 *) pptrs->f_header;
   struct template_cache_entry *tpl = (struct template_cache_entry *) pptrs->f_tpl;
   struct pkt_bgp_primitives *pbgp = (struct pkt_bgp_primitives *) ((*data) + chptr->extras.off_pkt_bgp_primitives);
   struct sockaddr *sa = (struct sockaddr *) pptrs->f_agent;
 
-  if (sa->sa_family == AF_INET) {
-    pbgp->peer_src_ip.address.ipv4.s_addr = ((struct sockaddr_in *)sa)->sin_addr.s_addr;
-    pbgp->peer_src_ip.family = AF_INET;
+  /* 1) NF9_EXPORTER_IPV[46]_ADDRESS from NetFlow v9/IPFIX options */
+  if (entry->exp_addr.family) {
+    memcpy(&pbgp->peer_src_ip, &entry->exp_addr, sizeof(struct host_addr));
   }
+  /* 2) Socket IP address */
+  else {
+    if (sa->sa_family == AF_INET) {
+      pbgp->peer_src_ip.address.ipv4.s_addr = ((struct sockaddr_in *)sa)->sin_addr.s_addr;
+      pbgp->peer_src_ip.family = AF_INET;
+    }
 #if defined ENABLE_IPV6
-  else if (sa->sa_family == AF_INET6) {
-    memcpy(&pbgp->peer_src_ip.address.ipv6, &((struct sockaddr_in6 *)sa)->sin6_addr, IP6AddrSz);
-    pbgp->peer_src_ip.family = AF_INET6;
-  }
+    else if (sa->sa_family == AF_INET6) {
+      memcpy(&pbgp->peer_src_ip.address.ipv6, &((struct sockaddr_in6 *)sa)->sin6_addr, IP6AddrSz);
+      pbgp->peer_src_ip.family = AF_INET6;
+    }
 #endif
+  }
+
+  /* 3) NetFlow v9/IPFIX inline NF9_EXPORTER_IPV[46]_ADDRESS */
+  if (!pbgp->peer_src_ip.family) {
+    switch (hdr->version) {
+    case 10:
+    case 9:
+      if (tpl->tpl[NF9_EXPORTER_IPV4_ADDRESS].len) {
+	memcpy(&pbgp->peer_src_ip.address.ipv4, pptrs->f_data+tpl->tpl[NF9_EXPORTER_IPV4_ADDRESS].off, MIN(tpl->tpl[NF9_EXPORTER_IPV4_ADDRESS].len, 4));
+	pbgp->peer_src_ip.family = AF_INET;
+      }
+#if defined ENABLE_IPV6
+      else if (tpl->tpl[NF9_EXPORTER_IPV6_ADDRESS].len) {
+	memcpy(&pbgp->peer_src_ip.address.ipv6, pptrs->f_data+tpl->tpl[NF9_EXPORTER_IPV6_ADDRESS].off, MIN(tpl->tpl[NF9_EXPORTER_IPV6_ADDRESS].len, 16));
+	pbgp->peer_src_ip.family = AF_INET6;
+      }
+#endif
+    }
+  }
 }
 
 void NF_peer_dst_ip_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
@@ -1990,44 +2184,34 @@ void NF_peer_dst_ip_handler(struct channels_list_entry *chptr, struct packet_ptr
   switch(hdr->version) {
   case 10:
   case 9:
-    if (pptrs->l3_proto == ETHERTYPE_IP) {
-      if (tpl->tpl[NF9_BGP_IPV4_NEXT_HOP].len) {
-        memcpy(&pbgp->peer_dst_ip.address.ipv4, pptrs->f_data+tpl->tpl[NF9_BGP_IPV4_NEXT_HOP].off, MIN(tpl->tpl[NF9_BGP_IPV4_NEXT_HOP].len, 4));
+    if (tpl->tpl[NF9_BGP_IPV4_NEXT_HOP].len) {
+      memcpy(&pbgp->peer_dst_ip.address.ipv4, pptrs->f_data+tpl->tpl[NF9_BGP_IPV4_NEXT_HOP].off, MIN(tpl->tpl[NF9_BGP_IPV4_NEXT_HOP].len, 4));
+      pbgp->peer_dst_ip.family = AF_INET;
+    }
+    else if (tpl->tpl[NF9_MPLS_TOP_LABEL_ADDR].len) {
+      memcpy(&pbgp->peer_dst_ip.address.ipv4, pptrs->f_data+tpl->tpl[NF9_MPLS_TOP_LABEL_ADDR].off, MIN(tpl->tpl[NF9_MPLS_TOP_LABEL_ADDR].len, 4));
+      pbgp->peer_dst_ip.family = AF_INET;
+    }
+    else if (tpl->tpl[NF9_IPV4_NEXT_HOP].len) {
+      if (use_ip_next_hop) {
+        memcpy(&pbgp->peer_dst_ip.address.ipv4, pptrs->f_data+tpl->tpl[NF9_IPV4_NEXT_HOP].off, MIN(tpl->tpl[NF9_IPV4_NEXT_HOP].len, 4));
         pbgp->peer_dst_ip.family = AF_INET;
       }
-      else if (tpl->tpl[NF9_MPLS_TOP_LABEL_ADDR].len) {
-        memcpy(&pbgp->peer_dst_ip.address.ipv4, pptrs->f_data+tpl->tpl[NF9_MPLS_TOP_LABEL_ADDR].off, MIN(tpl->tpl[NF9_MPLS_TOP_LABEL_ADDR].len, 4));
-        pbgp->peer_dst_ip.family = AF_INET;
-      }
-      else if (tpl->tpl[NF9_IPV4_NEXT_HOP].len) {
-	if (use_ip_next_hop) {
-          memcpy(&pbgp->peer_dst_ip.address.ipv4, pptrs->f_data+tpl->tpl[NF9_IPV4_NEXT_HOP].off, MIN(tpl->tpl[NF9_IPV4_NEXT_HOP].len, 4));
-          pbgp->peer_dst_ip.family = AF_INET;
-	}
-      }
-      break;
     }
 #if defined ENABLE_IPV6
-    if (pptrs->l3_proto == ETHERTYPE_IPV6) {
-      if (tpl->tpl[NF9_BGP_IPV6_NEXT_HOP].len) {
-        memcpy(&pbgp->peer_dst_ip.address.ipv6, pptrs->f_data+tpl->tpl[NF9_BGP_IPV6_NEXT_HOP].off, MIN(tpl->tpl[NF9_BGP_IPV6_NEXT_HOP].len, 16));
-        pbgp->peer_dst_ip.family = AF_INET6;
+    else if (tpl->tpl[NF9_BGP_IPV6_NEXT_HOP].len) {
+      memcpy(&pbgp->peer_dst_ip.address.ipv6, pptrs->f_data+tpl->tpl[NF9_BGP_IPV6_NEXT_HOP].off, MIN(tpl->tpl[NF9_BGP_IPV6_NEXT_HOP].len, 16));
+      pbgp->peer_dst_ip.family = AF_INET6;
+    }
+    else if (tpl->tpl[NF9_MPLS_TOP_LABEL_IPV6_ADDR].len) {
+      memcpy(&pbgp->peer_dst_ip.address.ipv6, pptrs->f_data+tpl->tpl[NF9_MPLS_TOP_LABEL_IPV6_ADDR].off, MIN(tpl->tpl[NF9_MPLS_TOP_LABEL_IPV6_ADDR].len, 16));
+      pbgp->peer_dst_ip.family = AF_INET6;
+    }
+    else if (tpl->tpl[NF9_IPV6_NEXT_HOP].len) {
+      if (use_ip_next_hop) {
+	memcpy(&pbgp->peer_dst_ip.address.ipv6, pptrs->f_data+tpl->tpl[NF9_IPV6_NEXT_HOP].off, MIN(tpl->tpl[NF9_IPV6_NEXT_HOP].len, 16));
+	pbgp->peer_dst_ip.family = AF_INET6;
       }
-      else if (tpl->tpl[NF9_MPLS_TOP_LABEL_ADDR].len) {
-        memcpy(&pbgp->peer_dst_ip.address.ipv4, pptrs->f_data+tpl->tpl[NF9_MPLS_TOP_LABEL_ADDR].off, MIN(tpl->tpl[NF9_MPLS_TOP_LABEL_ADDR].len, 4));
-        pbgp->peer_dst_ip.family = AF_INET;
-      }
-      else if (tpl->tpl[NF9_MPLS_TOP_LABEL_IPV6_ADDR].len) {
-        memcpy(&pbgp->peer_dst_ip.address.ipv6, pptrs->f_data+tpl->tpl[NF9_MPLS_TOP_LABEL_IPV6_ADDR].off, MIN(tpl->tpl[NF9_MPLS_TOP_LABEL_IPV6_ADDR].len, 16));
-        pbgp->peer_dst_ip.family = AF_INET6;
-      }
-      else if (tpl->tpl[NF9_IPV6_NEXT_HOP].len) {
-	if (use_ip_next_hop) {
-	  memcpy(&pbgp->peer_dst_ip.address.ipv6, pptrs->f_data+tpl->tpl[NF9_IPV6_NEXT_HOP].off, MIN(tpl->tpl[NF9_IPV6_NEXT_HOP].len, 16));
-	  pbgp->peer_dst_ip.family = AF_INET6;
-	}
-      }
-      break;
     }
 #endif
     break;
@@ -2061,6 +2245,10 @@ void NF_src_port_handler(struct channels_list_entry *chptr, struct packet_ptrs *
       memcpy(&pdata->primitives.src_port, pptrs->f_data+tpl->tpl[NF9_UDP_SRC_PORT].off, MIN(tpl->tpl[NF9_UDP_SRC_PORT].len, 2));
     else if (tpl->tpl[NF9_TCP_SRC_PORT].len) 
       memcpy(&pdata->primitives.src_port, pptrs->f_data+tpl->tpl[NF9_TCP_SRC_PORT].off, MIN(tpl->tpl[NF9_TCP_SRC_PORT].len, 2));
+    else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len) {
+      src_port_handler(chptr, pptrs, data);
+      break;
+    }
 
     pdata->primitives.src_port = ntohs(pdata->primitives.src_port);
     break;
@@ -2120,6 +2308,10 @@ void NF_dst_port_handler(struct channels_list_entry *chptr, struct packet_ptrs *
       memcpy(&pdata->primitives.dst_port, pptrs->f_data+tpl->tpl[NF9_UDP_DST_PORT].off, MIN(tpl->tpl[NF9_UDP_DST_PORT].len, 2));
     else if (tpl->tpl[NF9_TCP_DST_PORT].len)
       memcpy(&pdata->primitives.dst_port, pptrs->f_data+tpl->tpl[NF9_TCP_DST_PORT].off, MIN(tpl->tpl[NF9_TCP_DST_PORT].len, 2));
+    else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len) {
+      dst_port_handler(chptr, pptrs, data);
+      break;
+    }
 
     pdata->primitives.dst_port = ntohs(pdata->primitives.dst_port);
     break;
@@ -2174,7 +2366,11 @@ void NF_ip_tos_handler(struct channels_list_entry *chptr, struct packet_ptrs *pp
   switch(hdr->version) {
   case 10:
   case 9:
-    memcpy(&pdata->primitives.tos, pptrs->f_data+tpl->tpl[NF9_SRC_TOS].off, MIN(tpl->tpl[NF9_SRC_TOS].len, 1));
+    if (tpl->tpl[NF9_SRC_TOS].len)
+      memcpy(&pdata->primitives.tos, pptrs->f_data+tpl->tpl[NF9_SRC_TOS].off, MIN(tpl->tpl[NF9_SRC_TOS].len, 1));
+    else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len)
+      ip_tos_handler(chptr, pptrs, data);
+
     break;
   case 8:
     switch(hdr->aggregation) {
@@ -2225,7 +2421,11 @@ void NF_ip_proto_handler(struct channels_list_entry *chptr, struct packet_ptrs *
   switch(hdr->version) {
   case 10:
   case 9:
-    memcpy(&pdata->primitives.proto, pptrs->f_data+tpl->tpl[NF9_L4_PROTOCOL].off, MIN(tpl->tpl[NF9_L4_PROTOCOL].len, 1));
+    if (tpl->tpl[NF9_L4_PROTOCOL].len)
+      memcpy(&pdata->primitives.proto, pptrs->f_data+tpl->tpl[NF9_L4_PROTOCOL].off, MIN(tpl->tpl[NF9_L4_PROTOCOL].len, 1));
+    else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len)
+      ip_proto_handler(chptr, pptrs, data);
+
     break;
   case 8:
     switch(hdr->aggregation) {
@@ -2266,6 +2466,9 @@ void NF_tcp_flags_handler(struct channels_list_entry *chptr, struct packet_ptrs 
       memcpy(&tcp_flags, pptrs->f_data+tpl->tpl[NF9_TCP_FLAGS].off, MIN(tpl->tpl[NF9_TCP_FLAGS].len, 1));
       pdata->tcp_flags = tcp_flags;
     }
+    else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len)
+      tcp_flags_handler(chptr, pptrs, data);
+
     break;
   default:
     if (((struct struct_export_v5 *) pptrs->f_data)->prot == IPPROTO_TCP && hdr->version == 5)
@@ -2274,8 +2477,7 @@ void NF_tcp_flags_handler(struct channels_list_entry *chptr, struct packet_ptrs 
   }
 }
 
-/* times from the netflow engine are in msecs */
-void NF_counters_msecs_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+void NF_counters_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
 {
   struct pkt_data *pdata = (struct pkt_data *) *data;
   struct struct_header_v8 *hdr = (struct struct_header_v8 *) pptrs->f_header;
@@ -2314,6 +2516,12 @@ void NF_counters_msecs_handler(struct channels_list_entry *chptr, struct packet_
     else if (tpl->tpl[NF9_LAYER2OCTETDELTACOUNT].len == 8) {
       memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_LAYER2OCTETDELTACOUNT].off, 8);
       pdata->pkt_len = pm_ntohll(t64);
+    }
+    else if (tpl->tpl[NF9_INITIATOR_OCTETS].len == 4) {
+      if (chptr->plugin->cfg.tmp_asa_bi_flow) {
+        memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_INITIATOR_OCTETS].off, 4);
+        pdata->pkt_len = ntohl(t32);
+      }
     }
 
     if (tpl->tpl[NF9_IN_PACKETS].len == 4) {
@@ -2340,11 +2548,73 @@ void NF_counters_msecs_handler(struct channels_list_entry *chptr, struct packet_
       memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_OUT_PACKETS].off, 8);
       pdata->pkt_num = pm_ntohll(t64);
     }
+    else if (tpl->tpl[NF9_RESPONDER_OCTETS].len == 4) {
+      if (chptr->plugin->cfg.tmp_asa_bi_flow) {
+        memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_RESPONDER_OCTETS].off, 4);
+        pdata->pkt_num = ntohl(t32);
+      }
+    }
 
+    if (!pdata->pkt_len && !pdata->pkt_num) {
+      if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len)
+	counters_handler(chptr, pptrs, data);
+    }
+
+    break;
+  case 8:
+    switch(hdr->aggregation) {
+    case 6:
+      pdata->pkt_len = ntohl(((struct struct_export_v8_6 *) pptrs->f_data)->dOctets);
+      pdata->pkt_num = ntohl(((struct struct_export_v8_6 *) pptrs->f_data)->dPkts);
+      break;
+    case 7:
+      pdata->pkt_len = ntohl(((struct struct_export_v8_7 *) pptrs->f_data)->dOctets);
+      pdata->pkt_num = ntohl(((struct struct_export_v8_7 *) pptrs->f_data)->dPkts);
+      break;
+    case 8:
+      pdata->pkt_len = ntohl(((struct struct_export_v8_8 *) pptrs->f_data)->dOctets);
+      pdata->pkt_num = ntohl(((struct struct_export_v8_8 *) pptrs->f_data)->dPkts);
+      break;
+    default:
+      pdata->pkt_len = ntohl(((struct struct_export_v8_1 *) pptrs->f_data)->dOctets);
+      pdata->pkt_num = ntohl(((struct struct_export_v8_1 *) pptrs->f_data)->dPkts);
+      break;
+    }
+    break;
+  default:
+    pdata->pkt_len = ntohl(((struct struct_export_v5 *) pptrs->f_data)->dOctets);
+    pdata->pkt_num = ntohl(((struct struct_export_v5 *) pptrs->f_data)->dPkts);
+    break;
+  }
+
+  pdata->flow_type = pptrs->flow_type;
+}
+
+/* times from the netflow engine are in msecs */
+void NF_time_msecs_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  struct struct_header_v8 *hdr = (struct struct_header_v8 *) pptrs->f_header;
+  struct template_cache_entry *tpl = (struct template_cache_entry *) pptrs->f_tpl;
+  time_t fstime = 0;
+  u_int32_t t32 = 0;
+  u_int64_t t64 = 0;
+
+  switch(hdr->version) {
+  case 10:
+  case 9:
     if (tpl->tpl[NF9_FIRST_SWITCHED].len && hdr->version == 9) {
       memcpy(&fstime, pptrs->f_data+tpl->tpl[NF9_FIRST_SWITCHED].off, tpl->tpl[NF9_FIRST_SWITCHED].len);
       pdata->time_start.tv_sec = ntohl(((struct struct_header_v9 *) pptrs->f_header)->unix_secs)-
         ((ntohl(((struct struct_header_v9 *) pptrs->f_header)->SysUptime)-ntohl(fstime))/1000);
+    }
+    else if (tpl->tpl[NF9_FIRST_SWITCHED].len && hdr->version == 10) {
+      if (tpl->tpl[NF9_SYS_UPTIME_MSEC].len == 8) {
+        memcpy(&fstime, pptrs->f_data+tpl->tpl[NF9_FIRST_SWITCHED].off, tpl->tpl[NF9_FIRST_SWITCHED].len);
+        memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_SYS_UPTIME_MSEC].off, tpl->tpl[NF9_SYS_UPTIME_MSEC].len);
+        t32 = pm_ntohll(t64)/1000;
+        pdata->time_start.tv_sec = t32+(ntohl(fstime)/1000);
+      }
     }
     else if (tpl->tpl[NF9_FIRST_SWITCHED_MSEC].len) {
       memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_FIRST_SWITCHED_MSEC].off, tpl->tpl[NF9_FIRST_SWITCHED_MSEC].len);
@@ -2365,8 +2635,28 @@ void NF_counters_msecs_handler(struct channels_list_entry *chptr, struct packet_
       memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_FIRST_SWITCHED_SEC].off, tpl->tpl[NF9_FIRST_SWITCHED_SEC].len);
       pdata->time_start.tv_sec = pm_ntohll(t64);
     }
+    else if (tpl->tpl[NF9_FIRST_SWITCHED_DELTA_MICRO].len && hdr->version == 10) {
+      struct struct_header_ipfix *hdr_ipfix = (struct struct_header_ipfix *) pptrs->f_header;
+      u_int32_t t32h = 0, h32h = 0;
+      u_int64_t t64_1 = 0, t64_2 = 0;
+
+      memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_FIRST_SWITCHED_DELTA_MICRO].off, tpl->tpl[NF9_FIRST_SWITCHED_DELTA_MICRO].len);
+      t32h = ntohl(t32);
+
+      h32h = ntohl(hdr_ipfix->unix_secs);
+
+      t64 = h32h;
+      t64 = t64 * 1000 * 1000;
+      t64 -= t32h;
+      t64_1 = (t64 / (1000 * 1000));
+      t64_2 = (t64 % (1000 * 1000));
+
+      pdata->time_start.tv_sec = t64_1;
+      pdata->time_start.tv_usec = t64_2;
+    }
+
     /* fallback to header timestamp if no other time reference is available */
-    else {
+    if (!pdata->time_start.tv_sec) {
       if (hdr->version == 10) {
         struct struct_header_ipfix *hdr_ipfix = (struct struct_header_ipfix *) pptrs->f_header;
 
@@ -2384,6 +2674,14 @@ void NF_counters_msecs_handler(struct channels_list_entry *chptr, struct packet_
       pdata->time_end.tv_sec = ntohl(((struct struct_header_v9 *) pptrs->f_header)->unix_secs)-
         ((ntohl(((struct struct_header_v9 *) pptrs->f_header)->SysUptime)-ntohl(fstime))/1000);
     }
+    else if (tpl->tpl[NF9_LAST_SWITCHED].len && hdr->version == 10) {
+      if (tpl->tpl[NF9_SYS_UPTIME_MSEC].len == 8) {
+        memcpy(&fstime, pptrs->f_data+tpl->tpl[NF9_LAST_SWITCHED].off, tpl->tpl[NF9_LAST_SWITCHED].len);
+        memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_SYS_UPTIME_MSEC].off, tpl->tpl[NF9_SYS_UPTIME_MSEC].len);
+        t32 = pm_ntohll(t64)/1000;
+        pdata->time_end.tv_sec = t32+(ntohl(fstime)/1000);
+      }
+    }
     else if (tpl->tpl[NF9_LAST_SWITCHED_MSEC].len) {
       memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_LAST_SWITCHED_MSEC].off, tpl->tpl[NF9_LAST_SWITCHED_MSEC].len);
       pdata->time_end.tv_sec = pm_ntohll(t64)/1000;
@@ -2398,37 +2696,48 @@ void NF_counters_msecs_handler(struct channels_list_entry *chptr, struct packet_
       memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_LAST_SWITCHED_SEC].off, tpl->tpl[NF9_LAST_SWITCHED_SEC].len);
       pdata->time_end.tv_sec = pm_ntohll(t64);
     }
+    else if (tpl->tpl[NF9_LAST_SWITCHED_DELTA_MICRO].len && hdr->version == 10) {
+      struct struct_header_ipfix *hdr_ipfix = (struct struct_header_ipfix *) pptrs->f_header;
+      u_int32_t t32h = 0, h32h = 0;
+      u_int64_t t64_1 = 0, t64_2 = 0;
+
+      memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_LAST_SWITCHED_DELTA_MICRO].off, tpl->tpl[NF9_LAST_SWITCHED_DELTA_MICRO].len);
+      t32h = ntohl(t32);
+
+      h32h = ntohl(hdr_ipfix->unix_secs);
+
+      t64 = h32h;
+      t64 = t64 * 1000 * 1000;
+      t64 -= t32h;
+      t64_1 = (t64 / (1000 * 1000));
+      t64_2 = (t64 % (1000 * 1000));
+
+      pdata->time_end.tv_sec = t64_1;
+      pdata->time_end.tv_usec = t64_2;
+    }
     
     break;
   case 8:
     switch(hdr->aggregation) {
     case 6:
-      pdata->pkt_len = ntohl(((struct struct_export_v8_6 *) pptrs->f_data)->dOctets);
-      pdata->pkt_num = ntohl(((struct struct_export_v8_6 *) pptrs->f_data)->dPkts);
       pdata->time_start.tv_sec = ntohl(((struct struct_header_v8 *) pptrs->f_header)->unix_secs)-
       ((ntohl(((struct struct_header_v8 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v8_6 *) pptrs->f_data)->First))/1000);
       pdata->time_end.tv_sec = ntohl(((struct struct_header_v8 *) pptrs->f_header)->unix_secs)-
       ((ntohl(((struct struct_header_v8 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v8_6 *) pptrs->f_data)->Last))/1000);
       break;
     case 7:
-      pdata->pkt_len = ntohl(((struct struct_export_v8_7 *) pptrs->f_data)->dOctets);
-      pdata->pkt_num = ntohl(((struct struct_export_v8_7 *) pptrs->f_data)->dPkts);
       pdata->time_start.tv_sec = ntohl(((struct struct_header_v8 *) pptrs->f_header)->unix_secs)-
       ((ntohl(((struct struct_header_v8 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v8_7 *) pptrs->f_data)->First))/1000);
       pdata->time_end.tv_sec = ntohl(((struct struct_header_v8 *) pptrs->f_header)->unix_secs)-
       ((ntohl(((struct struct_header_v8 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v8_7 *) pptrs->f_data)->Last))/1000);
       break;
     case 8:
-      pdata->pkt_len = ntohl(((struct struct_export_v8_8 *) pptrs->f_data)->dOctets);
-      pdata->pkt_num = ntohl(((struct struct_export_v8_8 *) pptrs->f_data)->dPkts);
       pdata->time_start.tv_sec = ntohl(((struct struct_header_v8 *) pptrs->f_header)->unix_secs)-
       ((ntohl(((struct struct_header_v8 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v8_8 *) pptrs->f_data)->First))/1000);
       pdata->time_end.tv_sec = ntohl(((struct struct_header_v8 *) pptrs->f_header)->unix_secs)-
       ((ntohl(((struct struct_header_v8 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v8_8 *) pptrs->f_data)->Last))/1000);
       break;
     default:
-      pdata->pkt_len = ntohl(((struct struct_export_v8_1 *) pptrs->f_data)->dOctets);
-      pdata->pkt_num = ntohl(((struct struct_export_v8_1 *) pptrs->f_data)->dPkts);
       pdata->time_start.tv_sec = ntohl(((struct struct_header_v8 *) pptrs->f_header)->unix_secs)-
       ((ntohl(((struct struct_header_v8 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v8_1 *) pptrs->f_data)->First))/1000);
       pdata->time_end.tv_sec = ntohl(((struct struct_header_v8 *) pptrs->f_header)->unix_secs)-
@@ -2437,12 +2746,14 @@ void NF_counters_msecs_handler(struct channels_list_entry *chptr, struct packet_
     }
     break;
   default:
-    pdata->pkt_len = ntohl(((struct struct_export_v5 *) pptrs->f_data)->dOctets);
-    pdata->pkt_num = ntohl(((struct struct_export_v5 *) pptrs->f_data)->dPkts);
     pdata->time_start.tv_sec = ntohl(((struct struct_header_v5 *) pptrs->f_header)->unix_secs)-
-      ((ntohl(((struct struct_header_v5 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v5 *) pptrs->f_data)->First))/1000); 
+      ((ntohl(((struct struct_header_v5 *) pptrs->f_header)->SysUptime))/1000)+
+      ((ntohl(((struct struct_export_v5 *) pptrs->f_data)->First))/1000);
+
     pdata->time_end.tv_sec = ntohl(((struct struct_header_v5 *) pptrs->f_header)->unix_secs)-
-      ((ntohl(((struct struct_header_v5 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v5 *) pptrs->f_data)->Last))/1000); 
+      ((ntohl(((struct struct_header_v5 *) pptrs->f_header)->SysUptime))/1000)+
+      ((ntohl(((struct struct_export_v5 *) pptrs->f_data)->Last))/1000);
+
     break;
   }
 
@@ -2450,7 +2761,7 @@ void NF_counters_msecs_handler(struct channels_list_entry *chptr, struct packet_
 }
 
 /* times from the netflow engine are in secs */
-void NF_counters_secs_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+void NF_time_secs_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
 {
   struct pkt_data *pdata = (struct pkt_data *) *data;
   struct struct_header_v8 *hdr = (struct struct_header_v8 *) pptrs->f_header;
@@ -2460,53 +2771,8 @@ void NF_counters_secs_handler(struct channels_list_entry *chptr, struct packet_p
   u_int64_t t64 = 0;
   
   switch(hdr->version) {
+  case 10:
   case 9:
-    if (tpl->tpl[NF9_IN_BYTES].len == 4) {
-      memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_IN_BYTES].off, 4);
-      pdata->pkt_len = ntohl(t32);
-    }
-    else if (tpl->tpl[NF9_IN_BYTES].len == 8) {
-      memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_IN_BYTES].off, 8);
-      pdata->pkt_len = pm_ntohll(t64);
-    }
-    else if (tpl->tpl[NF9_FLOW_BYTES].len == 4) {
-      memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_FLOW_BYTES].off, 4);
-      pdata->pkt_len = ntohl(t32);
-    }
-    else if (tpl->tpl[NF9_FLOW_BYTES].len == 8) {
-      memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_FLOW_BYTES].off, 8);
-      pdata->pkt_len = pm_ntohll(t64);
-    }
-    else if (tpl->tpl[NF9_OUT_BYTES].len == 4) {
-      memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_OUT_BYTES].off, 4);
-      pdata->pkt_len = ntohl(t32);
-    }
-    else if (tpl->tpl[NF9_OUT_BYTES].len == 8) {
-      memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_OUT_BYTES].off, 8);
-      pdata->pkt_len = pm_ntohll(t64);
-    }
-    else if (tpl->tpl[NF9_LAYER2OCTETDELTACOUNT].len == 8) {
-      memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_LAYER2OCTETDELTACOUNT].off, 8);
-      pdata->pkt_len = pm_ntohll(t64);
-    }
-
-    if (tpl->tpl[NF9_IN_PACKETS].len == 4) {
-      memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_IN_PACKETS].off, 4);
-      pdata->pkt_num = ntohl(t32);
-    }
-    else if (tpl->tpl[NF9_IN_PACKETS].len == 8) {
-      memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_IN_PACKETS].off, 8);
-      pdata->pkt_num = pm_ntohll(t64);
-    }
-    else if (tpl->tpl[NF9_FLOW_PACKETS].len == 4) {
-      memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_FLOW_PACKETS].off, 4);
-      pdata->pkt_num = ntohl(t32);
-    }
-    else if (tpl->tpl[NF9_FLOW_PACKETS].len == 8) {
-      memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_FLOW_PACKETS].off, 8);
-      pdata->pkt_num = pm_ntohll(t64);
-    }
-
     memcpy(&fstime, pptrs->f_data+tpl->tpl[NF9_FIRST_SWITCHED].off, tpl->tpl[NF9_FIRST_SWITCHED].len);
     pdata->time_start.tv_sec = ntohl(((struct struct_header_v9 *) pptrs->f_header)->unix_secs)-
       (ntohl(((struct struct_header_v9 *) pptrs->f_header)->SysUptime)-ntohl(fstime));
@@ -2517,32 +2783,24 @@ void NF_counters_secs_handler(struct channels_list_entry *chptr, struct packet_p
   case 8:
     switch(hdr->aggregation) {
     case 6:
-      pdata->pkt_len = ntohl(((struct struct_export_v8_6 *) pptrs->f_data)->dOctets);
-      pdata->pkt_num = ntohl(((struct struct_export_v8_6 *) pptrs->f_data)->dPkts);
       pdata->time_start.tv_sec = ntohl(((struct struct_header_v8 *) pptrs->f_header)->unix_secs)-
        (ntohl(((struct struct_header_v8 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v8_6 *) pptrs->f_data)->First));
       pdata->time_end.tv_sec = ntohl(((struct struct_header_v8 *) pptrs->f_header)->unix_secs)-
        (ntohl(((struct struct_header_v8 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v8_6 *) pptrs->f_data)->Last));
       break;
     case 7:
-      pdata->pkt_len = ntohl(((struct struct_export_v8_7 *) pptrs->f_data)->dOctets);
-      pdata->pkt_num = ntohl(((struct struct_export_v8_7 *) pptrs->f_data)->dPkts);
       pdata->time_start.tv_sec = ntohl(((struct struct_header_v8 *) pptrs->f_header)->unix_secs)-
        (ntohl(((struct struct_header_v8 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v8_7 *) pptrs->f_data)->First));
       pdata->time_end.tv_sec = ntohl(((struct struct_header_v8 *) pptrs->f_header)->unix_secs)-
        (ntohl(((struct struct_header_v8 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v8_7 *) pptrs->f_data)->Last));
       break;
     case 8:
-      pdata->pkt_len = ntohl(((struct struct_export_v8_8 *) pptrs->f_data)->dOctets);
-      pdata->pkt_num = ntohl(((struct struct_export_v8_8 *) pptrs->f_data)->dPkts);
       pdata->time_start.tv_sec = ntohl(((struct struct_header_v8 *) pptrs->f_header)->unix_secs)-
        (ntohl(((struct struct_header_v8 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v8_8 *) pptrs->f_data)->First));
       pdata->time_end.tv_sec = ntohl(((struct struct_header_v8 *) pptrs->f_header)->unix_secs)-
        (ntohl(((struct struct_header_v8 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v8_8 *) pptrs->f_data)->Last));
       break;
     default:
-      pdata->pkt_len = ntohl(((struct struct_export_v8_1 *) pptrs->f_data)->dOctets);
-      pdata->pkt_num = ntohl(((struct struct_export_v8_1 *) pptrs->f_data)->dPkts);
       pdata->time_start.tv_sec = ntohl(((struct struct_header_v8 *) pptrs->f_header)->unix_secs)-
        (ntohl(((struct struct_header_v8 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v8_1 *) pptrs->f_data)->First));
       pdata->time_end.tv_sec = ntohl(((struct struct_header_v8 *) pptrs->f_header)->unix_secs)-
@@ -2551,8 +2809,6 @@ void NF_counters_secs_handler(struct channels_list_entry *chptr, struct packet_p
     }
     break;
   default:
-    pdata->pkt_len = ntohl(((struct struct_export_v5 *) pptrs->f_data)->dOctets);
-    pdata->pkt_num = ntohl(((struct struct_export_v5 *) pptrs->f_data)->dPkts);
     pdata->time_start.tv_sec = ntohl(((struct struct_header_v5 *) pptrs->f_header)->unix_secs)-
       (ntohl(((struct struct_header_v5 *) pptrs->f_header)->SysUptime)-ntohl(((struct struct_export_v5 *) pptrs->f_data)->First));
     pdata->time_end.tv_sec = ntohl(((struct struct_header_v5 *) pptrs->f_header)->unix_secs)-
@@ -2564,7 +2820,7 @@ void NF_counters_secs_handler(struct channels_list_entry *chptr, struct packet_p
 }
 
 /* ignore netflow engine times and generate new ones */
-void NF_counters_new_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+void NF_time_new_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
 {
   struct pkt_data *pdata = (struct pkt_data *) *data;
   struct struct_header_v8 *hdr = (struct struct_header_v8 *) pptrs->f_header;
@@ -2572,93 +2828,10 @@ void NF_counters_new_handler(struct channels_list_entry *chptr, struct packet_pt
   u_int32_t t32 = 0;
   u_int64_t t64 = 0;
 
-  switch(hdr->version) {
-  case 10:
-  case 9:
-    if (tpl->tpl[NF9_IN_BYTES].len == 4) {
-      memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_IN_BYTES].off, 4);
-      pdata->pkt_len = ntohl(t32);
-    }
-    else if (tpl->tpl[NF9_IN_BYTES].len == 8) {
-      memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_IN_BYTES].off, 8);
-      pdata->pkt_len = pm_ntohll(t64);
-    }
-    else if (tpl->tpl[NF9_FLOW_BYTES].len == 4) {
-      memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_FLOW_BYTES].off, 4);
-      pdata->pkt_len = ntohl(t32);
-    }
-    else if (tpl->tpl[NF9_FLOW_BYTES].len == 8) {
-      memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_FLOW_BYTES].off, 8);
-      pdata->pkt_len = pm_ntohll(t64);
-    }
-    else if (tpl->tpl[NF9_OUT_BYTES].len == 4) {
-      memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_OUT_BYTES].off, 4);
-      pdata->pkt_len = ntohl(t32);
-    }
-    else if (tpl->tpl[NF9_OUT_BYTES].len == 8) {
-      memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_OUT_BYTES].off, 8);
-      pdata->pkt_len = pm_ntohll(t64);
-    }
-    else if (tpl->tpl[NF9_LAYER2OCTETDELTACOUNT].len == 8) {
-      memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_LAYER2OCTETDELTACOUNT].off, 8);
-      pdata->pkt_len = pm_ntohll(t64);
-    }
-
-    if (tpl->tpl[NF9_IN_PACKETS].len == 4) {
-      memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_IN_PACKETS].off, 4);
-      pdata->pkt_num = ntohl(t32);
-    }
-    else if (tpl->tpl[NF9_IN_PACKETS].len == 8) {
-      memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_IN_PACKETS].off, 8);
-      pdata->pkt_num = pm_ntohll(t64);
-    }
-    else if (tpl->tpl[NF9_FLOW_PACKETS].len == 4) {
-      memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_FLOW_PACKETS].off, 4);
-      pdata->pkt_num = ntohl(t32);
-    }
-    else if (tpl->tpl[NF9_FLOW_PACKETS].len == 8) {
-      memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_FLOW_PACKETS].off, 8);
-      pdata->pkt_num = pm_ntohll(t64);
-    }
-
-    pdata->time_start.tv_sec = 0;
-    pdata->time_start.tv_usec = 0;
-    pdata->time_end.tv_sec = 0;
-    pdata->time_end.tv_usec = 0;
-    break;
-  case 8:
-    switch(hdr->aggregation) {
-    case 6:
-      pdata->pkt_len = ntohl(((struct struct_export_v8_6 *) pptrs->f_data)->dOctets);
-      pdata->pkt_num = ntohl(((struct struct_export_v8_6 *) pptrs->f_data)->dPkts);
-      break;
-    case 7:
-      pdata->pkt_len = ntohl(((struct struct_export_v8_7 *) pptrs->f_data)->dOctets);
-      pdata->pkt_num = ntohl(((struct struct_export_v8_7 *) pptrs->f_data)->dPkts);
-      break;
-    case 8:
-      pdata->pkt_len = ntohl(((struct struct_export_v8_8 *) pptrs->f_data)->dOctets);
-      pdata->pkt_num = ntohl(((struct struct_export_v8_8 *) pptrs->f_data)->dPkts);
-      break;
-    default:
-      pdata->pkt_len = ntohl(((struct struct_export_v8_1 *) pptrs->f_data)->dOctets);
-      pdata->pkt_num = ntohl(((struct struct_export_v8_1 *) pptrs->f_data)->dPkts);
-      break;
-    }
-    pdata->time_start.tv_sec = 0;
-    pdata->time_start.tv_usec = 0;
-    pdata->time_end.tv_sec = 0;
-    pdata->time_end.tv_usec = 0;
-    break;
-  default:
-    pdata->pkt_len = ntohl(((struct struct_export_v5 *) pptrs->f_data)->dOctets);
-    pdata->pkt_num = ntohl(((struct struct_export_v5 *) pptrs->f_data)->dPkts);
-    pdata->time_start.tv_sec = 0;
-    pdata->time_start.tv_usec = 0;
-    pdata->time_end.tv_sec = 0;
-    pdata->time_end.tv_usec = 0;
-    break;
-  }
+  pdata->time_start.tv_sec = 0;
+  pdata->time_start.tv_usec = 0;
+  pdata->time_end.tv_sec = 0;
+  pdata->time_end.tv_usec = 0;
 
   pdata->flow_type = pptrs->flow_type;
 }
@@ -2685,7 +2858,7 @@ void pre_tag_label_handler(struct channels_list_entry *chptr, struct packet_ptrs
     vlen_prims_init(pvlen, 0);
     return;
   }
-  else vlen_prims_insert(pvlen, COUNT_INT_LABEL, pptrs->label.len, pptrs->label.val);
+  else vlen_prims_insert(pvlen, COUNT_INT_LABEL, pptrs->label.len, pptrs->label.val, PM_MSG_STR_COPY);
 }
 
 void NF_flows_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
@@ -3016,6 +3189,14 @@ void NF_timestamp_start_handler(struct channels_list_entry *chptr, struct packet
       pnat->timestamp_start.tv_sec = ntohl(((struct struct_header_v9 *) pptrs->f_header)->unix_secs)-
         ((ntohl(((struct struct_header_v9 *) pptrs->f_header)->SysUptime)-ntohl(fstime))/1000);
     }
+    else if (tpl->tpl[NF9_FIRST_SWITCHED].len && hdr->version == 10) {
+      if (tpl->tpl[NF9_SYS_UPTIME_MSEC].len == 8) {
+        memcpy(&fstime, pptrs->f_data+tpl->tpl[NF9_FIRST_SWITCHED].off, tpl->tpl[NF9_FIRST_SWITCHED].len);
+        memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_SYS_UPTIME_MSEC].off, tpl->tpl[NF9_SYS_UPTIME_MSEC].len);
+	t32 = pm_ntohll(t64)/1000;
+        pnat->timestamp_start.tv_sec = t32+(ntohl(fstime)/1000); 
+      }
+    }
     else if (tpl->tpl[NF9_FIRST_SWITCHED_MSEC].len) {
       memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_FIRST_SWITCHED_MSEC].off, tpl->tpl[NF9_FIRST_SWITCHED_MSEC].len);
       pnat->timestamp_start.tv_sec = pm_ntohll(t64)/1000;
@@ -3035,8 +3216,28 @@ void NF_timestamp_start_handler(struct channels_list_entry *chptr, struct packet
       memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_FIRST_SWITCHED_SEC].off, tpl->tpl[NF9_FIRST_SWITCHED_SEC].len);
       pnat->timestamp_start.tv_sec = pm_ntohll(t64);
     }
+    else if (tpl->tpl[NF9_FIRST_SWITCHED_DELTA_MICRO].len && hdr->version == 10) {
+      struct struct_header_ipfix *hdr_ipfix = (struct struct_header_ipfix *) pptrs->f_header;
+      u_int32_t t32h = 0, h32h = 0;
+      u_int64_t t64_1 = 0, t64_2 = 0;
+
+      memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_FIRST_SWITCHED_DELTA_MICRO].off, tpl->tpl[NF9_FIRST_SWITCHED_DELTA_MICRO].len);
+      t32h = ntohl(t32);
+
+      h32h = ntohl(hdr_ipfix->unix_secs);
+
+      t64 = h32h;
+      t64 = t64 * 1000 * 1000;
+      t64 -= t32h;
+      t64_1 = (t64 / (1000 * 1000));
+      t64_2 = (t64 % (1000 * 1000));
+
+      pnat->timestamp_start.tv_sec = t64_1;
+      pnat->timestamp_start.tv_usec = t64_2;
+    }
+
     /* fallback to header timestamp if no other time reference is available */
-    else {
+    if (!pnat->timestamp_start.tv_sec) {
       if (hdr->version == 10) {
         struct struct_header_ipfix *hdr_ipfix = (struct struct_header_ipfix *) pptrs->f_header;
 
@@ -3048,6 +3249,7 @@ void NF_timestamp_start_handler(struct channels_list_entry *chptr, struct packet
         pnat->timestamp_start.tv_sec = ntohl(hdr_v9->unix_secs);
       }
     }
+
     break;
   case 8:
     switch(hdr->aggregation) {
@@ -3096,6 +3298,14 @@ void NF_timestamp_end_handler(struct channels_list_entry *chptr, struct packet_p
       pnat->timestamp_end.tv_sec = ntohl(((struct struct_header_v9 *) pptrs->f_header)->unix_secs)-
         ((ntohl(((struct struct_header_v9 *) pptrs->f_header)->SysUptime)-ntohl(fstime))/1000);
     }
+    else if (tpl->tpl[NF9_LAST_SWITCHED].len && hdr->version == 10) {
+      if (tpl->tpl[NF9_SYS_UPTIME_MSEC].len == 8) {
+        memcpy(&fstime, pptrs->f_data+tpl->tpl[NF9_LAST_SWITCHED].off, tpl->tpl[NF9_LAST_SWITCHED].len);
+        memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_SYS_UPTIME_MSEC].off, tpl->tpl[NF9_SYS_UPTIME_MSEC].len);
+        t32 = pm_ntohll(t64)/1000;
+        pnat->timestamp_end.tv_sec = t32+(ntohl(fstime)/1000);
+      }
+    }
     else if (tpl->tpl[NF9_LAST_SWITCHED_MSEC].len) {
       memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_LAST_SWITCHED_MSEC].off, tpl->tpl[NF9_LAST_SWITCHED_MSEC].len);
       pnat->timestamp_end.tv_sec = pm_ntohll(t64)/1000;
@@ -3109,6 +3319,25 @@ void NF_timestamp_end_handler(struct channels_list_entry *chptr, struct packet_p
     else if (tpl->tpl[NF9_LAST_SWITCHED_SEC].len == 8) {
       memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_LAST_SWITCHED_SEC].off, tpl->tpl[NF9_LAST_SWITCHED_SEC].len);
       pnat->timestamp_end.tv_sec = pm_ntohll(t64);
+    }
+    else if (tpl->tpl[NF9_LAST_SWITCHED_DELTA_MICRO].len && hdr->version == 10) {
+      struct struct_header_ipfix *hdr_ipfix = (struct struct_header_ipfix *) pptrs->f_header;
+      u_int32_t t32h = 0, h32h = 0;
+      u_int64_t t64_1 = 0, t64_2 = 0;
+
+      memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_LAST_SWITCHED_DELTA_MICRO].off, tpl->tpl[NF9_LAST_SWITCHED_DELTA_MICRO].len);
+      t32h = ntohl(t32);
+
+      h32h = ntohl(hdr_ipfix->unix_secs);
+
+      t64 = h32h;
+      t64 = t64 * 1000 * 1000;
+      t64 -= t32h;
+      t64_1 = (t64 / (1000 * 1000));
+      t64_2 = (t64 % (1000 * 1000));
+
+      pnat->timestamp_end.tv_sec = t64_1;
+      pnat->timestamp_end.tv_usec = t64_2;
     }
     break;
   case 8:
@@ -3155,7 +3384,6 @@ void NF_sequence_number_handler(struct channels_list_entry *chptr, struct packet
 {
   struct pkt_data *pdata = (struct pkt_data *) *data;
   struct struct_header_v8 *hdr = (struct struct_header_v8 *) pptrs->f_header;
-  struct template_cache_entry *tpl = (struct template_cache_entry *) pptrs->f_tpl;
 
   switch(hdr->version) {
   case 10:
@@ -3179,6 +3407,29 @@ void NF_version_handler(struct channels_list_entry *chptr, struct packet_ptrs *p
   struct struct_header_v8 *hdr = (struct struct_header_v8 *) pptrs->f_header;
 
   pdata->primitives.export_proto_version = hdr->version;
+}
+
+void NF_sysid_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  struct struct_header_v8 *hdr = (struct struct_header_v8 *) pptrs->f_header;
+
+  switch(hdr->version) {
+  case 10:
+    pdata->primitives.export_proto_sysid = ntohl(((struct struct_header_ipfix *) pptrs->f_header)->source_id);
+    break;
+  case 9:
+    pdata->primitives.export_proto_sysid = ntohl(((struct struct_header_v9 *) pptrs->f_header)->source_id);
+    break;
+  case 8:
+    pdata->primitives.export_proto_sysid = ((struct struct_header_v8 *) pptrs->f_header)->engine_id;
+    /* XXX: engine type? */
+    break;
+  default:
+    pdata->primitives.export_proto_sysid = ((struct struct_header_v5 *) pptrs->f_header)->engine_id;
+    /* XXX: engine type? */
+    break;
+  }
 }
 
 void NF_custom_primitives_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
@@ -3215,7 +3466,7 @@ void NF_custom_primitives_handler(struct channels_list_entry *chptr, struct pack
 	  }
 	}
 	else {
-	  if (utpl = (*get_ext_db_ie_by_type)(tpl, cpe->pen, cpe->field_type)) {
+	  if (utpl = (*get_ext_db_ie_by_type)(tpl, cpe->pen, cpe->field_type, cpe->repeat_id)) {
 	    if (cpe->semantics == CUSTOM_PRIMITIVE_TYPE_RAW) {
               char hexbuf[cpe->alloc_len];
               int hexbuflen = 0;
@@ -3228,7 +3479,7 @@ void NF_custom_primitives_handler(struct channels_list_entry *chptr, struct pack
 		  vlen_prims_init(pvlen, 0);
 		  return;
 		}
-		else vlen_prims_insert(pvlen, cpe->type, hexbuflen, hexbuf);
+		else vlen_prims_insert(pvlen, cpe->type, hexbuflen, hexbuf, PM_MSG_BIN_COPY);
               }
 	      else memcpy(pcust+chptr->plugin->cfg.cpptrs.primitive[cpptrs_idx].off, hexbuf, MIN(hexbuflen, cpe->alloc_len));
 	
@@ -3239,11 +3490,11 @@ void NF_custom_primitives_handler(struct channels_list_entry *chptr, struct pack
 	      }
               else {
                 if (cpe->semantics == CUSTOM_PRIMITIVE_TYPE_STRING && cpe->len == PM_VARIABLE_LENGTH) {
-		  if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + utpl->len)) {
+		  if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + utpl->len + 1 /* terminating zero */)) {
 		    vlen_prims_init(pvlen, 0);
 		    return;
 		  }
-		  else vlen_prims_insert(pvlen, cpe->type, utpl->len, pptrs->f_data+utpl->off);
+		  else vlen_prims_insert(pvlen, cpe->type, utpl->len, pptrs->f_data+utpl->off, PM_MSG_STR_COPY_ZERO);
 		}
 	      }
             }
@@ -3251,6 +3502,9 @@ void NF_custom_primitives_handler(struct channels_list_entry *chptr, struct pack
 	}
       }
     }
+
+    if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len) custom_primitives_handler(chptr, pptrs, data);
+
     break;
   default:
     break;
@@ -3273,7 +3527,7 @@ void NF_post_nat_src_host_handler(struct channels_list_entry *chptr, struct pack
         memcpy(&pnat->post_nat_src_ip.address.ipv4, pptrs->f_data+tpl->tpl[NF9_POST_NAT_IPV4_SRC_ADDR].off, MIN(tpl->tpl[NF9_POST_NAT_IPV4_SRC_ADDR].len, 4));
         pnat->post_nat_src_ip.family = AF_INET;
       }
-      else if (utpl = (*get_ext_db_ie_by_type)(tpl, 0, NF9_ASA_XLATE_IPV4_SRC_ADDR)) {
+      else if (utpl = (*get_ext_db_ie_by_type)(tpl, 0, NF9_ASA_XLATE_IPV4_SRC_ADDR, FALSE)) {
         memcpy(&pnat->post_nat_src_ip.address.ipv4, pptrs->f_data+utpl->off, MIN(utpl->len, 4));
         pnat->post_nat_src_ip.family = AF_INET;
       }
@@ -3300,7 +3554,7 @@ void NF_post_nat_dst_host_handler(struct channels_list_entry *chptr, struct pack
         memcpy(&pnat->post_nat_dst_ip.address.ipv4, pptrs->f_data+tpl->tpl[NF9_POST_NAT_IPV4_DST_ADDR].off, MIN(tpl->tpl[NF9_POST_NAT_IPV4_DST_ADDR].len, 4));
         pnat->post_nat_dst_ip.family = AF_INET;
       }
-      else if (utpl = (*get_ext_db_ie_by_type)(tpl, 0, NF9_ASA_XLATE_IPV4_DST_ADDR)) {
+      else if (utpl = (*get_ext_db_ie_by_type)(tpl, 0, NF9_ASA_XLATE_IPV4_DST_ADDR, FALSE)) {
         memcpy(&pnat->post_nat_dst_ip.address.ipv4, pptrs->f_data+utpl->off, MIN(utpl->len, 4));
         pnat->post_nat_dst_ip.family = AF_INET;
       }
@@ -3328,7 +3582,7 @@ void NF_post_nat_src_port_handler(struct channels_list_entry *chptr, struct pack
 
     if (tpl->tpl[NF9_POST_NAT_IPV4_SRC_PORT].len)
       memcpy(&pnat->post_nat_src_port, pptrs->f_data+tpl->tpl[NF9_POST_NAT_IPV4_SRC_PORT].off, MIN(tpl->tpl[NF9_POST_NAT_IPV4_SRC_PORT].len, 2));
-    else if (utpl = (*get_ext_db_ie_by_type)(tpl, 0, NF9_ASA_XLATE_L4_SRC_PORT))
+    else if (utpl = (*get_ext_db_ie_by_type)(tpl, 0, NF9_ASA_XLATE_L4_SRC_PORT, FALSE))
       memcpy(&pnat->post_nat_src_port, pptrs->f_data+utpl->off, MIN(utpl->len, 2)); 
 
     pnat->post_nat_src_port = ntohs(pnat->post_nat_src_port);
@@ -3355,7 +3609,7 @@ void NF_post_nat_dst_port_handler(struct channels_list_entry *chptr, struct pack
 
     if (tpl->tpl[NF9_POST_NAT_IPV4_DST_PORT].len)
       memcpy(&pnat->post_nat_dst_port, pptrs->f_data+tpl->tpl[NF9_POST_NAT_IPV4_DST_PORT].off, MIN(tpl->tpl[NF9_POST_NAT_IPV4_DST_PORT].len, 2));
-    else if (utpl = (*get_ext_db_ie_by_type)(tpl, 0, NF9_ASA_XLATE_L4_DST_PORT))
+    else if (utpl = (*get_ext_db_ie_by_type)(tpl, 0, NF9_ASA_XLATE_L4_DST_PORT, FALSE))
       memcpy(&pnat->post_nat_dst_port, pptrs->f_data+utpl->off, MIN(utpl->len, 2)); 
 
     pnat->post_nat_dst_port = ntohs(pnat->post_nat_dst_port);
@@ -3378,7 +3632,7 @@ void NF_nat_event_handler(struct channels_list_entry *chptr, struct packet_ptrs 
   case 9:
     if (tpl->tpl[NF9_NAT_EVENT].len)
       memcpy(&pnat->nat_event, pptrs->f_data+tpl->tpl[NF9_NAT_EVENT].off, MIN(tpl->tpl[NF9_NAT_EVENT].len, 1));
-    else if (utpl = (*get_ext_db_ie_by_type)(tpl, 0, NF9_ASA_XLATE_EVENT))
+    else if (utpl = (*get_ext_db_ie_by_type)(tpl, 0, NF9_ASA_XLATE_EVENT, FALSE))
       memcpy(&pnat->nat_event, pptrs->f_data+utpl->off, MIN(utpl->len, 1));
     break;
   default:
@@ -3398,6 +3652,9 @@ void NF_mpls_label_top_handler(struct channels_list_entry *chptr, struct packet_
   case 9:
     if (tpl->tpl[NF9_MPLS_LABEL_1].len == 3)
       pmpls->mpls_label_top = decode_mpls_label(pptrs->f_data+tpl->tpl[NF9_MPLS_LABEL_1].off);
+    else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len)
+      mpls_label_top_handler(chptr, pptrs, data);
+
     break;
   default:
     break;
@@ -3421,6 +3678,12 @@ void NF_mpls_label_bottom_handler(struct channels_list_entry *chptr, struct pack
 	break;
       } 
     }
+
+    if (!pmpls->mpls_label_bottom) {
+      if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len)
+        mpls_label_bottom_handler(chptr, pptrs, data);
+    }
+
     break;
   default:
     break;
@@ -3451,13 +3714,18 @@ void NF_mpls_stack_depth_handler(struct channels_list_entry *chptr, struct packe
 
     if (last_label_value || bosbit_found) pmpls->mpls_stack_depth = stack_depth;
 
+    if (!pmpls->mpls_stack_depth) {
+      if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len)
+        mpls_stack_depth_handler(chptr, pptrs, data);
+    }
+
     break;
   default:
     break;
   }
 }
 
-void NF_mpls_vpn_rd_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+void NF_mpls_vpn_id_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
 {
   struct pkt_data *pdata = (struct pkt_data *) *data;
   struct struct_header_v8 *hdr = (struct struct_header_v8 *) pptrs->f_header;
@@ -3518,6 +3786,15 @@ void NF_class_handler(struct channels_list_entry *chptr, struct packet_ptrs *ppt
   }
 }
 
+#if defined (WITH_NDPI)
+void NF_ndpi_class_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+
+  memcpy(&pdata->primitives.ndpi_class, &pptrs->ndpi_class, sizeof(pm_class2_t));
+}
+#endif
+
 void NF_cust_tag_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
 {
   struct pkt_data *pdata = (struct pkt_data *) *data;
@@ -3527,7 +3804,7 @@ void NF_cust_tag_handler(struct channels_list_entry *chptr, struct packet_ptrs *
 
   switch(hdr->version) {
   case 10:
-    if (utpl = (*get_ext_db_ie_by_type)(tpl, PMACCT_PEN, NF9_CUST_TAG)) {
+    if (utpl = (*get_ext_db_ie_by_type)(tpl, PMACCT_PEN, NF9_CUST_TAG, FALSE)) {
       memcpy(&pdata->primitives.tag, pptrs->f_data+utpl->off, MIN(utpl->len, 8));
       pdata->primitives.tag = pm_ntohll(pdata->primitives.tag);
     }
@@ -3546,7 +3823,7 @@ void NF_cust_tag2_handler(struct channels_list_entry *chptr, struct packet_ptrs 
 
   switch(hdr->version) {
   case 10:
-    if (utpl = (*get_ext_db_ie_by_type)(tpl, PMACCT_PEN, NF9_CUST_TAG2)) {
+    if (utpl = (*get_ext_db_ie_by_type)(tpl, PMACCT_PEN, NF9_CUST_TAG2, FALSE)) {
       memcpy(&pdata->primitives.tag2, pptrs->f_data+utpl->off, MIN(utpl->len, 8));
       pdata->primitives.tag2 = pm_ntohll(pdata->primitives.tag2);
     }
@@ -3566,13 +3843,13 @@ void NF_cust_label_handler(struct channels_list_entry *chptr, struct packet_ptrs
 
   switch(hdr->version) {
   case 10:
-    if (utpl = (*get_ext_db_ie_by_type)(tpl, PMACCT_PEN, NF9_CUST_LABEL)) {
+    if (utpl = (*get_ext_db_ie_by_type)(tpl, PMACCT_PEN, NF9_CUST_LABEL, FALSE)) {
       return_pipe_buffer_space(chptr, vlen_prims_delete(pvlen, COUNT_INT_LABEL));
       if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + utpl->len)) {
 	vlen_prims_init(pvlen, 0);
 	return;
       }
-      else vlen_prims_insert(pvlen, COUNT_INT_LABEL, utpl->len, pptrs->f_data+utpl->off);
+      else vlen_prims_insert(pvlen, COUNT_INT_LABEL, utpl->len, pptrs->f_data+utpl->off, PM_MSG_STR_COPY);
     }
     break;
   default:
@@ -3723,10 +4000,15 @@ void bgp_ext_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptr
 {
   struct pkt_data *pdata = (struct pkt_data *) *data;
   struct pkt_bgp_primitives *pbgp = (struct pkt_bgp_primitives *) ((*data) + chptr->extras.off_pkt_bgp_primitives);
+  struct pkt_legacy_bgp_primitives *plbgp = (struct pkt_legacy_bgp_primitives *) ((*data) + chptr->extras.off_pkt_lbgp_primitives);
+  struct pkt_vlen_hdr_primitives *pvlen = (struct pkt_vlen_hdr_primitives *) ((*data) + chptr->extras.off_pkt_vlen_hdr_primitives);
   struct bgp_node *src_ret = (struct bgp_node *) pptrs->bgp_src; 
   struct bgp_node *dst_ret = (struct bgp_node *) pptrs->bgp_dst;
-  struct bgp_peer *peer = (struct bgp_peer *) pptrs->bgp_peer;
   struct bgp_info *info = NULL;
+
+  /* variables for vlen primitives */
+  char empty_str = '\0', *ptr = &empty_str; 
+  int len;
 
   if (src_ret && evaluate_lm_method(pptrs, FALSE, chptr->plugin->cfg.nfacctd_as, NF_AS_BGP)) {
     info = (struct bgp_info *) pptrs->bgp_src_info;
@@ -3745,35 +4027,184 @@ void bgp_ext_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptr
 	  }
 	}
       }
-      if (chptr->aggregation & COUNT_SRC_AS_PATH && config.nfacctd_bgp_src_as_path_type & BGP_SRC_PRIMITIVES_BGP && info->attr->aspath && info->attr->aspath->str) {
-	strlcpy(pbgp->src_as_path, info->attr->aspath->str, MAX_BGP_ASPATH);
-	if (strlen(info->attr->aspath->str) >= MAX_BGP_ASPATH) {
-	  pbgp->src_as_path[MAX_BGP_ASPATH-2] = '+';
-	  pbgp->src_as_path[MAX_BGP_ASPATH-1] = '\0';
-	}
-	if (config.nfacctd_bgp_aspath_radius)
-	  evaluate_bgp_aspath_radius(pbgp->src_as_path, MAX_BGP_ASPATH, config.nfacctd_bgp_aspath_radius);
-      }
-      if (chptr->aggregation & COUNT_SRC_STD_COMM && config.nfacctd_bgp_src_std_comm_type & BGP_SRC_PRIMITIVES_BGP && info->attr->community && info->attr->community->str) {
-	if (config.nfacctd_bgp_stdcomm_pattern)
-	  evaluate_comm_patterns(pbgp->src_std_comms, info->attr->community->str, std_comm_patterns, MAX_BGP_STD_COMMS);
-	else {
-	  strlcpy(pbgp->src_std_comms, info->attr->community->str, MAX_BGP_STD_COMMS);
-	  if (strlen(info->attr->community->str) >= MAX_BGP_STD_COMMS) {
-	    pbgp->src_std_comms[MAX_BGP_STD_COMMS-2] = '+';
-	    pbgp->src_std_comms[MAX_BGP_STD_COMMS-1] = '\0';
-	  }
-	}
-      }
-      if (chptr->aggregation & COUNT_SRC_EXT_COMM && config.nfacctd_bgp_src_ext_comm_type & BGP_SRC_PRIMITIVES_BGP && info->attr->ecommunity && info->attr->ecommunity->str) {
-        if (config.nfacctd_bgp_extcomm_pattern)
-          evaluate_comm_patterns(pbgp->src_ext_comms, info->attr->ecommunity->str, ext_comm_patterns, MAX_BGP_EXT_COMMS);
+      if (chptr->aggregation & COUNT_SRC_AS_PATH && info->attr->aspath && info->attr->aspath->str) {
+        if (chptr->plugin->type.id != PLUGIN_ID_MEMORY) {
+          len = strlen(info->attr->aspath->str);
+
+          if (len && (config.nfacctd_bgp_src_as_path_type & BGP_SRC_PRIMITIVES_BGP)) {
+            len++;
+
+            if (config.nfacctd_bgp_aspath_radius) {
+              ptr = strndup(info->attr->aspath->str, len);
+
+              if (ptr) {
+                evaluate_bgp_aspath_radius(ptr, len, config.nfacctd_bgp_aspath_radius);
+                len = strlen(ptr);
+                len++;
+              }
+              else len = 0;
+            }
+            else ptr = info->attr->aspath->str;
+          }
+          else ptr = &empty_str;
+
+          if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+            vlen_prims_init(pvlen, 0);
+            return;
+          }
+          else vlen_prims_insert(pvlen, COUNT_INT_SRC_AS_PATH, len, ptr, PM_MSG_STR_COPY);
+
+          if (config.nfacctd_bgp_aspath_radius && ptr && len) free(ptr);
+        }
+        /* fallback to legacy fixed length behaviour */
         else {
-          strlcpy(pbgp->src_ext_comms, info->attr->ecommunity->str, MAX_BGP_EXT_COMMS);
-          if (strlen(info->attr->ecommunity->str) >= MAX_BGP_EXT_COMMS) {
-            pbgp->src_ext_comms[MAX_BGP_EXT_COMMS-2] = '+';
-            pbgp->src_ext_comms[MAX_BGP_EXT_COMMS-1] = '\0';
+	  if (config.nfacctd_bgp_src_as_path_type & BGP_SRC_PRIMITIVES_BGP) { 
+            strlcpy(plbgp->src_as_path, info->attr->aspath->str, MAX_BGP_ASPATH);
+            if (strlen(info->attr->aspath->str) >= MAX_BGP_ASPATH) {
+              plbgp->src_as_path[MAX_BGP_ASPATH-2] = '+';
+              plbgp->src_as_path[MAX_BGP_ASPATH-1] = '\0';
+            }
+            if (config.nfacctd_bgp_aspath_radius)
+              evaluate_bgp_aspath_radius(plbgp->src_as_path, MAX_BGP_ASPATH, config.nfacctd_bgp_aspath_radius);
 	  }
+	  else plbgp->src_as_path[0] = '\0';
+        }
+      }
+      if (chptr->aggregation & COUNT_SRC_STD_COMM && info->attr->community && info->attr->community->str) {
+        if (chptr->plugin->type.id != PLUGIN_ID_MEMORY) {
+          len = strlen(info->attr->community->str);
+
+          if (len && (config.nfacctd_bgp_src_std_comm_type & BGP_SRC_PRIMITIVES_BGP)) {
+            len++;
+
+            if (config.nfacctd_bgp_stdcomm_pattern) {
+              ptr = malloc(len);
+
+              if (ptr) {
+                evaluate_comm_patterns(ptr, info->attr->community->str, std_comm_patterns, len);
+                len = strlen(ptr);
+                len++;
+              }
+              else len = 0;
+            }
+            else ptr = info->attr->community->str;
+          }
+          else ptr = &empty_str;
+
+          if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+            vlen_prims_init(pvlen, 0);
+            return;
+          }
+          else {
+            vlen_prims_insert(pvlen, COUNT_INT_SRC_STD_COMM, len, ptr, PM_MSG_STR_COPY);
+            if (config.nfacctd_bgp_stdcomm_pattern && ptr && len) free(ptr);
+          }
+        }
+        /* fallback to legacy fixed length behaviour */
+        else {
+	  if (config.nfacctd_bgp_src_std_comm_type & BGP_SRC_PRIMITIVES_BGP) {
+            if (config.nfacctd_bgp_stdcomm_pattern)
+              evaluate_comm_patterns(plbgp->src_std_comms, info->attr->community->str, std_comm_patterns, MAX_BGP_STD_COMMS);
+            else {
+              strlcpy(plbgp->src_std_comms, info->attr->community->str, MAX_BGP_STD_COMMS);
+              if (strlen(info->attr->community->str) >= MAX_BGP_STD_COMMS) {
+                plbgp->src_std_comms[MAX_BGP_STD_COMMS-2] = '+';
+                plbgp->src_std_comms[MAX_BGP_STD_COMMS-1] = '\0';
+	      }
+            }
+          }
+	  else plbgp->src_std_comms[0] = '\0';
+        }
+      }
+      if (chptr->aggregation & COUNT_SRC_EXT_COMM && info->attr->ecommunity && info->attr->ecommunity->str) {
+        if (chptr->plugin->type.id != PLUGIN_ID_MEMORY) {
+          len = strlen(info->attr->ecommunity->str);
+
+          if (len && (config.nfacctd_bgp_src_ext_comm_type & BGP_SRC_PRIMITIVES_BGP)) {
+            len++;
+
+            if (config.nfacctd_bgp_extcomm_pattern) {
+              ptr = malloc(len);
+
+              if (ptr) {
+                evaluate_comm_patterns(ptr, info->attr->ecommunity->str, ext_comm_patterns, len);
+                len = strlen(ptr);
+                len++;
+              }
+              else len = 0;
+            }
+            else ptr = info->attr->ecommunity->str;
+          }
+          else ptr = &empty_str;
+
+          if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+            vlen_prims_init(pvlen, 0);
+            return;
+          }
+          else {
+            vlen_prims_insert(pvlen, COUNT_INT_SRC_EXT_COMM, len, ptr, PM_MSG_STR_COPY);
+            if (config.nfacctd_bgp_extcomm_pattern && ptr && len) free(ptr);
+          }
+        }
+        /* fallback to legacy fixed length behaviour */
+        else {
+	  if (config.nfacctd_bgp_src_ext_comm_type & BGP_SRC_PRIMITIVES_BGP) {
+            if (config.nfacctd_bgp_extcomm_pattern)
+              evaluate_comm_patterns(plbgp->src_ext_comms, info->attr->ecommunity->str, ext_comm_patterns, MAX_BGP_EXT_COMMS);
+            else {
+              strlcpy(plbgp->src_ext_comms, info->attr->ecommunity->str, MAX_BGP_EXT_COMMS);
+              if (strlen(info->attr->ecommunity->str) >= MAX_BGP_EXT_COMMS) {
+                plbgp->src_ext_comms[MAX_BGP_EXT_COMMS-2] = '+';
+                plbgp->src_ext_comms[MAX_BGP_EXT_COMMS-1] = '\0';
+	      }
+            }
+          }
+	  else plbgp->src_ext_comms[0] = '\0';
+        }
+      }
+      if (chptr->aggregation_2 & COUNT_SRC_LRG_COMM && info->attr->lcommunity && info->attr->lcommunity->str) {
+        if (chptr->plugin->type.id != PLUGIN_ID_MEMORY) {
+          len = strlen(info->attr->lcommunity->str);
+
+          if (len && (config.nfacctd_bgp_src_lrg_comm_type & BGP_SRC_PRIMITIVES_BGP)) {
+            len++;
+
+            if (config.nfacctd_bgp_lrgcomm_pattern) {
+              ptr = malloc(len);
+
+              if (ptr) {
+                evaluate_comm_patterns(ptr, info->attr->lcommunity->str, lrg_comm_patterns, len);
+                len = strlen(ptr);
+                len++;
+              }
+              else len = 0;
+            }
+            else ptr = info->attr->lcommunity->str;
+          }
+          else ptr = &empty_str;
+
+          if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+            vlen_prims_init(pvlen, 0);
+            return;
+          }
+          else {
+            vlen_prims_insert(pvlen, COUNT_INT_SRC_LRG_COMM, len, ptr, PM_MSG_STR_COPY);
+            if (config.nfacctd_bgp_lrgcomm_pattern && ptr && len) free(ptr);
+          }
+        }
+        else {
+	  if (config.nfacctd_bgp_src_lrg_comm_type & BGP_SRC_PRIMITIVES_BGP) {
+            if (config.nfacctd_bgp_lrgcomm_pattern)
+              evaluate_comm_patterns(plbgp->src_lrg_comms, info->attr->lcommunity->str, lrg_comm_patterns, MAX_BGP_LRG_COMMS);
+            else {
+              strlcpy(plbgp->src_lrg_comms, info->attr->lcommunity->str, MAX_BGP_LRG_COMMS);
+              if (strlen(info->attr->lcommunity->str) >= MAX_BGP_LRG_COMMS) {
+                plbgp->src_lrg_comms[MAX_BGP_LRG_COMMS-2] = '+';
+                plbgp->src_lrg_comms[MAX_BGP_LRG_COMMS-1] = '\0';
+	      }
+            }
+          }
+	  else plbgp->src_lrg_comms[0] = '\0';
         }
       }
       if (chptr->aggregation & COUNT_SRC_LOCAL_PREF && config.nfacctd_bgp_src_local_pref_type & BGP_SRC_PRIMITIVES_BGP)
@@ -3796,40 +4227,226 @@ void bgp_ext_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptr
       }
     }
   }
+  /* take care of vlen primitives */
+  else {
+    if (chptr->plugin->type.id != PLUGIN_ID_MEMORY) {
+      if (chptr->aggregation & COUNT_SRC_AS_PATH) {
+        ptr = &empty_str;
+        len = strlen(ptr);
+
+        if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+          vlen_prims_init(pvlen, 0);
+          return;
+        }
+        else vlen_prims_insert(pvlen, COUNT_INT_SRC_AS_PATH, len, ptr, PM_MSG_STR_COPY);
+      }
+
+      if (chptr->aggregation & COUNT_SRC_STD_COMM) {
+        ptr = &empty_str;
+        len = strlen(ptr);
+
+        if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+          vlen_prims_init(pvlen, 0);
+          return;
+        }
+        else vlen_prims_insert(pvlen, COUNT_INT_SRC_STD_COMM, len, ptr, PM_MSG_STR_COPY);
+      }
+
+      if (chptr->aggregation & COUNT_SRC_EXT_COMM) {
+        ptr = &empty_str;
+        len = strlen(ptr);
+
+        if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+          vlen_prims_init(pvlen, 0);
+          return;
+        }
+        else vlen_prims_insert(pvlen, COUNT_INT_SRC_EXT_COMM, len, ptr, PM_MSG_STR_COPY);
+      }
+
+      if (chptr->aggregation_2 & COUNT_SRC_LRG_COMM) {
+        ptr = &empty_str;
+        len = strlen(ptr);
+
+        if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+          vlen_prims_init(pvlen, 0);
+          return;
+        }
+        else vlen_prims_insert(pvlen, COUNT_INT_SRC_LRG_COMM, len, ptr, PM_MSG_STR_COPY);
+      }
+    }
+  }
 
   if (dst_ret && evaluate_lm_method(pptrs, TRUE, chptr->plugin->cfg.nfacctd_as, NF_AS_BGP)) {
     info = (struct bgp_info *) pptrs->bgp_dst_info;
     if (info && info->attr) {
       if (chptr->aggregation & COUNT_STD_COMM && info->attr->community && info->attr->community->str) {
-	if (config.nfacctd_bgp_stdcomm_pattern)
-	  evaluate_comm_patterns(pbgp->std_comms, info->attr->community->str, std_comm_patterns, MAX_BGP_STD_COMMS);
+        if (chptr->plugin->type.id != PLUGIN_ID_MEMORY) {
+          len = strlen(info->attr->community->str);
+            
+          if (len) { 
+	    len++;
+
+            if (config.nfacctd_bgp_stdcomm_pattern) {
+              ptr = malloc(len);
+
+              if (ptr) {
+                evaluate_comm_patterns(ptr, info->attr->community->str, std_comm_patterns, len);
+                len = strlen(ptr);
+		len++;
+              }
+              else len = 0;
+            }
+            else ptr = info->attr->community->str; 
+          }
+          else ptr = &empty_str;
+        
+          if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+            vlen_prims_init(pvlen, 0);
+            return;
+          }
+          else {
+            vlen_prims_insert(pvlen, COUNT_INT_STD_COMM, len, ptr, PM_MSG_STR_COPY);
+            if (config.nfacctd_bgp_stdcomm_pattern && ptr && len) free(ptr);
+          }
+        }
+        /* fallback to legacy fixed length behaviour */
 	else {
-          strlcpy(pbgp->std_comms, info->attr->community->str, MAX_BGP_STD_COMMS);
-	  if (strlen(info->attr->community->str) >= MAX_BGP_STD_COMMS) {
-	    pbgp->std_comms[MAX_BGP_STD_COMMS-2] = '+';
-	    pbgp->std_comms[MAX_BGP_STD_COMMS-1] = '\0';
+	  if (config.nfacctd_bgp_stdcomm_pattern)
+	    evaluate_comm_patterns(plbgp->std_comms, info->attr->community->str, std_comm_patterns, MAX_BGP_STD_COMMS);
+	  else {
+            strlcpy(plbgp->std_comms, info->attr->community->str, MAX_BGP_STD_COMMS);
+	    if (strlen(info->attr->community->str) >= MAX_BGP_STD_COMMS) {
+	      plbgp->std_comms[MAX_BGP_STD_COMMS-2] = '+';
+	      plbgp->std_comms[MAX_BGP_STD_COMMS-1] = '\0';
+	    }
 	  }
 	}
       }
       if (chptr->aggregation & COUNT_EXT_COMM && info->attr->ecommunity && info->attr->ecommunity->str) {
-	if (config.nfacctd_bgp_extcomm_pattern)
-	  evaluate_comm_patterns(pbgp->ext_comms, info->attr->ecommunity->str, ext_comm_patterns, MAX_BGP_EXT_COMMS);
-	else {
-          strlcpy(pbgp->ext_comms, info->attr->ecommunity->str, MAX_BGP_EXT_COMMS);
-	  if (strlen(info->attr->ecommunity->str) >= MAX_BGP_EXT_COMMS) {
-	    pbgp->ext_comms[MAX_BGP_EXT_COMMS-2] = '+';
-	    pbgp->ext_comms[MAX_BGP_EXT_COMMS-1] = '\0';
+        if (chptr->plugin->type.id != PLUGIN_ID_MEMORY) {
+          len = strlen(info->attr->ecommunity->str);
+
+          if (len) {
+	    len++;
+
+            if (config.nfacctd_bgp_extcomm_pattern) {
+              ptr = malloc(len);
+
+              if (ptr) {
+                evaluate_comm_patterns(ptr, info->attr->ecommunity->str, ext_comm_patterns, len);
+                len = strlen(ptr);
+		len++;
+              }
+              else len = 0;
+            }
+            else ptr = info->attr->ecommunity->str;
+          }
+          else ptr = &empty_str;
+
+          if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+            vlen_prims_init(pvlen, 0);
+            return;
+          }
+          else {
+            vlen_prims_insert(pvlen, COUNT_INT_EXT_COMM, len, ptr, PM_MSG_STR_COPY);
+            if (config.nfacctd_bgp_extcomm_pattern && ptr && len) free(ptr);
+          }
+        }
+        /* fallback to legacy fixed length behaviour */
+        else {
+	  if (config.nfacctd_bgp_extcomm_pattern)
+	    evaluate_comm_patterns(plbgp->ext_comms, info->attr->ecommunity->str, ext_comm_patterns, MAX_BGP_EXT_COMMS);
+	  else {
+            strlcpy(plbgp->ext_comms, info->attr->ecommunity->str, MAX_BGP_EXT_COMMS);
+	    if (strlen(info->attr->ecommunity->str) >= MAX_BGP_EXT_COMMS) {
+	      plbgp->ext_comms[MAX_BGP_EXT_COMMS-2] = '+';
+	      plbgp->ext_comms[MAX_BGP_EXT_COMMS-1] = '\0';
+	    }
 	  }
-	}
+        }
+      }
+      if (chptr->aggregation_2 & COUNT_LRG_COMM && info->attr->lcommunity && info->attr->lcommunity->str) {
+        if (chptr->plugin->type.id != PLUGIN_ID_MEMORY) {
+          len = strlen(info->attr->lcommunity->str);
+
+          if (len) {
+            len++;
+
+            if (config.nfacctd_bgp_lrgcomm_pattern) {
+              ptr = malloc(len);
+
+              if (ptr) {
+                evaluate_comm_patterns(ptr, info->attr->lcommunity->str, lrg_comm_patterns, len);
+                len = strlen(ptr);
+                len++;
+              }
+              else len = 0;
+            }
+            else ptr = info->attr->lcommunity->str;
+          }
+          else ptr = &empty_str;
+
+          if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+            vlen_prims_init(pvlen, 0);
+            return;
+          }
+          else {
+            vlen_prims_insert(pvlen, COUNT_INT_LRG_COMM, len, ptr, PM_MSG_STR_COPY);
+            if (config.nfacctd_bgp_lrgcomm_pattern && ptr && len) free(ptr);
+          }
+        }
+        /* fallback to legacy fixed length behaviour */
+        else {
+          if (config.nfacctd_bgp_lrgcomm_pattern)
+            evaluate_comm_patterns(plbgp->lrg_comms, info->attr->lcommunity->str, lrg_comm_patterns, MAX_BGP_LRG_COMMS);
+          else {
+            strlcpy(plbgp->lrg_comms, info->attr->lcommunity->str, MAX_BGP_LRG_COMMS);
+            if (strlen(info->attr->lcommunity->str) >= MAX_BGP_LRG_COMMS) {
+              plbgp->lrg_comms[MAX_BGP_LRG_COMMS-2] = '+';
+              plbgp->lrg_comms[MAX_BGP_LRG_COMMS-1] = '\0';
+            }
+          }
+        }
       }
       if (chptr->aggregation & COUNT_AS_PATH && info->attr->aspath && info->attr->aspath->str) {
-        strlcpy(pbgp->as_path, info->attr->aspath->str, MAX_BGP_ASPATH);
-	if (strlen(info->attr->aspath->str) >= MAX_BGP_ASPATH) {
-	  pbgp->as_path[MAX_BGP_ASPATH-2] = '+';
-	  pbgp->as_path[MAX_BGP_ASPATH-1] = '\0';
+	if (chptr->plugin->type.id != PLUGIN_ID_MEMORY) {
+          len = strlen(info->attr->aspath->str);
+
+          if (len) {
+	    len++;
+
+            if (config.nfacctd_bgp_aspath_radius) {
+              ptr = strndup(info->attr->aspath->str, len);
+
+              if (ptr) {
+                evaluate_bgp_aspath_radius(ptr, len, config.nfacctd_bgp_aspath_radius);
+                len = strlen(ptr);
+		len++;
+              }
+              else len = 0;
+            }
+            else ptr = info->attr->aspath->str;
+          }
+          else ptr = &empty_str;
+
+          if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+            vlen_prims_init(pvlen, 0);
+            return;
+          }
+          else vlen_prims_insert(pvlen, COUNT_INT_AS_PATH, len, ptr, PM_MSG_STR_COPY);
+
+          if (config.nfacctd_bgp_aspath_radius && ptr && len) free(ptr);
 	}
-	if (config.nfacctd_bgp_aspath_radius)
-	  evaluate_bgp_aspath_radius(pbgp->as_path, MAX_BGP_ASPATH, config.nfacctd_bgp_aspath_radius);
+	/* fallback to legacy fixed length behaviour */
+	else {
+	  strlcpy(plbgp->as_path, info->attr->aspath->str, MAX_BGP_ASPATH);
+	  if (strlen(info->attr->aspath->str) >= MAX_BGP_ASPATH) {
+	    plbgp->as_path[MAX_BGP_ASPATH-2] = '+';
+	    plbgp->as_path[MAX_BGP_ASPATH-1] = '\0';
+	  }
+	  if (config.nfacctd_bgp_aspath_radius)
+	    evaluate_bgp_aspath_radius(plbgp->as_path, MAX_BGP_ASPATH, config.nfacctd_bgp_aspath_radius);
+	}
       }
       if (config.nfacctd_as & NF_AS_BGP) {
         if (chptr->aggregation & COUNT_DST_AS && info->attr->aspath) {
@@ -3863,11 +4480,54 @@ void bgp_ext_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptr
         }
       }
     }
-/*
-    if (info && info->extra) {
-      if (chptr->aggregation & COUNT_MPLS_VPN_RD) memcpy(&pbgp->mpls_vpn_rd, &info->extra->rd, sizeof(rd_t)); 
+  }
+  /* take care of vlen primitives */
+  else {
+    if (chptr->plugin->type.id != PLUGIN_ID_MEMORY) {
+      if (chptr->aggregation & COUNT_AS_PATH) {
+        ptr = &empty_str;
+        len = strlen(ptr);
+
+        if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+          vlen_prims_init(pvlen, 0);
+          return;
+        }
+        else vlen_prims_insert(pvlen, COUNT_INT_AS_PATH, len, ptr, PM_MSG_STR_COPY);
+      }
+
+      if (chptr->aggregation & COUNT_STD_COMM) {
+        ptr = &empty_str;
+        len = strlen(ptr);
+
+        if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+          vlen_prims_init(pvlen, 0);
+          return;
+        }
+        else vlen_prims_insert(pvlen, COUNT_INT_STD_COMM, len, ptr, PM_MSG_STR_COPY);
+      }
+
+      if (chptr->aggregation & COUNT_EXT_COMM) {
+        ptr = &empty_str;
+        len = strlen(ptr);
+
+        if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+          vlen_prims_init(pvlen, 0);
+          return;
+        }
+        else vlen_prims_insert(pvlen, COUNT_INT_EXT_COMM, len, ptr, PM_MSG_STR_COPY);
+      }
+
+      if (chptr->aggregation_2 & COUNT_LRG_COMM) {
+        ptr = &empty_str;
+        len = strlen(ptr);
+
+        if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+          vlen_prims_init(pvlen, 0);
+          return;
+        }
+        else vlen_prims_insert(pvlen, COUNT_INT_LRG_COMM, len, ptr, PM_MSG_STR_COPY);
+      }
     }
-*/
   }
 }
 
@@ -3876,7 +4536,6 @@ void sfprobe_bgp_ext_handler(struct channels_list_entry *chptr, struct packet_pt
   struct pkt_payload *payload = (struct pkt_payload *) *data;
   struct bgp_node *src_ret = (struct bgp_node *) pptrs->bgp_src; 
   struct bgp_node *dst_ret = (struct bgp_node *) pptrs->bgp_dst;
-  struct bgp_peer *peer = (struct bgp_peer *) pptrs->bgp_peer;
   struct bgp_info *info = NULL;
 
   if (src_ret && evaluate_lm_method(pptrs, FALSE, chptr->plugin->cfg.nfacctd_as, NF_AS_BGP)) {
@@ -3914,7 +4573,6 @@ void nfprobe_bgp_ext_handler(struct channels_list_entry *chptr, struct packet_pt
   struct pkt_extras *pextras = (struct pkt_extras *) ++pdata;
   struct bgp_node *src_ret = (struct bgp_node *) pptrs->bgp_src;
   struct bgp_node *dst_ret = (struct bgp_node *) pptrs->bgp_dst;
-  struct bgp_peer *peer = (struct bgp_peer *) pptrs->bgp_peer;
   struct bgp_info *info = NULL;
 
   --pdata; /* Bringing back to original place */
@@ -3953,7 +4611,6 @@ void bgp_peer_src_as_frommap_handler(struct channels_list_entry *chptr, struct p
   struct pkt_data *pdata = (struct pkt_data *) *data;
   struct pkt_bgp_primitives *pbgp = (struct pkt_bgp_primitives *) ((*data) + chptr->extras.off_pkt_bgp_primitives);
   struct bgp_node *src_ret = (struct bgp_node *) pptrs->bgp_src;
-  struct bgp_peer *peer = (struct bgp_peer *) pptrs->bgp_peer;
   struct bgp_info *info = NULL;
 
   pbgp->peer_src_as = pptrs->bpas;
@@ -4099,7 +4756,8 @@ void SF_src_port_handler(struct channels_list_entry *chptr, struct packet_ptrs *
   struct pkt_data *pdata = (struct pkt_data *) *data;
   SFSample *sample = (SFSample *) pptrs->f_data;
 
-  if (sample->dcd_ipProtocol == IPPROTO_UDP || sample->dcd_ipProtocol == IPPROTO_TCP)
+  if (sample->dcd_ipProtocol == IPPROTO_UDP || sample->dcd_ipProtocol == IPPROTO_TCP ||
+      sample->dcd_inner_ipProtocol == IPPROTO_UDP || sample->dcd_inner_ipProtocol == IPPROTO_TCP)
     pdata->primitives.src_port = sample->dcd_sport; 
   else pdata->primitives.src_port = 0;
 }
@@ -4109,7 +4767,8 @@ void SF_dst_port_handler(struct channels_list_entry *chptr, struct packet_ptrs *
   struct pkt_data *pdata = (struct pkt_data *) *data;
   SFSample *sample = (SFSample *) pptrs->f_data;
 
-  if (sample->dcd_ipProtocol == IPPROTO_UDP || sample->dcd_ipProtocol == IPPROTO_TCP)
+  if (sample->dcd_ipProtocol == IPPROTO_UDP || sample->dcd_ipProtocol == IPPROTO_TCP ||
+      sample->dcd_inner_ipProtocol == IPPROTO_UDP || sample->dcd_inner_ipProtocol == IPPROTO_TCP)
     pdata->primitives.dst_port = sample->dcd_dport;
   else pdata->primitives.dst_port = 0;
 }
@@ -4135,18 +4794,35 @@ void SF_tcp_flags_handler(struct channels_list_entry *chptr, struct packet_ptrs 
   struct pkt_data *pdata = (struct pkt_data *) *data;
   SFSample *sample = (SFSample *) pptrs->f_data;
 
-  pdata->tcp_flags = sample->dcd_tcpFlags; 
+  if (sample->dcd_ipProtocol == IPPROTO_TCP || sample->dcd_inner_ipProtocol == IPPROTO_TCP)
+    pdata->tcp_flags = sample->dcd_tcpFlags; 
 }
 
-void SF_counters_new_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+void SF_flows_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  SFSample *sample = (SFSample *) pptrs->f_data;
+
+  pdata->flo_num = 1;
+}
+
+void SF_counters_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
 {
   struct pkt_data *pdata = (struct pkt_data *) *data;
   SFSample *sample = (SFSample *) pptrs->f_data;
 
   pdata->pkt_len = sample->sampledPacketSize;
   pdata->pkt_num = 1;
-  pdata->time_start.tv_sec = 0;
-  pdata->time_start.tv_usec = 0;
+
+  if (!config.nfacctd_time_new && sample->ts) { 
+    pdata->time_start.tv_sec = sample->ts->tv_sec;
+    pdata->time_start.tv_usec = sample->ts->tv_usec;
+  }
+  else {
+    pdata->time_start.tv_sec = 0;
+    pdata->time_start.tv_usec = 0;
+  }
+
   pdata->time_end.tv_sec = 0;
   pdata->time_end.tv_usec = 0;
 
@@ -4267,16 +4943,55 @@ void SF_as_path_handler(struct channels_list_entry *chptr, struct packet_ptrs *p
 {
   struct pkt_data *pdata = (struct pkt_data *) *data;
   SFSample *sample = (SFSample *) pptrs->f_data;
-  struct pkt_bgp_primitives *pbgp = (struct pkt_bgp_primitives *) ((*data) + chptr->extras.off_pkt_bgp_primitives);
+  struct pkt_legacy_bgp_primitives *plbgp = (struct pkt_legacy_bgp_primitives *) ((*data) + chptr->extras.off_pkt_lbgp_primitives);
+  struct pkt_vlen_hdr_primitives *pvlen = (struct pkt_vlen_hdr_primitives *) ((*data) + chptr->extras.off_pkt_vlen_hdr_primitives);
+
+  /* variables for vlen primitives */
+  char empty_str = '\0', *ptr = &empty_str;
+  int len;
 
   /* check network-related primitives against fallback scenarios */
   if (!evaluate_lm_method(pptrs, TRUE, chptr->plugin->cfg.nfacctd_as, NF_AS_KEEP)) return;
 
-  if (sample->dst_as_path_len) {
-    strlcpy(pbgp->as_path, sample->dst_as_path, MAX_BGP_ASPATH);
+  if (chptr->plugin->type.id != PLUGIN_ID_MEMORY) {
+    len = strlen(sample->dst_as_path);
 
-    if (config.nfacctd_bgp_aspath_radius)
-      evaluate_bgp_aspath_radius(pbgp->as_path, MAX_BGP_ASPATH, config.nfacctd_bgp_aspath_radius);
+    if (len) {
+      len++;
+       
+      if (config.nfacctd_bgp_aspath_radius) {
+        ptr = strndup(sample->dst_as_path, len);
+
+        if (ptr) {
+          evaluate_bgp_aspath_radius(ptr, len, config.nfacctd_bgp_aspath_radius);
+          len = strlen(ptr);
+	  len++;
+        }
+        else len = 0;
+      }
+      else ptr = sample->dst_as_path;
+    }
+
+    if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+      vlen_prims_init(pvlen, 0);
+      return;
+    }
+    else vlen_prims_insert(pvlen, COUNT_INT_AS_PATH, len, ptr, PM_MSG_STR_COPY);
+
+    if (config.nfacctd_bgp_aspath_radius && ptr && len) free(ptr);
+  }
+  /* fallback to legacy fixed length behaviour */
+  else {
+    if (sample->dst_as_path_len) {
+      strlcpy(plbgp->as_path, sample->dst_as_path, MAX_BGP_ASPATH);
+      if (strlen(sample->dst_as_path)) {
+	plbgp->as_path[MAX_BGP_ASPATH-2] = '+';
+	plbgp->as_path[MAX_BGP_ASPATH-1] = '\0';
+      }
+
+      if (config.nfacctd_bgp_aspath_radius)
+        evaluate_bgp_aspath_radius(plbgp->as_path, MAX_BGP_ASPATH, config.nfacctd_bgp_aspath_radius);
+    }
   }
 }
 
@@ -4320,12 +5035,58 @@ void SF_std_comms_handler(struct channels_list_entry *chptr, struct packet_ptrs 
 {
   struct pkt_data *pdata = (struct pkt_data *) *data;
   SFSample *sample = (SFSample *) pptrs->f_data;
-  struct pkt_bgp_primitives *pbgp = (struct pkt_bgp_primitives *) ((*data) + chptr->extras.off_pkt_bgp_primitives);
+  struct pkt_legacy_bgp_primitives *plbgp = (struct pkt_legacy_bgp_primitives *) ((*data) + chptr->extras.off_pkt_lbgp_primitives);
+  struct pkt_vlen_hdr_primitives *pvlen = (struct pkt_vlen_hdr_primitives *) ((*data) + chptr->extras.off_pkt_vlen_hdr_primitives);
+
+  /* variables for vlen primitives */
+  char empty_str = '\0', *ptr = &empty_str;
+  int len;
 
   /* check network-related primitives against fallback scenarios */
   if (!evaluate_lm_method(pptrs, TRUE, chptr->plugin->cfg.nfacctd_as, NF_AS_KEEP)) return;
 
-  if (sample->communities_len) strlcpy(pbgp->std_comms, sample->comms, MAX_BGP_STD_COMMS); 
+  if (chptr->plugin->type.id != PLUGIN_ID_MEMORY) {
+    len = strlen(sample->comms);
+
+    if (len) {
+      len++;
+
+      if (config.nfacctd_bgp_stdcomm_pattern) {
+        ptr = malloc(len);
+
+        if (ptr) {
+          evaluate_comm_patterns(ptr, sample->comms, std_comm_patterns, len);
+          len = strlen(ptr);
+	  len++;
+        }
+        else len = 0;
+      }
+      else ptr = sample->comms;
+    }
+
+    if (check_pipe_buffer_space(chptr, pvlen, PmLabelTSz + len)) {
+      vlen_prims_init(pvlen, 0);
+      return;
+    }
+    else {
+      vlen_prims_insert(pvlen, COUNT_INT_STD_COMM, len, ptr, PM_MSG_STR_COPY);
+      if (config.nfacctd_bgp_stdcomm_pattern && ptr && len) free(ptr);
+    }
+  }
+  /* fallback to legacy fixed length behaviour */
+  else {
+    if (sample->communities_len) {
+      if (config.nfacctd_bgp_stdcomm_pattern)
+	evaluate_comm_patterns(plbgp->std_comms, sample->comms, std_comm_patterns, MAX_BGP_STD_COMMS);
+      else {
+	strlcpy(plbgp->std_comms, sample->comms, MAX_BGP_STD_COMMS);
+	if (strlen(sample->comms)) {
+	  plbgp->std_comms[MAX_BGP_STD_COMMS-2] = '+';
+	  plbgp->std_comms[MAX_BGP_STD_COMMS-1] = '\0';
+	}
+      }
+    }
+  }
 }
 
 void SF_peer_src_ip_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
@@ -4472,6 +5233,14 @@ void SF_version_handler(struct channels_list_entry *chptr, struct packet_ptrs *p
   pdata->primitives.export_proto_version = sample->datagramVersion;
 }
 
+void SF_sysid_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  SFSample *sample = (SFSample *) pptrs->f_data;
+
+  pdata->primitives.export_proto_sysid = sample->agentSubId;
+}
+
 void SF_class_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
 {
   struct pkt_data *pdata = (struct pkt_data *) *data;
@@ -4485,6 +5254,16 @@ void SF_class_handler(struct channels_list_entry *chptr, struct packet_ptrs *ppt
   pdata->cst.stamp.tv_sec = time(NULL); /* XXX */
   pdata->cst.stamp.tv_usec = 0;
 }
+
+#if defined (WITH_NDPI)
+void SF_ndpi_class_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  SFSample *sample = (SFSample *) pptrs->f_data;
+
+  memcpy(&pdata->primitives.ndpi_class, &sample->ndpi_class, sizeof(pm_class2_t));
+}
+#endif
 
 void SF_tag_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
 {
@@ -4537,6 +5316,99 @@ void SF_bgp_peer_src_as_fromext_handler(struct channels_list_entry *chptr, struc
   // XXX: fill this in
 }
 
+void SF_tunnel_src_host_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  struct pkt_tunnel_primitives *ptun = (struct pkt_tunnel_primitives *) ((*data) + chptr->extras.off_pkt_tun_primitives);
+  SFSample *sample = (SFSample *) pptrs->f_data;
+
+  if (sample->got_inner_IPV4) {
+    ptun->tunnel_src_ip.address.ipv4.s_addr = sample->dcd_inner_srcIP.s_addr;
+    ptun->tunnel_src_ip.family = AF_INET;
+  }
+}
+
+void SF_tunnel_dst_host_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  struct pkt_tunnel_primitives *ptun = (struct pkt_tunnel_primitives *) ((*data) + chptr->extras.off_pkt_tun_primitives);
+  SFSample *sample = (SFSample *) pptrs->f_data;
+
+  if (sample->got_inner_IPV4) {
+    ptun->tunnel_dst_ip.address.ipv4.s_addr = sample->dcd_inner_dstIP.s_addr;
+    ptun->tunnel_dst_ip.family = AF_INET;
+  }
+}
+
+void SF_tunnel_ip_proto_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  struct pkt_tunnel_primitives *ptun = (struct pkt_tunnel_primitives *) ((*data) + chptr->extras.off_pkt_tun_primitives);
+  SFSample *sample = (SFSample *) pptrs->f_data;
+
+  ptun->tunnel_proto = sample->dcd_inner_ipProtocol;
+}
+
+void SF_tunnel_ip_tos_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  struct pkt_tunnel_primitives *ptun = (struct pkt_tunnel_primitives *) ((*data) + chptr->extras.off_pkt_tun_primitives);
+  SFSample *sample = (SFSample *) pptrs->f_data;
+
+  ptun->tunnel_tos = sample->dcd_inner_ipTos;
+}
+
+void SF_mpls_label_top_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  struct pkt_mpls_primitives *pmpls = (struct pkt_mpls_primitives *) ((*data) + chptr->extras.off_pkt_mpls_primitives);
+  SFSample *sample = (SFSample *) pptrs->f_data;
+  u_int32_t *label = (u_int32_t *) sample->lstk.stack;
+
+  if (label) pmpls->mpls_label_top = MPLS_LABEL(ntohl(*label));
+}
+
+void SF_mpls_label_bottom_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  struct pkt_mpls_primitives *pmpls = (struct pkt_mpls_primitives *) ((*data) + chptr->extras.off_pkt_mpls_primitives);
+  SFSample *sample = (SFSample *) pptrs->f_data;
+  u_int32_t lvalue = 0, *label = (u_int32_t *) sample->lstk.stack;
+
+  if (label) {
+    do {
+      lvalue = ntohl(*label);
+      label += 4;
+    } while (!MPLS_STACK(lvalue));
+
+    pmpls->mpls_label_bottom = MPLS_LABEL(lvalue);
+  }
+}
+
+void SF_mpls_stack_depth_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  struct pkt_mpls_primitives *pmpls = (struct pkt_mpls_primitives *) ((*data) + chptr->extras.off_pkt_mpls_primitives);
+  SFSample *sample = (SFSample *) pptrs->f_data;
+  u_int32_t lvalue = 0, *label = (u_int32_t *) sample->lstk.stack;
+
+  if (label) {
+    do {
+      lvalue = ntohl(*label);
+      label += 4;
+      pmpls->mpls_stack_depth++;
+    } while (!MPLS_STACK(lvalue));
+  }
+}
+
+void SF_custom_primitives_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  SFSample *sample = (SFSample *) pptrs->f_data;
+
+  custom_primitives_handler(chptr, &sample->hdr_ptrs, data);
+}
+
 #if defined WITH_GEOIP
 void pm_geoip_init()
 {
@@ -4570,7 +5442,7 @@ void src_host_country_geoip_handler(struct channels_list_entry *chptr, struct pa
 
   if (config.geoip_ipv4) {
     if (pptrs->l3_proto == ETHERTYPE_IP)
-      pdata->primitives.src_ip_country.id = GeoIP_id_by_ipnum(config.geoip_ipv4, ntohl(((struct my_iphdr *) pptrs->iph_ptr)->ip_src.s_addr));
+      pdata->primitives.src_ip_country.id = GeoIP_id_by_ipnum(config.geoip_ipv4, ntohl(((struct pm_iphdr *) pptrs->iph_ptr)->ip_src.s_addr));
   }
 #if defined ENABLE_IPV6
   if (config.geoip_ipv6) {
@@ -4589,7 +5461,7 @@ void dst_host_country_geoip_handler(struct channels_list_entry *chptr, struct pa
 
   if (config.geoip_ipv4) {
     if (pptrs->l3_proto == ETHERTYPE_IP)
-      pdata->primitives.dst_ip_country.id = GeoIP_id_by_ipnum(config.geoip_ipv4, ntohl(((struct my_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr));
+      pdata->primitives.dst_ip_country.id = GeoIP_id_by_ipnum(config.geoip_ipv4, ntohl(((struct pm_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr));
   }
 #if defined ENABLE_IPV6
   if (config.geoip_ipv6) {
@@ -4633,11 +5505,11 @@ void src_host_geoipv2_lookup_handler(struct channels_list_entry *chptr, struct p
   memset(&pptrs->geoipv2_src, 0, sizeof(pptrs->geoipv2_src));
 
   if (pptrs->l3_proto == ETHERTYPE_IP) {
-    raw_to_sa(sa, (char *) &((struct my_iphdr *) pptrs->iph_ptr)->ip_src.s_addr, AF_INET);
+    raw_to_sa(sa, (char *) &((struct pm_iphdr *)pptrs->iph_ptr)->ip_src.s_addr, 0, AF_INET);
   }
 #if defined ENABLE_IPV6
   else if (pptrs->l3_proto == ETHERTYPE_IPV6) {
-    raw_to_sa(sa, (char *) &((struct ip6_hdr *)pptrs->iph_ptr)->ip6_src, AF_INET6);
+    raw_to_sa(sa, (char *) &((struct ip6_hdr *)pptrs->iph_ptr)->ip6_src, 0, AF_INET6);
   }
 #endif
 
@@ -4659,11 +5531,11 @@ void dst_host_geoipv2_lookup_handler(struct channels_list_entry *chptr, struct p
   memset(&pptrs->geoipv2_dst, 0, sizeof(pptrs->geoipv2_dst));
 
   if (pptrs->l3_proto == ETHERTYPE_IP) {
-    raw_to_sa(sa, (char *) &((struct my_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr, AF_INET);
+    raw_to_sa(sa, (char *) &((struct pm_iphdr *)pptrs->iph_ptr)->ip_dst.s_addr, 0, AF_INET);
   }
 #if defined ENABLE_IPV6
   else if (pptrs->l3_proto == ETHERTYPE_IPV6) {
-    raw_to_sa(sa, (char *) &((struct ip6_hdr *)pptrs->iph_ptr)->ip6_dst, AF_INET6);
+    raw_to_sa(sa, (char *) &((struct ip6_hdr *)pptrs->iph_ptr)->ip6_dst, 0, AF_INET6);
   }
 #endif
 
@@ -4738,6 +5610,76 @@ void dst_host_country_geoipv2_handler(struct channels_list_entry *chptr, struct 
 
           memcpy(pdata->primitives.dst_ip_country.str, entry_data_list->entry_data.utf8_string, size);
           pdata->primitives.dst_ip_country.str[size] = '\0';
+        }
+      }
+
+      MMDB_free_entry_data_list(entry_data_list);
+    }
+  }
+}
+
+void src_host_pocode_geoipv2_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  MMDB_entry_data_list_s *entry_data_list = NULL;
+  int status;
+
+  if (pptrs->geoipv2_src.found_entry) {
+    MMDB_entry_data_s entry_data;
+
+    status = MMDB_get_value(&pptrs->geoipv2_src.entry, &entry_data, "postal", "code", NULL);
+
+    if (entry_data.offset) {
+      MMDB_entry_s entry = { .mmdb = &config.geoipv2_db, .offset = entry_data.offset };
+      status = MMDB_get_entry_data_list(&entry, &entry_data_list);
+    }
+
+    if (status != MMDB_SUCCESS && status != MMDB_LOOKUP_PATH_DOES_NOT_MATCH_DATA_ERROR) {
+      Log(LOG_WARNING, "WARN ( %s/%s ): src_host_pocode_geoipv2_handler(): %s\n", config.name, config.type, MMDB_strerror(status));
+    }
+
+    if (entry_data_list != NULL) {
+      if (entry_data_list->entry_data.has_data) {
+        if (entry_data_list->entry_data.type == MMDB_DATA_TYPE_UTF8_STRING) {
+          int size = (entry_data_list->entry_data.data_size < (PM_POCODE_T_STRLEN-1)) ? entry_data_list->entry_data.data_size : (PM_POCODE_T_STRLEN-1);
+
+          memcpy(pdata->primitives.src_ip_pocode.str, entry_data_list->entry_data.utf8_string, size);
+          pdata->primitives.src_ip_pocode.str[size] = '\0';
+        }
+      }
+
+      MMDB_free_entry_data_list(entry_data_list);
+    }
+  }
+}
+
+void dst_host_pocode_geoipv2_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
+{
+  struct pkt_data *pdata = (struct pkt_data *) *data;
+  MMDB_entry_data_list_s *entry_data_list = NULL;
+  int status;
+
+  if (pptrs->geoipv2_dst.found_entry) {
+    MMDB_entry_data_s entry_data;
+
+    status = MMDB_get_value(&pptrs->geoipv2_dst.entry, &entry_data, "postal", "code", NULL);
+
+    if (entry_data.offset) {
+      MMDB_entry_s entry = { .mmdb = &config.geoipv2_db, .offset = entry_data.offset };
+      status = MMDB_get_entry_data_list(&entry, &entry_data_list);
+    }
+
+    if (status != MMDB_SUCCESS && status != MMDB_LOOKUP_PATH_DOES_NOT_MATCH_DATA_ERROR) {
+      Log(LOG_WARNING, "WARN ( %s/%s ): dst_host_pocode_geoipv2_handler(): %s\n", config.name, config.type, MMDB_strerror(status));
+    }
+
+    if (entry_data_list != NULL) {
+      if (entry_data_list->entry_data.has_data) {
+        if (entry_data_list->entry_data.type == MMDB_DATA_TYPE_UTF8_STRING) {
+          int size = (entry_data_list->entry_data.data_size < (PM_POCODE_T_STRLEN-1)) ? entry_data_list->entry_data.data_size : (PM_POCODE_T_STRLEN-1);
+
+          memcpy(pdata->primitives.dst_ip_pocode.str, entry_data_list->entry_data.utf8_string, size);
+          pdata->primitives.dst_ip_pocode.str[size] = '\0';
         }
       }
 

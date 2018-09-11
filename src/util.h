@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -23,6 +23,16 @@
 #define ADD 0
 #define SUB 1
 
+#ifdef WITH_AVRO
+#define check_i(call) \
+  do { \
+    if ((call) != 0) { \
+      Log(LOG_ERR, "Error: %s\n", avro_strerror()); \
+      exit_plugin(1); \
+    } \
+} while (0)
+#endif
+
 /* prototypes */
 #if (!defined __UTIL_C)
 #define EXT extern
@@ -38,6 +48,7 @@ EXT char *extract_plugin_name(char **);
 EXT void trim_spaces(char *);
 EXT void trim_all_spaces(char *);
 EXT void strip_quotes(char *);
+EXT void string_add_newline(char *);
 EXT int isblankline(char *);
 EXT int iscomment(char *);
 EXT int check_not_valid_char(char *, char *, int);
@@ -52,15 +63,19 @@ EXT void mark_columns(char *);
 EXT int Setsocksize(int, int, int, void *, int);
 EXT void *map_shared(void *, size_t, int, int, int, off_t);
 EXT void lower_string(char *);
-EXT void evaluate_sums(u_int64_t *, char *, char *);
+EXT void evaluate_sums(u_int64_t *, u_int64_t *, char *, char *);
 EXT void stop_all_childs();
 EXT int file_lock(int);
 EXT int file_unlock(int);
-EXT void strftime_same(char *, int, char *, const time_t *);
+EXT void pm_strftime(char *, int, char *, const time_t *, int);
+EXT void pm_strftime_same(char *, int, char *, const time_t *, int);
+EXT void insert_rfc3339_timezone(char *, int, const struct tm *);
+EXT void append_rfc3339_timezone(char *, int, const struct tm *);
 EXT int read_SQLquery_from_file(char *, char *, int);
 EXT void stick_bosbit(u_char *);
 EXT int check_bosbit(u_char *);
 EXT u_int32_t decode_mpls_label(char *);
+EXT void encode_mpls_label(char *, u_int32_t);
 EXT int timeval_cmp(struct timeval *, struct timeval *);
 EXT void exit_all(int);
 EXT void exit_plugin(int);
@@ -75,22 +90,14 @@ EXT void set_default_preferences(struct configuration *);
 EXT FILE *open_output_file(char *, char *, int);
 EXT void link_latest_output_file(char *, char *);
 EXT void close_output_file(FILE *);
-EXT void handle_dynname_internal_strings(char *, int, char *, struct primitives_ptrs *);
-EXT void handle_dynname_internal_strings_same(char *, int, char *, struct primitives_ptrs *);
+EXT int handle_dynname_internal_strings(char *, int, char *, struct primitives_ptrs *, int);
+EXT int handle_dynname_internal_strings_same(char *, int, char *, struct primitives_ptrs *, int);
+EXT int have_dynname_nontime(char *);
 EXT void escape_ip_uscores(char *);
 EXT int sql_history_to_secs(int, int);
-EXT void evaluate_bgp_aspath_radius(char *, int, int);
-EXT void copy_stdcomm_to_asn(char *, as_t *, int);
 EXT void *pm_malloc(size_t);
-EXT void *pm_tsearch(const void *, void **, int (*compar)(const void *, const void *), size_t);
-EXT void *pm_tfind(const void *, void *const *, int (*compar)(const void *, const void *));
-EXT void *pm_tdelete(const void *, void **, int (*compar)(const void *, const void *));
-EXT void pm_twalk(const void *, void (*action)(const void *, const VISIT, const int));
-EXT void pm_tdestroy(void **, void (*free_node)(void *));
 EXT void load_allow_file(char *, struct hosts_table *);
 EXT int check_allow(struct hosts_table *, struct sockaddr *);
-EXT void load_bgp_md5_file(char *, struct bgp_md5_table *);
-EXT void unload_bgp_md5_file(struct bgp_md5_table *);
 EXT int BTA_find_id(struct id_table *, struct packet_ptrs *, pm_id_t *, pm_id_t *);
 EXT void calc_refresh_timeout(time_t, time_t, int *);
 EXT void calc_refresh_timeout_sec(time_t, time_t, int *);
@@ -98,22 +105,20 @@ EXT int load_tags(char *, struct pretag_filter *, char *);
 EXT int load_labels(char *, struct pretag_label_filter *, char *);
 EXT int evaluate_tags(struct pretag_filter *, pm_id_t);
 EXT int evaluate_labels(struct pretag_label_filter *, pt_label_t *);
-EXT void load_pkt_len_distrib_bins();
-EXT void evaluate_pkt_len_distrib(struct pkt_data *);
 EXT char *write_sep(char *, int *);
 EXT void version_daemon(char *);
 EXT void set_truefalse_nonzero(int *);
 
-EXT void *compose_json(u_int64_t, u_int64_t, u_int8_t, struct pkt_primitives *,
-		      struct pkt_bgp_primitives *, struct pkt_nat_primitives *,
-		      struct pkt_mpls_primitives *, char *, struct pkt_vlen_hdr_primitives *,
-		      pm_counter_t, pm_counter_t, pm_counter_t, u_int32_t, struct timeval *,
-		      struct pkt_stitching *);
 EXT char *compose_json_str(void *);
 EXT void write_and_free_json(FILE *, void *);
-EXT int write_and_free_json_amqp(void *, void *);
-EXT int write_and_free_json_kafka(void *, void *);
-EXT void compose_timestamp(char *, int, struct timeval *, int, int);
+EXT void add_writer_name_and_pid_json(void *, char *, pid_t);
+
+#ifdef WITH_AVRO
+EXT void write_avro_schema_to_file(char *, avro_schema_t);
+EXT char *compose_avro_purge_schema(avro_schema_t, char *);
+#endif
+
+EXT void compose_timestamp(char *, int, struct timeval *, int, int, int, int);
 
 EXT void print_primitives(int, char *);
 EXT int mkdir_multilevel(const char *, int, uid_t, gid_t);
@@ -123,8 +128,10 @@ EXT int print_hex(const u_char *, u_char *, int);
 EXT primptrs_func primptrs_funcs[PRIMPTRS_FUNCS_N];
 EXT void set_primptrs_funcs(struct extra_primitives *);
 EXT void primptrs_set_bgp(u_char *, struct extra_primitives *, struct primitives_ptrs *);
+EXT void primptrs_set_lbgp(u_char *, struct extra_primitives *, struct primitives_ptrs *);
 EXT void primptrs_set_nat(u_char *, struct extra_primitives *, struct primitives_ptrs *);
 EXT void primptrs_set_mpls(u_char *, struct extra_primitives *, struct primitives_ptrs *);
+EXT void primptrs_set_tun(u_char *, struct extra_primitives *, struct primitives_ptrs *);
 EXT void primptrs_set_custom(u_char *, struct extra_primitives *, struct primitives_ptrs *);
 EXT void primptrs_set_extras(u_char *, struct extra_primitives *, struct primitives_ptrs *);
 EXT void primptrs_set_vlen_hdr(u_char *, struct extra_primitives *, struct primitives_ptrs *);
@@ -140,7 +147,7 @@ EXT void vlen_prims_free(struct pkt_vlen_hdr_primitives *);
 EXT int vlen_prims_cmp(struct pkt_vlen_hdr_primitives *, struct pkt_vlen_hdr_primitives *);
 EXT void vlen_prims_get(struct pkt_vlen_hdr_primitives *, pm_cfgreg_t, char **);
 EXT void vlen_prims_debug(struct pkt_vlen_hdr_primitives *);
-EXT void vlen_prims_insert(struct pkt_vlen_hdr_primitives *, pm_cfgreg_t, int, char *);
+EXT void vlen_prims_insert(struct pkt_vlen_hdr_primitives *, pm_cfgreg_t, int, char *, int);
 EXT int vlen_prims_delete(struct pkt_vlen_hdr_primitives *, pm_cfgreg_t);
 
 EXT void hash_init_key(pm_hash_key_t *);
@@ -150,11 +157,30 @@ EXT int hash_dup_key(pm_hash_key_t *, pm_hash_key_t *);
 EXT void hash_destroy_key(pm_hash_key_t *);
 EXT void hash_destroy_serial(pm_hash_serial_t *);
 EXT void hash_serial_set_off(pm_hash_serial_t *, u_int16_t);
+EXT void hash_serial_append(pm_hash_serial_t *, char *, u_int16_t, int);
 EXT pm_hash_key_t *hash_serial_get_key(pm_hash_serial_t *);
 EXT u_int16_t hash_serial_get_off(pm_hash_serial_t *);
 EXT u_int16_t hash_key_get_len(pm_hash_key_t *);
 EXT char *hash_key_get_val(pm_hash_key_t *);
 EXT int hash_key_cmp(pm_hash_key_t *, pm_hash_key_t *);
+EXT char *hash_key_get_val(pm_hash_key_t *);
+
+EXT void dump_writers_init();
+EXT void dump_writers_count();
+EXT u_int32_t dump_writers_get_flags();
+EXT u_int16_t dump_writers_get_active();
+EXT u_int16_t dump_writers_get_max();
+EXT int dump_writers_add(pid_t);
+
+EXT int pm_scandir(const char *, struct dirent ***, int (*select)(const struct dirent *), int (*compar)(const void *, const void *));
+EXT void pm_scandir_free(struct dirent ***, int);
+EXT int pm_alphasort(const void *, const void *);
+
+EXT void *pm_tsearch(const void *, void **, int (*compar)(const void *, const void *), size_t);
+EXT void pm_tdestroy(void **, void (*free_node)(void *));
 
 EXT void replace_string(char *, int, char *, char *);
+EXT int delete_line_from_file(int, char *);
+
+EXT void generate_random_string(char *, const int);
 #undef EXT

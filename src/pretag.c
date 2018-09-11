@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -24,6 +24,7 @@
 
 /* includes */
 #include "pmacct.h"
+#include "addr.h"
 #include "nfacctd.h"
 #include "pretag_handlers.h"
 #include "pretag-data.h"
@@ -31,7 +32,10 @@
 #include "tee_plugin/tee_recvs-data.h"
 #include "isis/isis.h"
 #include "isis/isis-data.h"
+#include "bgp/bgp_xcs.h"
+#include "bgp/bgp_xcs-data.h"
 #include "crc32.h"
+#include "pmacct-data.h"
 
 /*
    XXX: load_id_file() interface cleanup pending:
@@ -52,7 +56,7 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
   int v6_num = 0;
 #endif
 
-  if (!map_allocated) return;
+  if (!filename || !map_allocated) return;
 
   if (acct_type == ACCT_NF || acct_type == ACCT_SF || acct_type == ACCT_PM ||
       acct_type == MAP_BGP_PEER_AS_SRC || acct_type == MAP_BGP_TO_XFLOW_AGENT ||
@@ -279,6 +283,22 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
                   }
                   key = NULL; value = NULL;
 		}
+		else if (acct_type == MAP_BGP_XCS) {
+                  for (dindex = 0; strcmp(bgp_xcs_map_dictionary[dindex].key, ""); dindex++) {
+                    if (!strcmp(bgp_xcs_map_dictionary[dindex].key, key)) {
+                      err = (*bgp_xcs_map_dictionary[dindex].func)(filename, NULL, value, req, acct_type);
+                      break;
+                    }
+                    else err = E_NOTFOUND; /* key not found */
+                  }
+                  if (err) {
+                    if (err == E_NOTFOUND) Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] unknown key '%s'. Ignored.\n", 
+						config.name, config.type, filename, tot_lines, key);
+                    else Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] Line ignored.\n", config.name, config.type, filename, tot_lines);
+                    break;
+                  }
+                  key = NULL; value = NULL;
+		}
                 else if (acct_type == MAP_IGP) {
                   for (dindex = 0; strcmp(igp_daemon_map_dictionary[dindex].key, ""); dindex++) {
                     if (!strcmp(igp_daemon_map_dictionary[dindex].key, key)) {
@@ -314,6 +334,22 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
                   }
                   key = NULL; value = NULL;
 		}
+                else if (acct_type == MAP_PCAP_INTERFACES) {
+                  for (dindex = 0; strcmp(pcap_interfaces_map_dictionary[dindex].key, ""); dindex++) {
+                    if (!strcmp(pcap_interfaces_map_dictionary[dindex].key, key)) {
+                      err = (*pcap_interfaces_map_dictionary[dindex].func)(filename, NULL, value, req, acct_type);
+                      break;
+                    }
+                    else err = E_NOTFOUND; /* key not found */
+                  }
+                  if (err) {
+                    if (err == E_NOTFOUND) Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] unknown key '%s'. Ignored.\n",
+                                                config.name, config.type, filename, tot_lines, key);
+                    else Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] Line ignored.\n", config.name, config.type, filename, tot_lines);
+                    break;
+                  }
+                  key = NULL; value = NULL;
+                }
 		else {
 		  if (tee_plugins) {
                     for (dindex = 0; strcmp(tag_map_tee_dictionary[dindex].key, ""); dindex++) {
@@ -349,8 +385,35 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
 	        if (tmp.e[tmp.num].id && tmp.e[tmp.num].id2 && tmp.e[tmp.num].label.len) 
 		   Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] set_tag (id), set_tag2 (id2) and set_label are mutual exclusive. Line ignored.\n", 
 			config.name, config.type, filename, tot_lines);
-                else if (!err && tmp.e[tmp.num].key.agent_ip.a.family) {
-                  int j, z;
+                else if (!err) {
+                  int j, z, recirculate;
+		  struct id_entry recirc_e;
+
+		  recirculate = FALSE;
+		  recirculate_ipv6:
+
+		  if (!tmp.e[tmp.num].key.agent_ip.a.family) {
+		    if (!recirculate) {
+		      memset(&tmp.e[tmp.num].key.agent_ip, 0, sizeof(pt_hostaddr_t));
+		      memset(&tmp.e[tmp.num].key.agent_mask, 0, sizeof(pt_hostmask_t));
+		      tmp.e[tmp.num].key.agent_ip.a.family = AF_INET;
+		      tmp.e[tmp.num].key.agent_mask.family = AF_INET;
+
+#if defined ENABLE_IPV6
+		      memcpy(&recirc_e, &tmp.e[tmp.num], sizeof(struct id_entry));
+		      recirculate = TRUE;
+#endif
+		    }
+#if defined ENABLE_IPV6
+		    else {
+		      memcpy(&tmp.e[tmp.num], &recirc_e, sizeof(struct id_entry));
+                      tmp.e[tmp.num].key.agent_ip.a.family = AF_INET6;
+                      tmp.e[tmp.num].key.agent_mask.family = AF_INET6;
+
+		      recirculate = FALSE;
+		    }
+#endif
+		  }
 
                   for (j = 0; tmp.e[tmp.num].func[j]; j++);
 		  for (z = 0; tmp.e[tmp.num].set_func[z]; z++, j++) {
@@ -363,12 +426,13 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
 	          else if (tmp.e[tmp.num].key.agent_ip.a.family == AF_INET6) v6_num++;
 #endif
                   tmp.num++;
+
+		  if (recirculate) {
+		    if (tmp.num < map_entries) goto recirculate_ipv6;
+		  }
                 }
 	        /* if any required field is missing and other errors have been signalled
 	           before we will trap an error message */
-	        else if (!err && !tmp.e[tmp.num].key.agent_ip.a.family)
-	          Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] required key missing. Required key is: 'ip'. Line ignored.\n",
-			config.name, config.type, filename, tot_lines); 
 	      }
 	      else if (acct_type == ACCT_PM) {
 	        if (tmp.e[tmp.num].id && tmp.e[tmp.num].id2 && tmp.e[tmp.num].label.len)
@@ -407,7 +471,7 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
 			config.name, config.type, filename, tot_lines);
 	      }
               else if (acct_type == MAP_BGP_TO_XFLOW_AGENT) {
-                if (!err && tmp.e[tmp.num].id && tmp.e[tmp.num].key.agent_ip.a.family) {
+                if (!err && (tmp.e[tmp.num].id || tmp.e[tmp.num].id2) && tmp.e[tmp.num].key.agent_ip.a.family) {
                   int j, z;
 
                   for (j = 0; tmp.e[tmp.num].func[j]; j++);
@@ -424,7 +488,7 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
 #endif
                   tmp.num++;
                 }
-                else if ((!tmp.e[tmp.num].id || !tmp.e[tmp.num].key.agent_ip.a.family) && !err)
+                else if (((!tmp.e[tmp.num].id && !tmp.e[tmp.num].id2) || !tmp.e[tmp.num].key.agent_ip.a.family) && !err)
                   Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] required key missing. Required keys are: 'id', 'ip'. Line ignored.\n",
                         config.name, config.type, filename, tot_lines);
               }
@@ -458,8 +522,10 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
 			config.name, config.type, filename, tot_lines);
               }
 	      else if (acct_type == MAP_TEE_RECVS) tee_recvs_map_validate(filename, req); 
+	      else if (acct_type == MAP_BGP_XCS) bgp_xcs_map_validate(filename, req); 
 	      else if (acct_type == MAP_IGP) igp_daemon_map_validate(filename, req); 
 	      else if (acct_type == MAP_CUSTOM_PRIMITIVES) custom_primitives_map_validate(filename, req); 
+	      else if (acct_type == MAP_PCAP_INTERFACES) pcap_interfaces_map_validate(filename, req); 
 	    }
           }
           else Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] malformed line. Ignored.\n",
@@ -567,12 +633,11 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
 	t->index_num = MAX_ID_TABLE_INDEXES;
 
 #if defined ENABLE_IPV6
-        for (ptr = t->ipv4_base, x = 0; x < MAX(t->ipv4_num, t->ipv6_num); ptr++, x++) {
+        for (ptr = t->ipv4_base, x = 0; x < (t->ipv4_num + t->ipv6_num); ptr++, x++) {
 #else
         for (ptr = t->ipv4_base, x = 0; x < t->ipv4_num; ptr++, x++) {
 #endif
 	  idx_bmap = pretag_index_build_bitmap(ptr, acct_type);
-	  if (!idx_bmap) continue;
 
 	  /* insert bitmap to index list and determine entries per index */ 
 	  if (pretag_index_insert_bitmap(t, idx_bmap)) {
@@ -590,12 +655,11 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
         pretag_index_allocate(t);
 
 #if defined ENABLE_IPV6
-        for (ptr = t->ipv4_base, x = 0; x < MAX(t->ipv4_num, t->ipv6_num); ptr++, x++) {
+        for (ptr = t->ipv4_base, x = 0; x < (t->ipv4_num + t->ipv6_num); ptr++, x++) {
 #else
         for (ptr = t->ipv4_base, x = 0; x < t->ipv4_num; ptr++, x++) {
 #endif
           idx_bmap = pretag_index_build_bitmap(ptr, acct_type);
-          if (!idx_bmap) continue;
 
 	  /* fill indexes */
 	  pretag_index_fill(t, idx_bmap, ptr);
@@ -845,11 +909,6 @@ pt_bitmap_t pretag_index_build_bitmap(struct id_entry *ptr, int acct_type)
   if (idx_bmap & PRETAG_SET_TAG2) idx_bmap ^= PRETAG_SET_TAG2;
   if (idx_bmap & PRETAG_SET_LABEL) idx_bmap ^= PRETAG_SET_LABEL;
 
-  /* 3) add 'ip' to bitmap, if mandated by the map type */
-  if (acct_type == ACCT_NF || acct_type == ACCT_SF ||
-      acct_type == MAP_BGP_PEER_AS_SRC || acct_type == MAP_FLOW_TO_RD)
-    idx_bmap |= PRETAG_IP;
-
   return idx_bmap;
 }
 
@@ -860,7 +919,7 @@ int pretag_index_insert_bitmap(struct id_table *t, pt_bitmap_t idx_bmap)
   if (!t) return TRUE;
 
   for (iterator = 0; iterator < t->index_num; iterator++) {
-    if (!t->index[iterator].bitmap || t->index[iterator].bitmap == idx_bmap) {
+    if (!t->index[iterator].entries || t->index[iterator].bitmap == idx_bmap) {
       t->index[iterator].bitmap = idx_bmap;
       t->index[iterator].entries++;
       return FALSE;
@@ -922,7 +981,7 @@ int pretag_index_allocate(struct id_table *t)
   if (!t) return TRUE;
 
   for (iterator = 0; iterator < t->index_num; iterator++) {
-    if (t->index[iterator].bitmap) {
+    if (t->index[iterator].entries) {
       Log(LOG_INFO, "INFO ( %s/%s ): [%s] maps_index: created index %x (%u entries).\n", config.name,
     		config.type, t->filename, t->index[iterator].bitmap, t->index[iterator].entries);
 
@@ -971,7 +1030,7 @@ int pretag_index_fill(struct id_table *t, pt_bitmap_t idx_bmap, struct id_entry 
   if (!t) return ERR;
 
   for (iterator = 0; iterator < t->index_num; iterator++) {
-    if (t->index[iterator].bitmap && t->index[iterator].bitmap == idx_bmap) {
+    if (t->index[iterator].entries && t->index[iterator].bitmap == idx_bmap) {
       struct id_entry e;
       struct id_index_entry *idie;
       pm_hash_serial_t *hash_serializer;

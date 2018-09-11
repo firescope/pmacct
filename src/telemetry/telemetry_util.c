@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -24,6 +24,7 @@
 
 /* includes */
 #include "pmacct.h"
+#include "../bgp/bgp.h"
 #include "telemetry.h"
 #if defined WITH_RABBITMQ
 #include "amqp_common.h"
@@ -82,7 +83,7 @@ void telemetry_peer_close(telemetry_peer *peer, int type)
     peer->fd = ERR; /* dirty trick to prevent close() a valid fd in bgp_peer_close() */
   }
 
-  bgp_peer_close(peer, type);
+  bgp_peer_close(peer, type, FALSE, FALSE, FALSE, FALSE, NULL);
 }
 
 void telemetry_peer_z_close(telemetry_peer_z *peer_z)
@@ -100,6 +101,16 @@ u_int32_t telemetry_cisco_hdr_get_len(telemetry_peer *peer)
   len = ntohl(len);
 
   return len;
+}
+
+u_int32_t telemetry_cisco_hdr_get_type(telemetry_peer *peer)
+{
+  u_int32_t type;
+
+  memcpy(&type, peer->buf.base, 4);
+  type = ntohl(type);
+
+  return type;
 }
 
 int telemetry_is_zjson(int decoder)
@@ -122,6 +133,10 @@ void telemetry_link_misc_structs(telemetry_misc_structs *tms)
   tms->msglog_kafka_host = &telemetry_daemon_msglog_kafka_host;
 #endif
   tms->max_peers = config.telemetry_max_peers;
+  tms->peers = telemetry_peers;
+  tms->peers_cache = NULL;
+  tms->peers_port_cache = NULL;
+  tms->xconnects = NULL;
   tms->dump_file = config.telemetry_dump_file;
   tms->dump_amqp_routing_key = config.telemetry_dump_amqp_routing_key;
   tms->dump_amqp_routing_key_rr = config.telemetry_dump_amqp_routing_key_rr;
@@ -135,6 +150,45 @@ void telemetry_link_misc_structs(telemetry_misc_structs *tms)
   tms->msglog_kafka_topic_rr = config.telemetry_msglog_kafka_topic_rr;
   tms->peer_str = malloc(strlen("telemetry_node") + 1);
   strcpy(tms->peer_str, "telemetry_node");
-  tms->log_thread_str = malloc(strlen("TELE") + 1);
-  strcpy(tms->log_thread_str, "TELE");
+}
+
+int telemetry_validate_input_output_decoders(int input, int output)
+{
+  if (input == TELEMETRY_DATA_DECODER_GPB) {
+    if (output == PRINT_OUTPUT_JSON) return FALSE;
+    /* else if (output == PRINT_OUTPUT_GPB) return FALSE; */
+  }
+  else if (input == TELEMETRY_DATA_DECODER_JSON) {
+    if (output == PRINT_OUTPUT_JSON) return FALSE;
+    /* else if (output == PRINT_OUTPUT_GPB) return ERR; */
+  }
+}
+
+void telemetry_log_peer_stats(telemetry_peer *peer, struct telemetry_data *t_data)
+{
+  Log(LOG_INFO, "INFO ( %s/%s ): [%s:%u] Packets: %u Packet_Bytes: %u Msg_Bytes: %u Msg_Errors: %u\n",
+	config.name, t_data->log_str, peer->addr_str, peer->tcp_port, peer->stats.packets,
+	peer->stats.packet_bytes, peer->stats.msg_bytes, peer->stats.msg_errors);
+
+  t_data->global_stats.packets += peer->stats.packets;
+  t_data->global_stats.packet_bytes += peer->stats.packet_bytes;
+  t_data->global_stats.msg_bytes += peer->stats.msg_bytes;
+  t_data->global_stats.msg_errors += peer->stats.msg_errors;
+
+  peer->stats.packets = 0;
+  peer->stats.packet_bytes = 0;
+  peer->stats.msg_bytes = 0;
+  peer->stats.msg_errors = 0;
+}
+
+void telemetry_log_global_stats(struct telemetry_data *t_data)
+{
+  Log(LOG_INFO, "INFO ( %s/%s ): Packets: %u Packet_Bytes: %u Msg_Bytes: %u Msg_Errors: %u\n",
+        config.name, t_data->log_str, t_data->global_stats.packets, t_data->global_stats.packet_bytes,
+	t_data->global_stats.msg_bytes, t_data->global_stats.msg_errors);
+
+  t_data->global_stats.packets = 0;
+  t_data->global_stats.packet_bytes = 0;
+  t_data->global_stats.msg_bytes = 0;
+  t_data->global_stats.msg_errors = 0;
 }

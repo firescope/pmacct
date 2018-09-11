@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -24,6 +24,7 @@
 
 /* includes */
 #include "pmacct.h"
+#include "bgp/bgp.h"
 #include "telemetry/telemetry.h"
 #include "pmtelemetryd.h"
 #include "pretag_handlers.h"
@@ -40,7 +41,7 @@ struct channels_list_entry channels_list[MAX_N_PLUGINS]; /* communication channe
 /* Functions */
 void usage_daemon(char *prog_name)
 {
-  printf("%s (%s)\n", PMTELEMETRYD_USAGE_HEADER, PMACCT_BUILD);
+  printf("%s %s (%s)\n", PMTELEMETRYD_USAGE_HEADER, PMACCT_VERSION, PMACCT_BUILD);
   printf("Usage: %s [ -D | -d ] [ -L IP address ] [ -l port ] ]\n", prog_name);
   printf("       %s [ -f config_file ]\n", prog_name);
   printf("       %s [ -h ]\n", prog_name);
@@ -54,15 +55,15 @@ void usage_daemon(char *prog_name)
   printf("  -d  \tEnable debug\n");
   printf("  -S  \t[ auth | mail | daemon | kern | user | local[0-7] ] \n\tLog to the specified syslog facility\n");
   printf("  -F  \tWrite Core Process PID into the specified file\n");
+  printf("  -o  \tOutput file to log real-time Streaming Telemetry data\n");
+  printf("  -O  \tOutput file to dump Streaming Telemetry data at regular time intervals\n");
+  printf("  -i  \tInterval, in secs, to write to the dump output file (supplied by -O)\n");
   printf("\n");
-  printf("  See QUICKSTART or visit http://wiki.pmacct.net/ for examples.\n");
+  printf("For examples, see:\n");
+  printf("  https://github.com/pmacct/pmacct/blob/master/QUICKSTART or\n");
+  printf("  https://github.com/pmacct/pmacct/wiki\n");
   printf("\n");
   printf("For suggestions, critics, bugs, contact me: %s.\n", MANTAINER);
-}
-
-void compute_once()
-{
-  /* popular sizeof()'s here */
 }
 
 int main(int argc,char **argv, char **envp)
@@ -82,14 +83,13 @@ int main(int argc,char **argv, char **envp)
 #endif
 
   umask(077);
-  compute_once();
 
   memset(cfg_cmdline, 0, sizeof(cfg_cmdline));
   memset(&config, 0, sizeof(struct configuration));
   memset(&config_file, 0, sizeof(config_file));
 
   log_notifications_init(&log_notifications);
-  config.acct_type = ACCT_NF;
+  config.acct_type = ACCT_PMTELE;
 
   find_id_func = NULL;
   plugins_list = NULL;
@@ -129,6 +129,21 @@ int main(int argc,char **argv, char **envp)
       break;
     case 'S':
       strlcpy(cfg_cmdline[rows], "syslog: ", SRVBUFLEN);
+      strncat(cfg_cmdline[rows], optarg, CFG_LINE_LEN(cfg_cmdline[rows]));
+      rows++;
+      break;
+    case 'o':
+      strlcpy(cfg_cmdline[rows], "telemetry_daemon_msglog_file: ", SRVBUFLEN);
+      strncat(cfg_cmdline[rows], optarg, CFG_LINE_LEN(cfg_cmdline[rows]));
+      rows++;
+      break;
+    case 'O':
+      strlcpy(cfg_cmdline[rows], "telemetry_dump_file: ", SRVBUFLEN);
+      strncat(cfg_cmdline[rows], optarg, CFG_LINE_LEN(cfg_cmdline[rows]));
+      rows++;
+      break;
+    case 'i':
+      strlcpy(cfg_cmdline[rows], "telemetry_dump_refresh_time: ", SRVBUFLEN);
       strncat(cfg_cmdline[rows], optarg, CFG_LINE_LEN(cfg_cmdline[rows]));
       rows++;
       break;

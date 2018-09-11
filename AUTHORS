@@ -1,5 +1,5 @@
-pmacct (Promiscuous mode IP Accounting package) v1.6.0
-pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+pmacct [IP traffic accounting : BGP : BMP : IGP : Streaming Telemetry]
+pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 
 Founder:
 
@@ -16,6 +16,7 @@ Package maintainers:
 
 Thanks to the following people for their strong support along the time: 
 
+	Arash Afrakhteh
 	Martin Anderberg
 	Sven Anderson
 	David Barroso
@@ -23,17 +24,24 @@ Thanks to the following people for their strong support along the time:
 	Vincent Bernat
 	Robert Blechinger
 	Stefano Birmani
+	Juan Camilo Cardona
+	Pier Carlo Chiodi
+	Codethink.co.uk
 	Arnaud De-Bermingham
 	Francois Deppierraz 
-	Marcello Di Leonardo
 	Pierre Francois
 	Rich Gade
 	Aaron Glenn
+	Alan Gous
 	Gianluca Guida
         Elisa Jasinska
 	Wim Kerkhoff
+	Tim LaBerge
 	Paul Mabey
+	Arman Maghbouleh
 	Peter Nixon
+	Claudio Ortega
+	Ivan Pepelnjak
 	Karl O. Pinc
 	Vasiliy Ponomarev
 	Martin Pot
@@ -44,7 +52,9 @@ Thanks to the following people for their strong support along the time:
 	Gabriel Snook
 	Rene Stoutjesdijk
 	Thomas Telkamp
+	Matthieu Texier
 	Stig Thormodsrud
 	Luca Tosolini
 	Brent Van Dussen
+	Markus Weber
 	Chris Wilson

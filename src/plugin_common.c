@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -23,6 +23,7 @@
 
 /* includes */
 #include "pmacct.h"
+#include "addr.h"
 #include "pmacct-data.h"
 #include "plugin_common.h"
 #include "ip_flow.h"
@@ -37,7 +38,7 @@ void P_set_signals()
   signal(SIGUSR1, SIG_IGN);
   signal(SIGUSR2, reload_maps);
   signal(SIGPIPE, SIG_IGN);
-  signal(SIGCHLD, ignore_falling_child);
+  signal(SIGCHLD, SIG_IGN);
 }
  
 void P_init_default_values()
@@ -67,12 +68,16 @@ void P_init_default_values()
 
   if (!config.sql_refresh_time) config.sql_refresh_time = DEFAULT_PLUGIN_COMMON_REFRESH_TIME;
   if (!config.print_cache_entries) config.print_cache_entries = PRINT_CACHE_ENTRIES;
-  if (!config.sql_max_writers) config.sql_max_writers = DEFAULT_PLUGIN_COMMON_WRITERS_NO;
+  if (!config.dump_max_writers) config.dump_max_writers = DEFAULT_PLUGIN_COMMON_WRITERS_NO;
+
+  dump_writers.list = malloc(config.dump_max_writers * sizeof(pid_t));
+  dump_writers_init();
 
   pp_size = sizeof(struct pkt_primitives);
   pb_size = sizeof(struct pkt_bgp_primitives);
   pn_size = sizeof(struct pkt_nat_primitives);
   pm_size = sizeof(struct pkt_mpls_primitives);
+  pt_size = sizeof(struct pkt_tunnel_primitives);
   pc_size = config.cpptrs.len;
   dbc_size = sizeof(struct chained_cache);
 
@@ -96,7 +101,6 @@ void P_init_default_values()
   memset(pending_queries_queue, 0, (sa.num+config.print_cache_entries)*sizeof(struct chained_cache *));
   memset(sa.base, 0, sa.size);
   memset(&flushtime, 0, sizeof(flushtime));
-  memset(&sql_writers, 0, sizeof(sql_writers));
 
   /* handling purge preprocessor */
   set_preprocess_funcs(config.sql_preprocess, &prep, PREP_DICT_PRINT);
@@ -122,6 +126,7 @@ unsigned int P_cache_modulo(struct primitives_ptrs *prim_ptrs)
   struct pkt_bgp_primitives *pbgp = prim_ptrs->pbgp;
   struct pkt_nat_primitives *pnat = prim_ptrs->pnat;
   struct pkt_mpls_primitives *pmpls = prim_ptrs->pmpls;
+  struct pkt_tunnel_primitives *ptun = prim_ptrs->ptun;
   char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
   register unsigned int modulo;
@@ -130,6 +135,7 @@ unsigned int P_cache_modulo(struct primitives_ptrs *prim_ptrs)
   if (pbgp) modulo ^= cache_crc32((unsigned char *)pbgp, pb_size);
   if (pnat) modulo ^= cache_crc32((unsigned char *)pnat, pn_size);
   if (pmpls) modulo ^= cache_crc32((unsigned char *)pmpls, pm_size);
+  if (ptun) modulo ^= cache_crc32((unsigned char *)ptun, pt_size);
   if (pcust) modulo ^= cache_crc32((unsigned char *)pcust, pc_size);
   if (pvlen) modulo ^= cache_crc32((unsigned char *)pvlen, (PvhdrSz + pvlen->tot_len));
 
@@ -143,12 +149,13 @@ struct chained_cache *P_cache_search(struct primitives_ptrs *prim_ptrs)
   struct pkt_bgp_primitives *pbgp = prim_ptrs->pbgp;
   struct pkt_nat_primitives *pnat = prim_ptrs->pnat;
   struct pkt_mpls_primitives *pmpls = prim_ptrs->pmpls;
+  struct pkt_tunnel_primitives *ptun = prim_ptrs->ptun;
   char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
   unsigned int modulo = P_cache_modulo(prim_ptrs);
   struct chained_cache *cache_ptr = &cache[modulo];
-  int res_data = TRUE, res_bgp = TRUE, res_nat = TRUE, res_mpls = TRUE, res_time = TRUE;
-  int res_cust = TRUE, res_vlen = TRUE;
+  int res_data = TRUE, res_bgp = TRUE, res_nat = TRUE, res_mpls = TRUE, res_tun = TRUE;
+  int res_time = TRUE, res_cust = TRUE, res_vlen = TRUE;
 
   start:
   res_data = memcmp(&cache_ptr->primitives, data, sizeof(struct pkt_primitives));
@@ -173,6 +180,11 @@ struct chained_cache *P_cache_search(struct primitives_ptrs *prim_ptrs)
   }
   else res_mpls = FALSE;
 
+  if (ptun) {
+    if (cache_ptr->ptun) res_tun = memcmp(cache_ptr->ptun, ptun, sizeof(struct pkt_tunnel_primitives));
+  }
+  else res_tun = FALSE;
+
   if (pcust) {
     if (cache_ptr->pcust) res_cust = memcmp(cache_ptr->pcust, pcust, config.cpptrs.len);
   }
@@ -183,7 +195,7 @@ struct chained_cache *P_cache_search(struct primitives_ptrs *prim_ptrs)
   }
   else res_vlen = FALSE;
 
-  if (res_data || res_bgp || res_nat || res_mpls || res_time || res_cust || res_vlen) {
+  if (res_data || res_bgp || res_nat || res_mpls || res_tun || res_time || res_cust || res_vlen) {
     if (cache_ptr->valid == PRINT_CACHE_INUSE) {
       if (cache_ptr->next) {
         cache_ptr = cache_ptr->next;
@@ -202,12 +214,13 @@ void P_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *idata
   struct pkt_bgp_primitives *pbgp = prim_ptrs->pbgp;
   struct pkt_nat_primitives *pnat = prim_ptrs->pnat;
   struct pkt_mpls_primitives *pmpls = prim_ptrs->pmpls;
+  struct pkt_tunnel_primitives *ptun = prim_ptrs->ptun;
   char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
   unsigned int modulo = P_cache_modulo(prim_ptrs);
   struct chained_cache *cache_ptr = &cache[modulo];
   struct pkt_primitives *srcdst = &data->primitives;
-  int res_data, res_bgp, res_nat, res_mpls, res_time, res_cust, res_vlen;
+  int res_data, res_bgp, res_nat, res_mpls, res_tun, res_time, res_cust, res_vlen;
 
   /* pro_rating vars */
   int time_delta = 0, time_total = 0;
@@ -268,7 +281,7 @@ void P_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *idata
   }
 
   start:
-  res_data = res_bgp = res_nat = res_mpls = res_time = res_cust = res_vlen = TRUE;
+  res_data = res_bgp = res_nat = res_mpls = res_tun = res_time = res_cust = res_vlen = TRUE;
 
   res_data = memcmp(&cache_ptr->primitives, srcdst, sizeof(struct pkt_primitives)); 
 
@@ -292,6 +305,11 @@ void P_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *idata
   }
   else res_mpls = FALSE;
 
+  if (ptun) {
+    if (cache_ptr->ptun) res_tun = memcmp(cache_ptr->ptun, ptun, sizeof(struct pkt_tunnel_primitives));
+  }
+  else res_tun = FALSE;
+
   if (pcust) {
     if (cache_ptr->pcust) res_cust = memcmp(cache_ptr->pcust, pcust, config.cpptrs.len); 
   }
@@ -302,7 +320,7 @@ void P_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *idata
   }
   else res_vlen = FALSE;
 
-  if (res_data || res_bgp || res_nat || res_mpls || res_time || res_cust || res_vlen) {
+  if (res_data || res_bgp || res_nat || res_mpls || res_tun || res_time || res_cust || res_vlen) {
     /* aliasing of entries */
     if (cache_ptr->valid == PRINT_CACHE_INUSE) { 
       if (cache_ptr->next) {
@@ -353,6 +371,16 @@ void P_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *idata
     else {
       if (cache_ptr->pmpls) free(cache_ptr->pmpls);
       cache_ptr->pmpls = NULL;
+    }
+
+    if (ptun) {
+      if (!cache_ptr->ptun) cache_ptr->ptun = (struct pkt_tunnel_primitives *) malloc(PtunSz);
+      if (cache_ptr->ptun) memcpy(cache_ptr->ptun, ptun, sizeof(struct pkt_tunnel_primitives));
+      else goto safe_action;
+    }
+    else {
+      if (cache_ptr->ptun) free(cache_ptr->ptun);
+      cache_ptr->ptun = NULL;
     }
 
     if (pcust) {
@@ -438,7 +466,9 @@ void P_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *idata
       if (config.nfacctd_stitching) {
 	if (cache_ptr->stitch) {
 	  if (data->time_end.tv_sec) {
-	    memcpy(&cache_ptr->stitch->timestamp_max, &data->time_end, sizeof(struct timeval));
+	    if (data->time_end.tv_sec > cache_ptr->stitch->timestamp_max.tv_sec && 
+		data->time_end.tv_usec > cache_ptr->stitch->timestamp_max.tv_usec)
+	      memcpy(&cache_ptr->stitch->timestamp_max, &data->time_end, sizeof(struct timeval));
 	  }
 	  else {
 	    cache_ptr->stitch->timestamp_max.tv_sec = idata->now;
@@ -482,7 +512,7 @@ void P_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *idata
 
   safe_action:
   {
-    int ret;
+    pid_t ret;
 
     Log(LOG_INFO, "INFO ( %s/%s ): Finished cache entries (ie. print_cache_entries). Purging.\n", config.name, config.type);
 
@@ -492,20 +522,21 @@ void P_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *idata
     if (qq_ptr) P_cache_mark_flush(queries_queue, qq_ptr, FALSE);
 
     /* Writing out to replenish cache space */
-    if (sql_writers.flags != CHLD_ALERT) {
+    dump_writers_count();
+    if (dump_writers_get_flags() != CHLD_ALERT) {
       switch (ret = fork()) {
       case 0: /* Child */
-        (*purge_func)(queries_queue, qq_ptr);
+	pm_setproctitle("%s %s [%s]", config.type, "Plugin -- Writer (urgent)", config.name);
+        (*purge_func)(queries_queue, qq_ptr, TRUE);
         exit(0);
       default: /* Parent */
-        if (ret == -1) {
-	  Log(LOG_WARNING, "WARN ( %s/%s ): Unable to fork writer: %s\n", config.name, config.type, strerror(errno));
-	  sql_writers.active--;
-	}
+        if (ret == -1) Log(LOG_WARNING, "WARN ( %s/%s ): Unable to fork writer: %s\n", config.name, config.type, strerror(errno));
+        else dump_writers_add(ret);
 
 	break;
       }
     }
+    else Log(LOG_WARNING, "WARN ( %s/%s ): Maximum number of writer processes reached (%d).\n", config.name, config.type, dump_writers_get_active());
 
     P_cache_flush(queries_queue, qq_ptr);
     qq_ptr = FALSE;
@@ -561,8 +592,9 @@ void P_cache_insert_pending(struct chained_cache *queue[], int index, struct cha
     }
 
     if (cache_ptr->pbgp) free(cache_ptr->pbgp);
-    if (cache_ptr->pmpls) free(cache_ptr->pmpls);
     if (cache_ptr->pnat) free(cache_ptr->pnat);
+    if (cache_ptr->pmpls) free(cache_ptr->pmpls);
+    if (cache_ptr->ptun) free(cache_ptr->ptun);
     if (cache_ptr->pcust) free(cache_ptr->pcust);
     if (cache_ptr->pvlen) free(cache_ptr->pvlen);
     if (cache_ptr->stitch) free(cache_ptr->stitch);
@@ -570,8 +602,9 @@ void P_cache_insert_pending(struct chained_cache *queue[], int index, struct cha
     memcpy(cache_ptr, &container[j], dbc_size); 
 
     container[j].pbgp = NULL;
-    container[j].pmpls = NULL;
     container[j].pnat = NULL;
+    container[j].pmpls = NULL;
+    container[j].ptun = NULL;
     container[j].pcust = NULL;
     container[j].pvlen = NULL;
     container[j].stitch = NULL;
@@ -585,25 +618,25 @@ void P_cache_insert_pending(struct chained_cache *queue[], int index, struct cha
 
 void P_cache_handle_flush_event(struct ports_table *pt)
 {
-  int ret;
+  pid_t ret;
 
   if (qq_ptr) P_cache_mark_flush(queries_queue, qq_ptr, FALSE);
 
-  if (sql_writers.flags != CHLD_ALERT) {
+  dump_writers_count();
+  if (dump_writers_get_flags() != CHLD_ALERT) {
     switch (ret = fork()) {
     case 0: /* Child */
       pm_setproctitle("%s %s [%s]", config.type, "Plugin -- Writer", config.name);
-      (*purge_func)(queries_queue, qq_ptr);
+      (*purge_func)(queries_queue, qq_ptr, FALSE);
       exit(0);
     default: /* Parent */
-      if (ret == -1) {
-        Log(LOG_WARNING, "WARN ( %s/%s ): Unable to fork writer: %s\n", config.name, config.type, strerror(errno));
-        sql_writers.active--;
-      }
+      if (ret == -1) Log(LOG_WARNING, "WARN ( %s/%s ): Unable to fork writer: %s\n", config.name, config.type, strerror(errno));
+      else dump_writers_add(ret);
 
       break;
     }
   }
+  else Log(LOG_WARNING, "WARN ( %s/%s ): Maximum number of writer processes reached (%d).\n", config.name, config.type, dump_writers_get_active());
 
   P_cache_flush(queries_queue, qq_ptr);
 
@@ -627,7 +660,7 @@ void P_cache_handle_flush_event(struct ports_table *pt)
 void P_cache_mark_flush(struct chained_cache *queue[], int index, int exiting)
 {
   struct timeval commit_basetime;
-  int j, local_retired = sql_writers.retired, delay = 0;
+  int j, delay = 0;
 
   memset(&commit_basetime, 0, sizeof(commit_basetime));
 
@@ -651,7 +684,13 @@ void P_cache_mark_flush(struct chained_cache *queue[], int index, int exiting)
       else queue[j]->valid = PRINT_CACHE_COMMITTED;
     }
 
-    if (pqq_ptr) pqq_container = (struct chained_cache *) malloc(pqq_ptr*dbc_size); 
+    if (pqq_ptr) {
+      pqq_container = (struct chained_cache *) malloc(pqq_ptr*dbc_size); 
+      if (!pqq_container) {
+	Log(LOG_ERR, "ERROR ( %s/%s ): P_cache_mark_flush() cannot allocate pqq_container. Exiting ..\n", config.name, config.type);
+	exit_plugin(1); 
+      }
+    }
     
     /* we copy un-committed elements to a container structure for re-insertion
        in cache. As we copy elements out of the cache we mark entries as free */
@@ -659,8 +698,9 @@ void P_cache_mark_flush(struct chained_cache *queue[], int index, int exiting)
       memcpy(&pqq_container[j], pending_queries_queue[j], dbc_size);
 
       pending_queries_queue[j]->pbgp = NULL;
-      pending_queries_queue[j]->pmpls = NULL;
       pending_queries_queue[j]->pnat = NULL;
+      pending_queries_queue[j]->pmpls = NULL;
+      pending_queries_queue[j]->ptun = NULL;
       pending_queries_queue[j]->pcust = NULL;
       pending_queries_queue[j]->pvlen = NULL;
       pending_queries_queue[j]->stitch = NULL;
@@ -672,19 +712,6 @@ void P_cache_mark_flush(struct chained_cache *queue[], int index, int exiting)
   else {
     for (j = 0, pqq_ptr = 0; j < index; j++)
       queue[j]->valid = PRINT_CACHE_COMMITTED;
-  }
-
-  /* Imposing maximum number of writers */
-  sql_writers.active -= MIN(sql_writers.active, local_retired);
-  sql_writers.retired -= local_retired;
-
-  if (sql_writers.active < config.sql_max_writers) {
-    sql_writers.flags = 0;
-    sql_writers.active++;
-  }
-  else {
-    Log(LOG_WARNING, "WARN ( %s/%s ): Maximum number of writer processes reached (%d).\n", config.name, config.type, sql_writers.active);
-    sql_writers.flags = CHLD_ALERT;
   }
 }
 
@@ -764,7 +791,12 @@ void P_sum_mac_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *ida
 void P_exit_now(int signum)
 {
   if (qq_ptr) P_cache_mark_flush(queries_queue, qq_ptr, TRUE);
-  if (sql_writers.flags != CHLD_ALERT) (*purge_func)(queries_queue, qq_ptr);
+
+  dump_writers_count();
+  if (dump_writers_get_flags() != CHLD_ALERT) (*purge_func)(queries_queue, qq_ptr, FALSE);
+  else Log(LOG_WARNING, "WARN ( %s/%s ): Maximum number of writer processes reached (%d).\n", config.name, config.type, dump_writers_get_active());
+
+  if (config.pidfile) remove_pid_file(config.pidfile);
 
   wait(NULL);
   exit_plugin(0);
@@ -772,10 +804,8 @@ void P_exit_now(int signum)
 
 int P_trigger_exec(char *filename)
 {
-  char *args[1];
+  char *args[2] = { filename, NULL };
   int pid;
-
-  memset(args, 0, sizeof(args));
 
   switch (pid = vfork()) {
   case -1:
@@ -795,7 +825,8 @@ void P_init_historical_acct(time_t now)
   basetime.tv_sec = now;
   basetime.tv_usec = 0;
 
-  if (config.sql_history == COUNT_MINUTELY) timeslot = config.sql_history_howmany*60;
+  if (config.sql_history == COUNT_SECONDLY) timeslot = config.sql_history_howmany;
+  else if (config.sql_history == COUNT_MINUTELY) timeslot = config.sql_history_howmany*60;
   else if (config.sql_history == COUNT_HOURLY) timeslot = config.sql_history_howmany*3600;
   else if (config.sql_history == COUNT_DAILY) timeslot = config.sql_history_howmany*86400;
   else if (config.sql_history == COUNT_WEEKLY) timeslot = config.sql_history_howmany*86400*7;
@@ -826,14 +857,14 @@ void P_init_historical_acct(time_t now)
   memset(&new_basetime, 0, sizeof(new_basetime));
 }
 
-void P_init_refresh_deadline(time_t *rd)
+void P_init_refresh_deadline(time_t *now, int refresh_time, int startup_delay, char *roundoff)
 {
   time_t t;
 
-  t = roundoff_time(*rd, config.sql_history_roundoff);
-  while ((t+config.sql_refresh_time) < *rd) t += config.sql_refresh_time;
-  *rd = t;
-  *rd += (config.sql_refresh_time+config.sql_startup_delay); /* it's a deadline not a basetime */
+  t = roundoff_time((*now), roundoff);
+  while ((t + refresh_time) < (*now)) t += refresh_time;
+  *now = t;
+  *now += (refresh_time + startup_delay); /* it's a deadline not a basetime */
 }
 
 void P_eval_historical_acct(struct timeval *stamp, struct timeval *basetime, time_t timeslot)
@@ -905,6 +936,7 @@ void primptrs_set_all_from_chained_cache(struct primitives_ptrs *prim_ptrs, stru
     prim_ptrs->pbgp = entry->pbgp;
     prim_ptrs->pnat = entry->pnat;
     prim_ptrs->pmpls = entry->pmpls;
+    prim_ptrs->ptun = entry->ptun;
     prim_ptrs->pcust = entry->pcust;
     prim_ptrs->pvlen = entry->pvlen;
   }
@@ -930,83 +962,17 @@ void P_handle_table_dyn_rr(char *new, int newlen, char *old, struct p_table_rr *
   rk_rr->next %= rk_rr->max;
 }
 
-void P_handle_table_dyn_strings(char *new, int newlen, char *old, struct chained_cache *elem)
+void P_update_time_reference(struct insert_data *idata)
 {
-  int oldlen, ptr_len;
-  char peer_src_ip_string[] = "$peer_src_ip", post_tag_string[] = "$post_tag";
-  char pre_tag_string[] = "$pre_tag";
-  char *ptr_start, *ptr_end;
+  idata->now = time(NULL);
 
-  oldlen = strlen(old);
-  if (oldlen <= newlen) strcpy(new, old);
-  else {
-    strncpy(new, old, newlen);
-    return;
-  }
-
-  if (!strchr(new, '$')) return;
-  ptr_start = strstr(new, peer_src_ip_string);
-  if (ptr_start) {
-    char ip_address[INET6_ADDRSTRLEN];
-    char buf[newlen];
-    int len;
-
-    if (!elem || !elem->pbgp) goto out_peer_src_ip; 
-
-    len = strlen(ptr_start);
-    ptr_end = ptr_start;
-    ptr_len = strlen(peer_src_ip_string);
-    ptr_end += ptr_len;
-    len -= ptr_len;
-
-    addr_to_str(ip_address, &elem->pbgp->peer_src_ip);
-    snprintf(buf, newlen, "%s", ip_address);
-    strncat(buf, ptr_end, len);
-
-    len = strlen(buf);
-    *ptr_start = '\0';
-    strncat(new, buf, len);
-  }
-  out_peer_src_ip:
-
-  if (!strchr(new, '$')) return;
-  ptr_start = strstr(new, post_tag_string);
-  if (ptr_start) {
-    char buf[newlen];
-    int len;
-
-    len = strlen(ptr_start);
-    ptr_end = ptr_start;
-    ptr_len = strlen(post_tag_string);
-    ptr_end += ptr_len;
-    len -= ptr_len;
-
-    snprintf(buf, newlen, "%u", config.post_tag);
-    strncat(buf, ptr_end, len);
-
-    len = strlen(buf);
-    *ptr_start = '\0';
-    strncat(new, buf, len);
-  }
-
-  if (!strchr(new, '$')) return;
-  ptr_start = strstr(new, pre_tag_string);
-  if (ptr_start) {
-    char buf[newlen];
-    int len;
-
-    len = strlen(ptr_start);
-    ptr_end = ptr_start;
-    ptr_len = strlen(pre_tag_string);
-    ptr_end += ptr_len;
-    len -= ptr_len;
-
-    snprintf(buf, newlen, "%u", elem->primitives.tag);
-    strncat(buf, ptr_end, len);
-
-    len = strlen(buf);
-    *ptr_start = '\0';
-    strncat(new, buf, len);
+  if (config.sql_history) {
+    while (idata->now > (basetime.tv_sec + timeslot)) {
+      new_basetime.tv_sec = basetime.tv_sec;
+      basetime.tv_sec += timeslot;
+      if (config.sql_history == COUNT_MONTHLY)
+	timeslot = calc_monthly_timeslot(basetime.tv_sec, config.sql_history_howmany, ADD);
+    }
   }
 }
 
@@ -1037,4 +1003,28 @@ int P_broker_timers_get_retry_interval(struct p_broker_timers *btimers)
   if (btimers) return btimers->retry_interval;
 
   return ERR;
+}
+
+void P_zmq_pipe_init(void *zh, int *pipe_fd, int *seq)
+{
+  plugin_pipe_zmq_compile_check();
+
+#ifdef WITH_ZMQ
+  if (zh) {
+    struct p_zmq_host *zmq_host = zh;
+    char log_id[SHORTBUFLEN];
+
+    p_zmq_plugin_pipe_init_plugin(zmq_host);
+
+    snprintf(log_id, sizeof(log_id), "%s/%s", config.name, config.type);
+    p_zmq_set_log_id(zmq_host, log_id);
+
+    p_zmq_plugin_pipe_consume(zmq_host);
+    p_zmq_set_retry_timeout(zmq_host, config.pipe_zmq_retry);
+    p_zmq_set_hwm(zmq_host, config.pipe_zmq_hwm);
+
+    if (pipe_fd) (*pipe_fd) = p_zmq_get_fd(zmq_host);
+    if (seq) (*seq) = 0;
+  }
+#endif
 }

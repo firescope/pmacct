@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -75,8 +75,10 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
   unsigned int idx;
   struct pkt_data dummy;
   struct pkt_bgp_primitives dummy_pbgp;
+  struct pkt_legacy_bgp_primitives dummy_plbgp;
   struct pkt_nat_primitives dummy_pnat;
   struct pkt_mpls_primitives dummy_pmpls;
+  struct pkt_tunnel_primitives dummy_ptun;
   char *dummy_pcust = NULL, *custbuf = NULL;
   struct pkt_vlen_hdr_primitives dummy_pvlen;
   char emptybuf[LARGEBUFLEN];
@@ -91,8 +93,10 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
 
   memset(&dummy, 0, sizeof(struct pkt_data));
   memset(&dummy_pbgp, 0, sizeof(struct pkt_bgp_primitives));
+  memset(&dummy_plbgp, 0, sizeof(struct pkt_legacy_bgp_primitives));
   memset(&dummy_pnat, 0, sizeof(struct pkt_nat_primitives));
   memset(&dummy_pmpls, 0, sizeof(struct pkt_mpls_primitives));
+  memset(&dummy_ptun, 0, sizeof(struct pkt_tunnel_primitives));
   memset(dummy_pcust, 0, config.cpptrs.len); 
   memset(custbuf, 0, config.cpptrs.len); 
   memset(&dummy_pvlen, 0, sizeof(struct pkt_vlen_hdr_primitives));
@@ -117,6 +121,11 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
     offset += sizeof(struct pkt_bgp_primitives);
   }
   else q->extras.off_pkt_bgp_primitives = 0;
+  if (extras->off_pkt_lbgp_primitives) {
+    q->extras.off_pkt_lbgp_primitives = offset;
+    offset += sizeof(struct pkt_legacy_bgp_primitives);
+  }
+  else q->extras.off_pkt_lbgp_primitives = 0;
   if (extras->off_pkt_nat_primitives) {
     q->extras.off_pkt_nat_primitives = offset;
     offset += sizeof(struct pkt_nat_primitives);
@@ -127,6 +136,11 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
     offset += sizeof(struct pkt_mpls_primitives);
   }
   else q->extras.off_pkt_mpls_primitives = 0;
+  if (extras->off_pkt_tun_primitives) {
+    q->extras.off_pkt_tun_primitives = offset;
+    offset += sizeof(struct pkt_tunnel_primitives);
+  }
+  else q->extras.off_pkt_tun_primitives = 0;
   if (extras->off_custom_primitives) {
     q->extras.off_custom_primitives = offset;
     offset += config.cpptrs.len;
@@ -158,15 +172,18 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
       if (!test_zero_elem(acc_elem)) {
 	enQueue_elem(sd, &rb, acc_elem, PdataSz, datasize);
 
-	/* XXX: to be optimized ? */
-	if (extras->off_pkt_bgp_primitives) {
-	  if (acc_elem->cbgp) {
-	    struct pkt_bgp_primitives tmp_pbgp;
+        if (extras->off_pkt_bgp_primitives && acc_elem->pbgp) {
+          enQueue_elem(sd, &rb, acc_elem->pbgp, PbgpSz, datasize - extras->off_pkt_bgp_primitives);
+        }
 
-	    cache_to_pkt_bgp_primitives(&tmp_pbgp, acc_elem->cbgp);
-	    enQueue_elem(sd, &rb, &tmp_pbgp, PbgpSz, datasize - extras->off_pkt_bgp_primitives);
-	  }
-	}
+        if (extras->off_pkt_lbgp_primitives) {
+          if (acc_elem->clbgp) {
+            struct pkt_legacy_bgp_primitives tmp_plbgp;
+
+            cache_to_pkt_legacy_bgp_primitives(&tmp_plbgp, acc_elem->clbgp);
+            enQueue_elem(sd, &rb, &tmp_plbgp, PlbgpSz, datasize - extras->off_pkt_lbgp_primitives);
+          }
+        }
 
         if (extras->off_pkt_nat_primitives && acc_elem->pnat) {
           enQueue_elem(sd, &rb, acc_elem->pnat, PnatSz, datasize - extras->off_pkt_nat_primitives);
@@ -174,6 +191,10 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
 
         if (extras->off_pkt_mpls_primitives && acc_elem->pmpls) {
           enQueue_elem(sd, &rb, acc_elem->pmpls, PmplsSz, datasize - extras->off_pkt_mpls_primitives);
+	}
+
+        if (extras->off_pkt_tun_primitives && acc_elem->ptun) {
+          enQueue_elem(sd, &rb, acc_elem->ptun, PtunSz, datasize - extras->off_pkt_tun_primitives);
 	}
 
         if (extras->off_custom_primitives && acc_elem->pcust) {
@@ -235,8 +256,10 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
 	memcpy(&pd_dummy.primitives, &request.data, sizeof(struct pkt_primitives));
 	prim_ptrs.data = &pd_dummy;
 	prim_ptrs.pbgp = &request.pbgp;
+	prim_ptrs.plbgp = &request.plbgp;
 	prim_ptrs.pnat = &request.pnat;
 	prim_ptrs.pmpls = &request.pmpls;
+	prim_ptrs.ptun = &request.ptun;
 	prim_ptrs.pcust = request.pcust;
 	prim_ptrs.pvlen = request.pvlen;
 
@@ -245,15 +268,18 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
 	  if (!test_zero_elem(acc_elem)) {
 	    enQueue_elem(sd, &rb, acc_elem, PdataSz, datasize);
 
-	    /* XXX: to be optimized ? */
-	    if (extras->off_pkt_bgp_primitives) {
-	      if (acc_elem->cbgp) {
-		struct pkt_bgp_primitives tmp_pbgp;
+            if (extras->off_pkt_bgp_primitives && acc_elem->pbgp) {
+              enQueue_elem(sd, &rb, acc_elem->pbgp, PbgpSz, datasize - extras->off_pkt_bgp_primitives);
+            }
 
-		cache_to_pkt_bgp_primitives(&tmp_pbgp, acc_elem->cbgp);
-		enQueue_elem(sd, &rb, &tmp_pbgp, PbgpSz, datasize - extras->off_pkt_bgp_primitives);
-	      }
-	    }
+            if (extras->off_pkt_lbgp_primitives) {
+              if (acc_elem->clbgp) {
+                struct pkt_legacy_bgp_primitives tmp_plbgp;
+
+                cache_to_pkt_legacy_bgp_primitives(&tmp_plbgp, acc_elem->clbgp);
+                enQueue_elem(sd, &rb, &tmp_plbgp, PlbgpSz, datasize - extras->off_pkt_lbgp_primitives);
+              }
+            }
 
             if (extras->off_pkt_nat_primitives && acc_elem->pnat) {
               enQueue_elem(sd, &rb, acc_elem->pnat, PnatSz, datasize - extras->off_pkt_nat_primitives);
@@ -262,6 +288,10 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
 	    if (extras->off_pkt_mpls_primitives && acc_elem->pmpls) {
 	      enQueue_elem(sd, &rb, acc_elem->pmpls, PmplsSz, datasize - extras->off_pkt_mpls_primitives);
 	    }
+
+            if (extras->off_pkt_tun_primitives && acc_elem->ptun) {
+              enQueue_elem(sd, &rb, acc_elem->ptun, PtunSz, datasize - extras->off_pkt_tun_primitives);
+            }
 
 	    if (extras->off_custom_primitives && acc_elem->pcust) {
 	      enQueue_elem(sd, &rb, acc_elem->pcust, config.cpptrs.len, datasize - extras->off_custom_primitives);
@@ -283,11 +313,17 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
 	      if (extras->off_pkt_bgp_primitives)
 		enQueue_elem(sd, &rb, &dummy_pbgp, PbgpSz, datasize - extras->off_pkt_bgp_primitives);
 
+              if (extras->off_pkt_lbgp_primitives)
+                enQueue_elem(sd, &rb, &dummy_plbgp, PlbgpSz, datasize - extras->off_pkt_lbgp_primitives);
+
 	      if (extras->off_pkt_nat_primitives)
 		enQueue_elem(sd, &rb, &dummy_pnat, PnatSz, datasize - extras->off_pkt_nat_primitives);
 
 	      if (extras->off_pkt_mpls_primitives)
 		enQueue_elem(sd, &rb, &dummy_pmpls, PmplsSz, datasize - extras->off_pkt_mpls_primitives);
+
+	      if (extras->off_pkt_tun_primitives)
+		enQueue_elem(sd, &rb, &dummy_ptun, PtunSz, datasize - extras->off_pkt_tun_primitives);
 
 	      if (extras->off_custom_primitives)
 		enQueue_elem(sd, &rb, &dummy_pcust, config.cpptrs.len, datasize - extras->off_custom_primitives);
@@ -304,11 +340,17 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
 	    if (extras->off_pkt_bgp_primitives)
 	      enQueue_elem(sd, &rb, &dummy_pbgp, PbgpSz, datasize - extras->off_pkt_bgp_primitives);
 
+	    if (extras->off_pkt_lbgp_primitives)
+	      enQueue_elem(sd, &rb, &dummy_plbgp, PlbgpSz, datasize - extras->off_pkt_lbgp_primitives);
+
 	    if (extras->off_pkt_nat_primitives)
 	      enQueue_elem(sd, &rb, &dummy_pnat, PnatSz, datasize - extras->off_pkt_nat_primitives);
 
 	    if (extras->off_pkt_mpls_primitives)
 	      enQueue_elem(sd, &rb, &dummy_pmpls, PmplsSz, datasize - extras->off_pkt_mpls_primitives);
+
+	    if (extras->off_pkt_tun_primitives)
+	      enQueue_elem(sd, &rb, &dummy_ptun, PtunSz, datasize - extras->off_pkt_tun_primitives);
 
             if (extras->off_custom_primitives)  
               enQueue_elem(sd, &rb, &dummy_pcust, config.cpptrs.len, datasize - extras->off_custom_primitives);
@@ -321,8 +363,10 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
       else {
         struct pkt_primitives tbuf;  
 	struct pkt_bgp_primitives bbuf;
+	struct pkt_legacy_bgp_primitives lbbuf;
 	struct pkt_nat_primitives nbuf;
 	struct pkt_mpls_primitives mbuf;
+	struct pkt_tunnel_primitives ubuf;
 	struct pkt_data abuf;
         following_chain = FALSE;
 	elem = (unsigned char *) a;
@@ -332,23 +376,29 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
           if (!following_chain) acc_elem = (struct acc *) elem;
 	  if (!test_zero_elem(acc_elem)) {
 	    /* XXX: support for custom and vlen primitives */
-	    mask_elem(&tbuf, &bbuf, &nbuf, &mbuf, acc_elem, request.what_to_count, request.what_to_count_2, extras); 
+	    mask_elem(&tbuf, &bbuf, &lbbuf, &nbuf, &mbuf, &ubuf, acc_elem, request.what_to_count, request.what_to_count_2, extras); 
             if (!memcmp(&tbuf, &request.data, sizeof(struct pkt_primitives)) &&
 		!memcmp(&bbuf, &request.pbgp, sizeof(struct pkt_bgp_primitives)) &&
+		!memcmp(&lbbuf, &request.plbgp, sizeof(struct pkt_legacy_bgp_primitives)) &&
 		!memcmp(&nbuf, &request.pnat, sizeof(struct pkt_nat_primitives)) &&
-		!memcmp(&mbuf, &request.pmpls, sizeof(struct pkt_mpls_primitives))) {
+		!memcmp(&mbuf, &request.pmpls, sizeof(struct pkt_mpls_primitives)) &&
+		!memcmp(&ubuf, &request.ptun, sizeof(struct pkt_tunnel_primitives))) {
 	      if (q->type & WANT_COUNTER) Accumulate_Counters(&abuf, acc_elem); 
 	      else {
 		enQueue_elem(sd, &rb, acc_elem, PdataSz, datasize); /* q->type == WANT_MATCH */
 
-		if (extras->off_pkt_bgp_primitives) {
-		  if (acc_elem->cbgp) {
-		    struct pkt_bgp_primitives tmp_pbgp;
+                if (extras->off_pkt_bgp_primitives && acc_elem->pbgp) {
+                  enQueue_elem(sd, &rb, acc_elem->pbgp, PbgpSz, datasize - extras->off_pkt_bgp_primitives);
+                }
 
-		    cache_to_pkt_bgp_primitives(&tmp_pbgp, acc_elem->cbgp);
-		    enQueue_elem(sd, &rb, &tmp_pbgp, PbgpSz, datasize - extras->off_pkt_bgp_primitives);
-		  }
-		}
+                if (extras->off_pkt_lbgp_primitives) {
+                  if (acc_elem->clbgp) {
+                    struct pkt_legacy_bgp_primitives tmp_plbgp;
+
+                    cache_to_pkt_legacy_bgp_primitives(&tmp_plbgp, acc_elem->clbgp);
+                    enQueue_elem(sd, &rb, &tmp_plbgp, PlbgpSz, datasize - extras->off_pkt_lbgp_primitives);
+                  }
+                }
 
                 if (extras->off_pkt_nat_primitives && acc_elem->pnat) {
                   enQueue_elem(sd, &rb, acc_elem->pnat, PnatSz, datasize - extras->off_pkt_nat_primitives);
@@ -356,6 +406,9 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
 		if (extras->off_pkt_mpls_primitives && acc_elem->pmpls) {
 		  enQueue_elem(sd, &rb, acc_elem->pmpls, PmplsSz, datasize - extras->off_pkt_mpls_primitives);
 		}
+                if (extras->off_pkt_tun_primitives && acc_elem->ptun) {
+                  enQueue_elem(sd, &rb, acc_elem->ptun, PtunSz, datasize - extras->off_pkt_tun_primitives);
+                }
                 if (extras->off_custom_primitives && acc_elem->pcust) {
                   enQueue_elem(sd, &rb, acc_elem->pcust, config.cpptrs.len, datasize - extras->off_custom_primitives);
                 }
@@ -422,24 +475,6 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
     }
     if (rb.packed) send(sd, rb.buf, rb.packed, 0); /* send remainder data */
   }
-  else if (q->type & WANT_PKT_LEN_DISTRIB_TABLE) {
-    struct stripped_pkt_len_distrib dummy, real;
-    u_int32_t idx = 0, max = 0;
-
-    for (idx = 0; idx < MAX_PKT_LEN_DISTRIB_BINS && config.pkt_len_distrib_bins[idx]; idx++);
-    max = q->num = idx;
-
-    for (idx = 0; idx < max; idx++) {
-      memset(&real, 0, sizeof(real));
-      strlcpy(real.str, config.pkt_len_distrib_bins[idx], MAX_PKT_LEN_DISTRIB_LEN); 
-      enQueue_elem(sd, &rb, &real, sizeof(struct stripped_pkt_len_distrib), sizeof(struct stripped_pkt_len_distrib));
-    }
-
-    send_pldt_dummy:
-    memset(&dummy, 0, sizeof(dummy));
-    enQueue_elem(sd, &rb, &dummy, sizeof(dummy), sizeof(dummy));
-    if (rb.packed) send(sd, rb.buf, rb.packed, 0); /* send remainder data */
-  }
   else if (q->type & WANT_ERASE_LAST_TSTAMP) {
     enQueue_elem(sd, &rb, &table_reset_stamp, sizeof(table_reset_stamp), sizeof(table_reset_stamp));
     if (rb.packed) send(sd, rb.buf, rb.packed, 0); /* send remainder data */
@@ -453,22 +488,26 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
   if (custbuf) free(custbuf);
 }
 
-void mask_elem(struct pkt_primitives *d1, struct pkt_bgp_primitives *d2, struct pkt_nat_primitives *d3,
-		struct pkt_mpls_primitives *d4, struct acc *src, pm_cfgreg_t w, pm_cfgreg_t w2,
-		struct extra_primitives *extras)
+void mask_elem(struct pkt_primitives *d1, struct pkt_bgp_primitives *d2, struct pkt_legacy_bgp_primitives *d5,
+		struct pkt_nat_primitives *d3, struct pkt_mpls_primitives *d4, struct pkt_tunnel_primitives *d6,
+		struct acc *src, pm_cfgreg_t w, pm_cfgreg_t w2, struct extra_primitives *extras)
 {
   struct pkt_primitives *s1 = &src->primitives;
-  struct pkt_bgp_primitives tmp_pbgp;
-  struct pkt_bgp_primitives *s2 = &tmp_pbgp;
+  struct pkt_bgp_primitives *s2 = src->pbgp;
+  struct pkt_legacy_bgp_primitives tmp_plbgp;
+  struct pkt_legacy_bgp_primitives *s5 = &tmp_plbgp;
   struct pkt_nat_primitives *s3 = src->pnat;
   struct pkt_mpls_primitives *s4 = src->pmpls;
+  struct pkt_tunnel_primitives *s6 = src->ptun;
 
-  cache_to_pkt_bgp_primitives(s2, src->cbgp);
+  cache_to_pkt_legacy_bgp_primitives(s5, src->clbgp);
 
   memset(d1, 0, sizeof(struct pkt_primitives));
   memset(d2, 0, sizeof(struct pkt_bgp_primitives));
+  memset(d5, 0, sizeof(struct pkt_legacy_bgp_primitives));
   memset(d3, 0, sizeof(struct pkt_nat_primitives));
   memset(d4, 0, sizeof(struct pkt_mpls_primitives));
+  memset(d6, 0, sizeof(struct pkt_tunnel_primitives));
 
 #if defined (HAVE_L2)
   if (w & COUNT_SRC_MAC) memcpy(d1->eth_shost, s1->eth_shost, ETH_ADDR_LEN); 
@@ -496,6 +535,7 @@ void mask_elem(struct pkt_primitives *d1, struct pkt_bgp_primitives *d2, struct 
   if (w & COUNT_CLASS) d1->class = s1->class; 
   if (w2 & COUNT_EXPORT_PROTO_SEQNO) memcpy(&d1->export_proto_seqno, &s1->export_proto_seqno, sizeof(d1->export_proto_seqno));
   if (w2 & COUNT_EXPORT_PROTO_VERSION) memcpy(&d1->export_proto_version, &s1->export_proto_version, sizeof(d1->export_proto_version));
+  if (w2 & COUNT_EXPORT_PROTO_SYSID) memcpy(&d1->export_proto_sysid, &s1->export_proto_sysid, sizeof(d1->export_proto_sysid));
 
 
   if (w2 & COUNT_SRC_FQDN) memcpy(&d1->src_fqdn, &s1->src_fqdn, sizeof(d1->src_fqdn));
@@ -504,17 +544,17 @@ void mask_elem(struct pkt_primitives *d1, struct pkt_bgp_primitives *d2, struct 
 #if defined (WITH_GEOIP) || defined (WITH_GEOIPV2)
   if (w2 & COUNT_SRC_HOST_COUNTRY) memcpy(&d1->src_ip_country, &s1->src_ip_country, sizeof(d1->src_ip_country)); 
   if (w2 & COUNT_DST_HOST_COUNTRY) memcpy(&d1->dst_ip_country, &s1->dst_ip_country, sizeof(d1->dst_ip_country)); 
+  if (w2 & COUNT_SRC_HOST_POCODE) memcpy(&d1->src_ip_pocode, &s1->src_ip_pocode, sizeof(d1->src_ip_pocode)); 
+  if (w2 & COUNT_DST_HOST_POCODE) memcpy(&d1->dst_ip_pocode, &s1->dst_ip_pocode, sizeof(d1->dst_ip_pocode)); 
 #endif
+
+#if defined (WITH_NDPI)
+  if (w2 & COUNT_NDPI_CLASS) memcpy(&d1->ndpi_class, &s1->class, sizeof(d1->ndpi_class)); 
+#endif
+
   if (w2 & COUNT_SAMPLING_RATE) d1->sampling_rate = s1->sampling_rate; 
-  if (w2 & COUNT_PKT_LEN_DISTRIB) d1->pkt_len_distrib = s1->pkt_len_distrib; 
 
   if (extras->off_pkt_bgp_primitives && s2) {
-    if (w & COUNT_STD_COMM) strlcpy(d2->std_comms, s2->std_comms, MAX_BGP_STD_COMMS); 
-    if (w & COUNT_SRC_STD_COMM) strlcpy(d2->src_std_comms, s2->src_std_comms, MAX_BGP_STD_COMMS); 
-    if (w & COUNT_EXT_COMM) strlcpy(d2->ext_comms, s2->ext_comms, MAX_BGP_EXT_COMMS); 
-    if (w & COUNT_SRC_EXT_COMM) strlcpy(d2->src_ext_comms, s2->src_ext_comms, MAX_BGP_EXT_COMMS); 
-    if (w & COUNT_AS_PATH) strlcpy(d2->as_path, s2->as_path, MAX_BGP_ASPATH);
-    if (w & COUNT_SRC_AS_PATH) strlcpy(d2->src_as_path, s2->src_as_path, MAX_BGP_ASPATH);
     if (w & COUNT_LOCAL_PREF) d2->local_pref = s2->local_pref;
     if (w & COUNT_SRC_LOCAL_PREF) d2->src_local_pref = s2->src_local_pref;
     if (w & COUNT_MED) d2->med = s2->med;
@@ -524,6 +564,17 @@ void mask_elem(struct pkt_primitives *d1, struct pkt_bgp_primitives *d2, struct 
     if (w & COUNT_PEER_SRC_IP) memcpy(&d2->peer_src_ip, &s2->peer_src_ip, sizeof(d2->peer_src_ip));
     if (w & COUNT_PEER_DST_IP) memcpy(&d2->peer_dst_ip, &s2->peer_dst_ip, sizeof(d2->peer_dst_ip));
     if (w & COUNT_MPLS_VPN_RD) memcpy(&d2->mpls_vpn_rd, &s2->mpls_vpn_rd, sizeof(rd_t)); 
+  }
+
+  if (extras->off_pkt_lbgp_primitives && s5) {
+    if (w & COUNT_STD_COMM) strlcpy(d5->std_comms, s5->std_comms, MAX_BGP_STD_COMMS); 
+    if (w & COUNT_EXT_COMM) strlcpy(d5->ext_comms, s5->ext_comms, MAX_BGP_EXT_COMMS); 
+    if (w2 & COUNT_LRG_COMM) strlcpy(d5->lrg_comms, s5->lrg_comms, MAX_BGP_LRG_COMMS); 
+    if (w & COUNT_AS_PATH) strlcpy(d5->as_path, s5->as_path, MAX_BGP_ASPATH);
+    if (w & COUNT_SRC_STD_COMM) strlcpy(d5->src_std_comms, s5->src_std_comms, MAX_BGP_STD_COMMS); 
+    if (w & COUNT_SRC_EXT_COMM) strlcpy(d5->src_ext_comms, s5->src_ext_comms, MAX_BGP_EXT_COMMS); 
+    if (w2 & COUNT_SRC_LRG_COMM) strlcpy(d5->src_lrg_comms, s5->src_lrg_comms, MAX_BGP_LRG_COMMS); 
+    if (w & COUNT_SRC_AS_PATH) strlcpy(d5->src_as_path, s5->src_as_path, MAX_BGP_ASPATH);
   }
 
   if (extras->off_pkt_nat_primitives && s3) {
@@ -541,6 +592,13 @@ void mask_elem(struct pkt_primitives *d1, struct pkt_bgp_primitives *d2, struct 
     if (w2 & COUNT_MPLS_LABEL_TOP) d4->mpls_label_top = s4->mpls_label_top;
     if (w2 & COUNT_MPLS_LABEL_BOTTOM) d4->mpls_label_bottom = s4->mpls_label_bottom;
     if (w2 & COUNT_MPLS_STACK_DEPTH) d4->mpls_stack_depth = s4->mpls_stack_depth;
+  }
+
+  if (extras->off_pkt_tun_primitives && s6) {
+    if (w2 & COUNT_TUNNEL_SRC_HOST) memcpy(&d6->tunnel_src_ip, &s6->tunnel_src_ip, sizeof(d6->tunnel_src_ip));
+    if (w2 & COUNT_TUNNEL_DST_HOST) memcpy(&d6->tunnel_src_ip, &s6->tunnel_dst_ip, sizeof(d6->tunnel_dst_ip));
+    if (w2 & COUNT_TUNNEL_IP_PROTO) memcpy(&d6->tunnel_proto, &s6->tunnel_proto, sizeof(d6->tunnel_proto));
+    if (w2 & COUNT_TUNNEL_IP_TOS) memcpy(&d6->tunnel_tos, &s6->tunnel_tos, sizeof(d6->tunnel_tos));
   }
 }
 

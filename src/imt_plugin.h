@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -38,9 +38,11 @@ struct acc {
   unsigned int signature;
   u_int8_t reset_flag;
   struct timeval rstamp;	/* classifiers: reset timestamp */
-  struct cache_bgp_primitives *cbgp;
+  struct pkt_bgp_primitives *pbgp;
+  struct cache_legacy_bgp_primitives *clbgp;
   struct pkt_nat_primitives *pnat;
   struct pkt_mpls_primitives *pmpls;
+  struct pkt_tunnel_primitives *ptun;
   char *pcust;
   struct pkt_vlen_hdr_primitives *pvlen;
   struct acc *next;
@@ -73,14 +75,16 @@ struct query_header {
 };
 
 struct query_entry {
-  pm_cfgreg_t what_to_count;		/* aggregation */
-  pm_cfgreg_t what_to_count_2;		/* aggregation */
-  struct pkt_primitives data;		/* actual data */
-  struct pkt_bgp_primitives pbgp;	/* extended BGP data */
-  struct pkt_nat_primitives pnat;	/* extended NAT + timestamp data */
-  struct pkt_mpls_primitives pmpls;	/* extended MPLS data */
-  char *pcust;				/* custom-defined data */
-  struct pkt_vlen_hdr_primitives *pvlen;/* variable-length data */
+  pm_cfgreg_t what_to_count;			/* aggregation */
+  pm_cfgreg_t what_to_count_2;			/* aggregation */
+  struct pkt_primitives data;			/* actual data */
+  struct pkt_bgp_primitives pbgp;		/* extended BGP data */
+  struct pkt_legacy_bgp_primitives plbgp;	/* extended BGP data */
+  struct pkt_nat_primitives pnat;		/* extended NAT + timestamp data */
+  struct pkt_mpls_primitives pmpls;		/* extended MPLS data */
+  struct pkt_tunnel_primitives ptun;		/* extended tunnel data */
+  char *pcust;					/* custom-defined data */
+  struct pkt_vlen_hdr_primitives *pvlen;	/* variable-length data */
 };
 
 struct reply_buffer {
@@ -93,10 +97,6 @@ struct reply_buffer {
 struct stripped_class {
   pm_class_t id;
   char protocol[MAX_PROTOCOL_LEN];
-};
-
-struct stripped_pkt_len_distrib {
-  char str[MAX_PKT_LEN_DISTRIB_LEN];
 };
 
 struct imt_custom_primitive_entry {
@@ -147,9 +147,9 @@ EXT void set_reset_flag(struct acc *);
 EXT void reset_counters(struct acc *);
 EXT int build_query_server(char *);
 EXT void process_query_data(int, unsigned char *, int, struct extra_primitives *, int, int);
-EXT void mask_elem(struct pkt_primitives *, struct pkt_bgp_primitives *, struct pkt_nat_primitives *,
-			struct pkt_mpls_primitives *, struct acc *, u_int64_t, u_int64_t,
-			struct extra_primitives *);
+EXT void mask_elem(struct pkt_primitives *, struct pkt_bgp_primitives *, struct pkt_legacy_bgp_primitives *,
+			struct pkt_nat_primitives *, struct pkt_mpls_primitives *, struct pkt_tunnel_primitives *,
+			struct acc *, u_int64_t, u_int64_t, struct extra_primitives *);
 EXT void enQueue_elem(int, struct reply_buffer *, void *, int, int);
 EXT void Accumulate_Counters(struct pkt_data *, struct acc *);
 EXT int test_zero_elem(struct acc *);

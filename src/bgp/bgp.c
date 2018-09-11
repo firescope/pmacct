@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -24,6 +24,7 @@
 
 /* includes */
 #include "pmacct.h"
+#include "addr.h"
 #include "bgp.h"
 #include "thread_pool.h"
 #if defined WITH_RABBITMQ
@@ -37,7 +38,6 @@
 thread_pool_t *bgp_pool;
 
 /* Functions */
-#if defined ENABLE_THREADS
 void nfacctd_bgp_wrapper()
 {
   /* initialize variables */
@@ -47,19 +47,26 @@ void nfacctd_bgp_wrapper()
   bgp_pool = allocate_thread_pool(1);
   assert(bgp_pool);
   Log(LOG_DEBUG, "DEBUG ( %s/core/BGP ): %d thread(s) initialized\n", config.name, 1);
+  bgp_prepare_thread();
 
   /* giving a kick to the BGP thread */
   send_to_pool(bgp_pool, skinny_bgp_daemon, NULL);
 }
-#endif
 
 void skinny_bgp_daemon()
 {
+  skinny_bgp_daemon_online();
+}
+
+void skinny_bgp_daemon_online()
+{
   int slen, ret, rc, peers_idx, allowed;
-  int peers_idx_rr = 0, max_peers_idx = 0;
+  int peers_idx_rr = 0, peers_xconnect_idx_rr = 0, max_peers_idx = 0;
+  struct plugin_requests req;
   struct host_addr addr;
   struct bgp_peer *peer;
   char bgp_reply_pkt[BGP_BUFFER_SIZE], *bgp_reply_pkt_ptr;
+  char bgp_peer_str[INET6_ADDRSTRLEN], bgp_xconnect_peer_str[BGP_XCONNECT_STRLEN];
 #if defined ENABLE_IPV6
   struct sockaddr_storage server, client;
 #else
@@ -77,6 +84,7 @@ void skinny_bgp_daemon()
   /* select() stuff */
   fd_set read_descs, bkp_read_descs; 
   int fd, select_fd, bkp_select_fd, recalc_fds, select_num;
+  int recv_fd, send_fd;
 
   /* initial cleanups */
   reload_map_bgp_thread = FALSE;
@@ -87,8 +95,6 @@ void skinny_bgp_daemon()
 
   bgp_routing_db = &inter_domain_routing_dbs[FUNC_TYPE_BGP];
   memset(bgp_routing_db, 0, sizeof(struct bgp_rt_structs));
-  bgp_misc_db = &inter_domain_misc_dbs[FUNC_TYPE_BGP];
-  memset(bgp_misc_db, 0, sizeof(struct bgp_misc_structs));
 
   if (!config.bgp_table_attr_hash_buckets) config.bgp_table_attr_hash_buckets = HASHTABSIZE;
   bgp_attr_init(config.bgp_table_attr_hash_buckets, bgp_routing_db);
@@ -116,21 +122,75 @@ void skinny_bgp_daemon()
     trim_spaces(config.nfacctd_bgp_ip);
     ret = str_to_addr(config.nfacctd_bgp_ip, &addr);
     if (!ret) {
-      Log(LOG_ERR, "ERROR ( %s/core/BGP ): 'bgp_daemon_ip' value is not a valid IPv4/IPv6 address. Terminating thread.\n", config.name);
+      Log(LOG_ERR, "ERROR ( %s/%s ): 'bgp_daemon_ip' value is not a valid IPv4/IPv6 address. Terminating thread.\n", config.name, bgp_misc_db->log_str);
       exit_all(1);
     }
     slen = addr_to_sa((struct sockaddr *)&server, &addr, config.nfacctd_bgp_port);
   }
 
   if (!config.nfacctd_bgp_max_peers) config.nfacctd_bgp_max_peers = MAX_BGP_PEERS_DEFAULT;
-  Log(LOG_INFO, "INFO ( %s/core/BGP ): maximum BGP peers allowed: %d\n", config.name, config.nfacctd_bgp_max_peers);
+  Log(LOG_INFO, "INFO ( %s/%s ): maximum BGP peers allowed: %d\n", config.name, bgp_misc_db->log_str, config.nfacctd_bgp_max_peers);
 
   peers = malloc(config.nfacctd_bgp_max_peers*sizeof(struct bgp_peer));
   if (!peers) {
-    Log(LOG_ERR, "ERROR ( %s/core/BGP ): Unable to malloc() BGP peers structure. Terminating thread.\n", config.name);
+    Log(LOG_ERR, "ERROR ( %s/%s ): Unable to malloc() BGP peers structure. Terminating thread.\n", config.name, bgp_misc_db->log_str);
     exit_all(1);
   }
   memset(peers, 0, config.nfacctd_bgp_max_peers*sizeof(struct bgp_peer));
+
+  if (config.bgp_lg) {
+    if (config.acct_type != ACCT_PMBGP) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): bgp_daemon_lg feature not supported for this daemon. Exiting ...\n", config.name, config.type);
+      exit(1);
+    }
+
+    peers_cache = malloc(config.nfacctd_bgp_max_peers*sizeof(struct bgp_peer_cache_bucket));
+    if (!peers_cache) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): Unable to malloc() BGP peers cache structure. Terminating thread.\n", config.name, bgp_misc_db->log_str);
+      exit_all(1);
+    }
+
+    bgp_peer_cache_init(peers_cache, config.nfacctd_bgp_max_peers);
+
+    peers_port_cache = malloc(config.nfacctd_bgp_max_peers*sizeof(struct bgp_peer_cache_bucket));
+    if (!peers_port_cache) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): Unable to malloc() BGP peers cache structure (2). Terminating thread.\n", config.name, bgp_misc_db->log_str);
+      exit_all(1);
+    }
+
+    bgp_peer_cache_init(peers_port_cache, config.nfacctd_bgp_max_peers);
+  }
+  else {
+    peers_cache = NULL;
+    peers_port_cache = NULL;
+  }
+
+  if (config.bgp_xconnect_map) {
+    int bgp_xcs_allocated = FALSE;
+
+    if (config.acct_type != ACCT_PMBGP) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): bgp_daemon_xconnect_map feature not supported for this daemon. Exiting ...\n", config.name, config.type);
+      exit(1);
+    }
+
+    memset(&bgp_xcs_map, 0, sizeof(bgp_xcs_map));
+    memset(&req, 0, sizeof(req));
+
+    /* Setting up the pool */
+    bgp_xcs_map.pool = malloc((config.nfacctd_bgp_max_peers + 1) * sizeof(struct bgp_xconnect));
+    if (!bgp_xcs_map.pool) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): unable to allocate BGP xconnect pool. Exiting ...\n", config.name, config.type);
+      exit(1);
+    }
+    else memset(bgp_xcs_map.pool, 0, (config.nfacctd_bgp_max_peers + 1) * sizeof(struct bgp_xconnect));
+
+    req.key_value_table = (void *) &bgp_xcs_map;
+    load_id_file(MAP_BGP_XCS, config.bgp_xconnect_map, NULL, &req, &bgp_xcs_allocated);
+  }
+  else {
+    bgp_xcs_map.pool = 0;
+    bgp_xcs_map.num = 0;
+  }
 
   if (config.nfacctd_bgp_msglog_file || config.nfacctd_bgp_msglog_amqp_routing_key || config.nfacctd_bgp_msglog_kafka_topic) {
     if (config.nfacctd_bgp_msglog_file) bgp_misc_db->msglog_backend_methods++;
@@ -138,13 +198,13 @@ void skinny_bgp_daemon()
     if (config.nfacctd_bgp_msglog_kafka_topic) bgp_misc_db->msglog_backend_methods++;
 
     if (bgp_misc_db->msglog_backend_methods > 1) {
-      Log(LOG_ERR, "ERROR ( %s/core/BGP ): bgp_daemon_msglog_file, bgp_daemon_msglog_amqp_routing_key and bgp_daemon_msglog_kafka_topic are mutually exclusive. Terminating thread.\n", config.name);
+      Log(LOG_ERR, "ERROR ( %s/%s ): bgp_daemon_msglog_file, bgp_daemon_msglog_amqp_routing_key and bgp_daemon_msglog_kafka_topic are mutually exclusive. Terminating thread.\n", config.name, bgp_misc_db->log_str);
       exit_all(1);
     }
 
     bgp_misc_db->peers_log = malloc(config.nfacctd_bgp_max_peers*sizeof(struct bgp_peer_log));
     if (!bgp_misc_db->peers_log) {
-      Log(LOG_ERR, "ERROR ( %s/core/BGP ): Unable to malloc() BGP peers log structure. Terminating thread.\n", config.name);
+      Log(LOG_ERR, "ERROR ( %s/%s ): Unable to malloc() BGP peers log structure. Terminating thread.\n", config.name, bgp_misc_db->log_str);
       exit_all(1);
     }
     memset(bgp_misc_db->peers_log, 0, config.nfacctd_bgp_max_peers*sizeof(struct bgp_peer_log));
@@ -155,7 +215,7 @@ void skinny_bgp_daemon()
       bgp_daemon_msglog_init_amqp_host();
       p_amqp_connect_to_publish(&bgp_daemon_msglog_amqp_host);
 #else
-      Log(LOG_WARNING, "WARN ( %s/core/BGP ): p_amqp_connect_to_publish() not possible due to missing --enable-rabbitmq\n", config.name);
+      Log(LOG_WARNING, "WARN ( %s/%s ): p_amqp_connect_to_publish() not possible due to missing --enable-rabbitmq\n", config.name, bgp_misc_db->log_str);
 #endif
     }
 
@@ -163,7 +223,7 @@ void skinny_bgp_daemon()
 #ifdef WITH_KAFKA
       bgp_daemon_msglog_init_kafka_host();
 #else
-      Log(LOG_WARNING, "WARN ( %s/core/BGP ): p_kafka_connect_to_produce() not possible due to missing --enable-kafka\n", config.name);
+      Log(LOG_WARNING, "WARN ( %s/%s ): p_kafka_connect_to_produce() not possible due to missing --enable-kafka\n", config.name, bgp_misc_db->log_str);
 #endif
     }
   }
@@ -174,9 +234,14 @@ void skinny_bgp_daemon()
     if (config.bgp_table_dump_kafka_topic) bgp_misc_db->dump_backend_methods++;
 
     if (bgp_misc_db->dump_backend_methods > 1) {
-      Log(LOG_ERR, "ERROR ( %s/core/BGP ): bgp_table_dump_file, bgp_table_dump_amqp_routing_key and bgp_table_dump_kafka_topic are mutually exclusive. Terminating thread.\n", config.name);
+      Log(LOG_ERR, "ERROR ( %s/%s ): bgp_table_dump_file, bgp_table_dump_amqp_routing_key and bgp_table_dump_kafka_topic are mutually exclusive. Terminating thread.\n", config.name, bgp_misc_db->log_str);
       exit_all(1);
     }
+  }
+
+  if ((bgp_misc_db->msglog_backend_methods || bgp_misc_db->dump_backend_methods) && config.bgp_xconnect_map) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): bgp_daemon_xconnect_map is mutually exclusive with any BGP msglog and dump method. Terminating thread.\n", config.name, bgp_misc_db->log_str);
+    exit_all(1);
   }
 
   if (!config.bgp_table_peer_buckets) config.bgp_table_peer_buckets = DEFAULT_BGP_INFO_HASH;
@@ -185,7 +250,7 @@ void skinny_bgp_daemon()
   if (config.bgp_table_per_peer_hash == BGP_ASPATH_HASH_PATHID)
     bgp_route_info_modulo = bgp_route_info_modulo_pathid; 
   else {
-    Log(LOG_ERR, "ERROR ( %s/core/BGP ): Unknown 'bgp_table_per_peer_hash' value. Terminating thread.\n", config.name);
+    Log(LOG_ERR, "ERROR ( %s/%s ): Unknown 'bgp_table_per_peer_hash' value. Terminating thread.\n", config.name, bgp_misc_db->log_str);
     exit_all(1);
   }
 
@@ -206,7 +271,7 @@ void skinny_bgp_daemon()
 #endif
 
     if (config.bgp_sock < 0) {
-      Log(LOG_ERR, "ERROR ( %s/core/BGP ): thread socket() failed. Terminating thread.\n", config.name);
+      Log(LOG_ERR, "ERROR ( %s/%s ): thread socket() failed. Terminating thread.\n", config.name, bgp_misc_db->log_str);
       exit_all(1);
     }
   }
@@ -214,15 +279,20 @@ void skinny_bgp_daemon()
     int opt = config.nfacctd_bgp_ipprec << 5;
 
     rc = setsockopt(config.bgp_sock, IPPROTO_IP, IP_TOS, &opt, sizeof(opt));
-    if (rc < 0) Log(LOG_ERR, "WARN ( %s/core/BGP ): setsockopt() failed for IP_TOS (errno: %d).\n", config.name, errno);
+    if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for IP_TOS (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
   }
 
+#if (defined LINUX) && (defined HAVE_SO_REUSEPORT)
+  rc = setsockopt(config.bgp_sock, SOL_SOCKET, SO_REUSEADDR|SO_REUSEPORT, (char *)&yes, sizeof(yes));
+  if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEADDR|SO_REUSEPORT (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
+#else
   rc = setsockopt(config.bgp_sock, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, sizeof(yes));
-  if (rc < 0) Log(LOG_ERR, "WARN ( %s/core/BGP ): setsockopt() failed for SO_REUSEADDR (errno: %d).\n", config.name, errno);
+  if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEADDR (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
+#endif
 
 #if (defined ENABLE_IPV6) && (defined IPV6_BINDV6ONLY)
   rc = setsockopt(config.bgp_sock, IPPROTO_IPV6, IPV6_BINDV6ONLY, (char *) &no, (socklen_t) sizeof(no));
-  if (rc < 0) Log(LOG_ERR, "WARN ( %s/core/BGP ): setsockopt() failed for IPV6_BINDV6ONLY (errno: %d).\n", config.name, errno);
+  if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for IPV6_BINDV6ONLY (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
 #endif
 
   if (config.nfacctd_bgp_pipe_size) {
@@ -235,7 +305,7 @@ void skinny_bgp_daemon()
 
     Setsocksize(config.bgp_sock, SOL_SOCKET, SO_RCVBUF, &saved, l);
     getsockopt(config.bgp_sock, SOL_SOCKET, SO_RCVBUF, &obtained, &l);
-    Log(LOG_INFO, "INFO ( %s/core/BGP ): bgp_daemon_pipe_size: obtained=%d target=%d.\n", config.name, obtained, config.nfacctd_bgp_pipe_size);
+    Log(LOG_INFO, "INFO ( %s/%s ): bgp_daemon_pipe_size: obtained=%d target=%d.\n", config.name, bgp_misc_db->log_str, obtained, config.nfacctd_bgp_pipe_size);
   }
 
   rc = bind(config.bgp_sock, (struct sockaddr *) &server, slen);
@@ -244,13 +314,13 @@ void skinny_bgp_daemon()
     char *ip_address;
 
     ip_address = config.nfacctd_bgp_ip ? config.nfacctd_bgp_ip : null_ip_address;
-    Log(LOG_ERR, "ERROR ( %s/core/BGP ): bind() to ip=%s port=%d/tcp failed (errno: %d).\n", config.name, ip_address, config.nfacctd_bgp_port, errno);
+    Log(LOG_ERR, "ERROR ( %s/%s ): bind() to ip=%s port=%d/tcp failed (errno: %d).\n", config.name, bgp_misc_db->log_str, ip_address, config.nfacctd_bgp_port, errno);
     exit_all(1);
   }
 
   rc = listen(config.bgp_sock, 1);
   if (rc < 0) {
-    Log(LOG_ERR, "ERROR ( %s/core/BGP ): listen() failed (errno: %d).\n", config.name, errno);
+    Log(LOG_ERR, "ERROR ( %s/%s ): listen() failed (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
     exit_all(1);
   }
 
@@ -264,9 +334,9 @@ void skinny_bgp_daemon()
     struct host_addr srv_addr;
     u_int16_t srv_port;
 
-    sa_to_addr(&server, &srv_addr, &srv_port);
+    sa_to_addr((struct sockaddr *)&server, &srv_addr, &srv_port);
     addr_to_str(srv_string, &srv_addr);
-    Log(LOG_INFO, "INFO ( %s/core/BGP ): waiting for BGP data on %s:%u\n", config.name, srv_string, srv_port);
+    Log(LOG_INFO, "INFO ( %s/%s ): waiting for BGP data on %s:%u\n", config.name, bgp_misc_db->log_str, srv_string, srv_port);
   }
 
   /* Preparing ACL, if any */
@@ -274,8 +344,9 @@ void skinny_bgp_daemon()
 
   /* Preparing MD5 keys, if any */
   if (config.nfacctd_bgp_md5_file) {
-    load_bgp_md5_file(config.nfacctd_bgp_md5_file, &bgp_md5);
-    if (bgp_md5.num) process_bgp_md5_file(config.bgp_sock, &bgp_md5);
+    bgp_md5_file_init(&bgp_md5);
+    bgp_md5_file_load(config.nfacctd_bgp_md5_file, &bgp_md5);
+    if (bgp_md5.num) bgp_md5_file_process(config.bgp_sock, &bgp_md5);
   }
 
   /* Let's initialize clean shared RIB */
@@ -288,7 +359,7 @@ void skinny_bgp_daemon()
   /* BGP peers batching checks */
   if ((config.nfacctd_bgp_batch && !config.nfacctd_bgp_batch_interval) ||
       (config.nfacctd_bgp_batch_interval && !config.nfacctd_bgp_batch)) {
-    Log(LOG_WARNING, "WARN ( %s/core/BGP ): 'bgp_daemon_batch_interval' and 'bgp_daemon_batch' both set to zero.\n", config.name);
+    Log(LOG_WARNING, "WARN ( %s/%s ): 'bgp_daemon_batch_interval' and 'bgp_daemon_batch' both set to zero.\n", config.name, bgp_misc_db->log_str);
     config.nfacctd_bgp_batch = 0;
     config.nfacctd_bgp_batch_interval = 0;
   }
@@ -298,7 +369,7 @@ void skinny_bgp_daemon()
 #ifdef WITH_JANSSON
     if (!config.nfacctd_bgp_msglog_output) config.nfacctd_bgp_msglog_output = PRINT_OUTPUT_JSON;
 #else
-    Log(LOG_WARNING, "WARN ( %s/core/BGP ): bgp_daemon_msglog_output set to json but will produce no output (missing --enable-jansson).\n", config.name);
+    Log(LOG_WARNING, "WARN ( %s/%s ): bgp_daemon_msglog_output set to json but will produce no output (missing --enable-jansson).\n", config.name, bgp_misc_db->log_str);
 #endif
   }
 
@@ -306,7 +377,7 @@ void skinny_bgp_daemon()
 #ifdef WITH_JANSSON
     if (!config.bgp_table_dump_output) config.bgp_table_dump_output = PRINT_OUTPUT_JSON;
 #else
-    Log(LOG_WARNING, "WARN ( %s/core/BGP ): bgp_table_dump_output set to json but will produce no output (missing --enable-jansson).\n", config.name);
+    Log(LOG_WARNING, "WARN ( %s/%s ): bgp_table_dump_output set to json but will produce no output (missing --enable-jansson).\n", config.name, bgp_misc_db->log_str);
 #endif
   }
 
@@ -327,7 +398,7 @@ void skinny_bgp_daemon()
     else {
       config.bgp_table_dump_file = NULL;
       bgp_misc_db->dump_backend_methods = FALSE;
-      Log(LOG_WARNING, "WARN ( %s/core/BGP ): Invalid 'bgp_table_dump_refresh_time'.\n", config.name);
+      Log(LOG_WARNING, "WARN ( %s/%s ): Invalid 'bgp_table_dump_refresh_time'.\n", config.name, bgp_misc_db->log_str);
     }
 
     if (config.bgp_table_dump_amqp_routing_key) bgp_table_dump_init_amqp_host();
@@ -348,6 +419,12 @@ void skinny_bgp_daemon()
 
       for (peers_idx = 0; peers_idx < config.nfacctd_bgp_max_peers; peers_idx++) {
         if (select_fd < peers[peers_idx].fd) select_fd = peers[peers_idx].fd; 
+
+        if (config.bgp_xconnect_map) {
+	  if (select_fd < peers[peers_idx].xconnect_fd)
+	    select_fd = peers[peers_idx].xconnect_fd; 
+	}
+
 	if (peers[peers_idx].fd) max_peers_idx = peers_idx;
       }
       select_fd++;
@@ -376,12 +453,27 @@ void skinny_bgp_daemon()
 
     /* signals handling */
     if (reload_map_bgp_thread) {
+      if (config.nfacctd_bgp_allow_file) load_allow_file(config.nfacctd_bgp_allow_file, &allow);
+
       if (config.nfacctd_bgp_md5_file) {
-	unload_bgp_md5_file(&bgp_md5);
-	if (bgp_md5.num) process_bgp_md5_file(config.bgp_sock, &bgp_md5); // process unload
-	load_bgp_md5_file(config.nfacctd_bgp_md5_file, &bgp_md5);
-	if (bgp_md5.num) process_bgp_md5_file(config.bgp_sock, &bgp_md5); // process load
+	bgp_md5_file_unload(&bgp_md5);
+	if (bgp_md5.num) bgp_md5_file_process(config.bgp_sock, &bgp_md5); // process unload
+
+	bgp_md5_file_load(config.nfacctd_bgp_md5_file, &bgp_md5);
+	if (bgp_md5.num) bgp_md5_file_process(config.bgp_sock, &bgp_md5); // process load
       }
+
+      if (config.bgp_xconnect_map) {
+	int bgp_xcs_allocated = FALSE;
+
+        bgp_xcs_map_destroy();
+
+	memset(&req, 0, sizeof(req));
+	req.key_value_table = (void *) &bgp_xcs_map;
+
+	load_id_file(MAP_BGP_XCS, config.bgp_xconnect_map, NULL, &req, &bgp_xcs_allocated);
+      }
+
       reload_map_bgp_thread = FALSE;
     }
 
@@ -394,14 +486,23 @@ void skinny_bgp_daemon()
 	}
 	else break;
       }
+
+      reload_log_bgp_thread = FALSE;
     }
 
     if (bgp_misc_db->msglog_backend_methods || bgp_misc_db->dump_backend_methods) {
       gettimeofday(&bgp_misc_db->log_tstamp, NULL);
-      compose_timestamp(bgp_misc_db->log_tstamp_str, SRVBUFLEN, &bgp_misc_db->log_tstamp, TRUE, config.timestamps_since_epoch);
+      compose_timestamp(bgp_misc_db->log_tstamp_str, SRVBUFLEN, &bgp_misc_db->log_tstamp, TRUE,
+			config.timestamps_since_epoch, config.timestamps_rfc3339, config.timestamps_utc);
 
       if (bgp_misc_db->dump_backend_methods) {
 	while (bgp_misc_db->log_tstamp.tv_sec > dump_refresh_deadline) {
+	  bgp_misc_db->dump.tstamp.tv_sec = dump_refresh_deadline;
+	  bgp_misc_db->dump.tstamp.tv_usec = 0;
+	  compose_timestamp(bgp_misc_db->dump.tstamp_str, SRVBUFLEN, &bgp_misc_db->dump.tstamp, FALSE,
+			    config.timestamps_since_epoch, config.timestamps_rfc3339, config.timestamps_utc);
+	  bgp_misc_db->dump.period = config.bgp_table_dump_refresh_time;
+
 	  bgp_handle_dump_event();
 	  dump_refresh_deadline += config.bgp_table_dump_refresh_time;
 	}
@@ -430,8 +531,8 @@ void skinny_bgp_daemon()
 
     /* 
        If select_num == 0 then we got out of select() due to a timeout rather
-       than because we had a message from a peeer to handle. By now we did all
-       routine checks and can happily return to selet() again.
+       than because we had a message from a peer to handle. By now we did all
+       routine checks and can happily return to select() again.
     */ 
     if (!select_num) goto select_again;
 
@@ -480,7 +581,7 @@ void skinny_bgp_daemon()
           else { /* throttle */
             /* We briefly accept the new connection to be able to drop it */
 	    if (!log_notification_isset(&log_notifications.bgp_peers_throttling, now)) {
-              Log(LOG_INFO, "INFO ( %s/core/BGP ): throttling at BGP peer #%u\n", config.name, peers_idx);
+              Log(LOG_INFO, "INFO ( %s/%s ): throttling at BGP peer #%u\n", config.name, bgp_misc_db->log_str, peers_idx);
 	      log_notification_set(&log_notifications.bgp_peers_throttling, now, FALSE);
 	    }
 
@@ -493,8 +594,8 @@ void skinny_bgp_daemon()
 
       if (!peer) {
 	/* We briefly accept the new connection to be able to drop it */
-        Log(LOG_ERR, "ERROR ( %s/core/BGP ): Insufficient number of BGP peers has been configured by 'bgp_daemon_max_peers' (%d).\n",
-			config.name, config.nfacctd_bgp_max_peers);
+        Log(LOG_ERR, "ERROR ( %s/%s ): Insufficient number of BGP peers has been configured by 'bgp_daemon_max_peers' (%d).\n",
+			config.name, bgp_misc_db->log_str, config.nfacctd_bgp_max_peers);
 
 	close(fd);
 	goto read_data;
@@ -514,33 +615,91 @@ void skinny_bgp_daemon()
       }
 #endif
 
+      if (peers_cache && peers_port_cache) {
+	u_int32_t bucket;
+
+	bucket = addr_hash(&peer->addr, config.nfacctd_bgp_max_peers);
+	bgp_peer_cache_insert(peers_cache, bucket, peer);
+
+	bucket = addr_port_hash(&peer->addr, peer->tcp_port, config.nfacctd_bgp_max_peers);
+	bgp_peer_cache_insert(peers_port_cache, bucket, peer);
+      }
+
       if (bgp_misc_db->msglog_backend_methods)
 	bgp_peer_log_init(peer, config.nfacctd_bgp_msglog_output, FUNC_TYPE_BGP);
 
-      /* Check: only one TCP connection is allowed per peer */
+      /* Check: more than one TCP connection from a peer (IP address) */
       for (peers_check_idx = 0, peers_num = 0; peers_check_idx < config.nfacctd_bgp_max_peers; peers_check_idx++) { 
-	if (peers_idx != peers_check_idx && !memcmp(&peers[peers_check_idx].addr, &peer->addr, sizeof(peers[peers_check_idx].addr))) { 
-	  if ((now - peers[peers_check_idx].last_keepalive) > peers[peers_check_idx].ht) {
-            Log(LOG_INFO, "INFO ( %s/core/BGP ): [%s] Replenishing stale connection by peer.\n",
-				config.name, bgp_peer_print(&peers[peers_check_idx]));
-            FD_CLR(peers[peers_check_idx].fd, &bkp_read_descs);
-            bgp_peer_close(&peers[peers_check_idx], FUNC_TYPE_BGP);
+	if (peers_idx != peers_check_idx && !memcmp(&peers[peers_check_idx].addr, &peer->addr, sizeof(peers[peers_check_idx].addr))) {
+	  int same_peer = FALSE;
+
+	  bgp_peer_print(&peers[peers_check_idx], bgp_peer_str, INET6_ADDRSTRLEN);
+
+          /* Check: if not x-connecting, let's see if we have to compare TCP ports
+	     (ie. NAT traversal / non-transparent tee scenarios); then evaluate if
+	     the new session is valid or has to be rejected */  
+	  if (!config.bgp_xconnect_map) {
+	    if (config.tmp_bgp_lookup_compare_ports) {
+	      if (peers[peers_check_idx].tcp_port == peer->tcp_port) same_peer = TRUE;
+	      else {
+		same_peer = FALSE;
+	        if (peers[peers_check_idx].fd) peers_num++;
+	      }
+	    }
+	    else same_peer = TRUE;
+
+	    if (same_peer) {
+	      if ((now - peers[peers_check_idx].last_keepalive) > peers[peers_check_idx].ht) {
+		bgp_peer_print(&peers[peers_check_idx], bgp_peer_str, INET6_ADDRSTRLEN);
+              	Log(LOG_INFO, "INFO ( %s/%s ): [%s] Replenishing stale connection by peer.\n",
+			config.name, bgp_misc_db->log_str, bgp_peer_str);
+		FD_CLR(peers[peers_check_idx].fd, &bkp_read_descs);
+		bgp_peer_close(&peers[peers_check_idx], FUNC_TYPE_BGP, FALSE, FALSE, FALSE, FALSE, NULL);
+	      }
+	      else {
+		Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Refusing new connection from existing peer (residual holdtime: %u).\n",
+			config.name, bgp_misc_db->log_str, bgp_peer_str,
+			(peers[peers_check_idx].ht - (now - peers[peers_check_idx].last_keepalive)));
+		FD_CLR(peer->fd, &bkp_read_descs);
+		bgp_peer_close(peer, FUNC_TYPE_BGP, FALSE, FALSE, FALSE, FALSE, NULL);
+		goto read_data;
+	      }
+	    }
 	  }
+	  /* XXX: if x-connecting we don't support NAT traversal / non-transparent tee
+	     scenarios (yet?) */ 
 	  else {
-	    Log(LOG_ERR, "ERROR ( %s/core/BGP ): [%s] Refusing new connection from existing peer (residual holdtime: %u).\n",
-				config.name, bgp_peer_print(&peers[peers_check_idx]),
-				(peers[peers_check_idx].ht - (now - peers[peers_check_idx].last_keepalive)));
+	    Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Refusing new incoming connection for existing BGP xconnect.\n",
+			config.name, bgp_misc_db->log_str, bgp_peer_str);
 	    FD_CLR(peer->fd, &bkp_read_descs);
-	    bgp_peer_close(peer, FUNC_TYPE_BGP);
-	    // bgp_batch_rollback(&bp_batch);
+	    bgp_peer_close(peer, FUNC_TYPE_BGP, FALSE, FALSE, FALSE, FALSE, NULL);
 	    goto read_data;
 	  }
         }
 	else if (peers[peers_check_idx].fd) peers_num++;
       }
 
-      Log(LOG_INFO, "INFO ( %s/core/BGP ): [%s] BGP peers usage: %u/%u\n", config.name,
-		bgp_peer_print(peer), peers_num, config.nfacctd_bgp_max_peers);
+      if (config.bgp_xconnect_map) {
+        bgp_peer_xconnect_init(peer, FUNC_TYPE_BGP);
+
+        if (peer->xconnect_fd) FD_SET(peer->xconnect_fd, &bkp_read_descs);
+        else {
+          FD_CLR(peer->fd, &bkp_read_descs);
+          bgp_peer_close(peer, FUNC_TYPE_BGP, FALSE, FALSE, FALSE, FALSE, NULL);
+          goto read_data;
+        }
+      }
+
+      if (!config.bgp_xconnect_map) {
+        bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
+        Log(LOG_INFO, "INFO ( %s/%s ): [%s] BGP peers usage: %u/%u\n", config.name, bgp_misc_db->log_str,
+		bgp_peer_str, peers_num, config.nfacctd_bgp_max_peers);
+      }
+      else {
+        bgp_peer_xconnect_print(peer, bgp_xconnect_peer_str, BGP_XCONNECT_STRLEN);
+        Log(LOG_INFO, "INFO ( %s/%s ): [%s] BGP xconnects usage: %u/%u\n", config.name, bgp_misc_db->log_str,
+		bgp_xconnect_peer_str, peers_num, config.nfacctd_bgp_max_peers);
+      }
 
       if (config.nfacctd_bgp_neighbors_file) write_neighbors_file(config.nfacctd_bgp_neighbors_file, FUNC_TYPE_BGP);
     }
@@ -554,44 +713,128 @@ void skinny_bgp_daemon()
     */
     for (peer = NULL, peers_idx = 0; peers_idx < max_peers_idx; peers_idx++) {
       int loc_idx = (peers_idx + peers_idx_rr) % max_peers_idx;
+      recv_fd = 0; send_fd = 0;
 
       if (peers[loc_idx].fd && FD_ISSET(peers[loc_idx].fd, &read_descs)) {
         peer = &peers[loc_idx];
+	recv_fd = peer->fd;
+	if (config.bgp_xconnect_map) send_fd = peer->xconnect_fd;
         peers_idx_rr = (peers_idx_rr + 1) % max_peers_idx;
 	break;
       }
-    } 
+      
+      // XXX: verify round-robin fairness holding up
+      if (config.bgp_xconnect_map) {
+        loc_idx = (peers_idx + peers_xconnect_idx_rr) % max_peers_idx;
+
+	if (peers[loc_idx].xconnect_fd && FD_ISSET(peers[loc_idx].xconnect_fd, &read_descs)) {
+	  peer = &peers[loc_idx];
+	  recv_fd = peer->xconnect_fd;
+	  send_fd = peer->fd;
+	  peers_xconnect_idx_rr = (peers_xconnect_idx_rr + 1) % max_peers_idx;
+	  break;
+	}
+      }
+    }
 
     if (!peer) goto select_again;
 
-    ret = recv(peer->fd, &peer->buf.base[peer->buf.truncated_len], (peer->buf.len - peer->buf.truncated_len), 0);
+    ret = recv(recv_fd, &peer->buf.base[peer->buf.truncated_len], (peer->buf.len - peer->buf.truncated_len), 0);
     peer->msglen = (ret + peer->buf.truncated_len);
 
     if (ret <= 0) {
-      Log(LOG_INFO, "INFO ( %s/core/BGP ): [%s] BGP connection reset by peer (%d).\n", config.name, bgp_peer_print(peer), errno);
-      FD_CLR(peer->fd, &bkp_read_descs);
-      bgp_peer_close(peer, FUNC_TYPE_BGP);
+      if (!config.bgp_xconnect_map) {
+	bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
+	Log(LOG_INFO, "INFO ( %s/%s ): [%s] BGP connection reset by peer (%d).\n", config.name, bgp_misc_db->log_str, bgp_peer_str, errno);
+	FD_CLR(peer->fd, &bkp_read_descs);
+      }
+      else {
+	bgp_peer_xconnect_print(peer, bgp_xconnect_peer_str, BGP_XCONNECT_STRLEN);
+
+	if (recv_fd == peer->fd)
+	  Log(LOG_INFO, "INFO ( %s/%s ): [%s] recv(): BGP xconnect reset by src peer (%d).\n",
+		config.name, bgp_misc_db->log_str, bgp_xconnect_peer_str, errno);
+	else if (recv_fd == peer->xconnect_fd)
+	  Log(LOG_INFO, "INFO ( %s/%s ): [%s] recv(): BGP xconnect reset by dst peer (%d).\n",
+		config.name, bgp_misc_db->log_str, bgp_xconnect_peer_str, errno);
+
+	FD_CLR(peer->fd, &bkp_read_descs);
+	FD_CLR(peer->xconnect_fd, &bkp_read_descs);
+      }
+
+      bgp_peer_close(peer, FUNC_TYPE_BGP, FALSE, FALSE, FALSE, FALSE, NULL);
+
       recalc_fds = TRUE;
       goto select_again;
     }
     else {
-      /* Appears a valid peer with a valid BGP message: before
-	 continuing let's see if it's time to send a KEEPALIVE
-	 back */
-      if (peer->status == Established && ((now - peer->last_keepalive) > (peer->ht / 2))) {
-        bgp_reply_pkt_ptr = bgp_reply_pkt;
-        bgp_reply_pkt_ptr += bgp_write_keepalive_msg(bgp_reply_pkt_ptr);
-        ret = send(peer->fd, bgp_reply_pkt, bgp_reply_pkt_ptr - bgp_reply_pkt, 0);
-	peer->last_keepalive = now;
-      } 
+      if (!config.bgp_xconnect_map) {
+	/* Appears a valid peer with a valid BGP message: before
+	   continuing let's see if it's time to send a KEEPALIVE
+	   back */
+	if (peer->status == Established && ((now - peer->last_keepalive) > (peer->ht / 2))) {
+	  bgp_reply_pkt_ptr = bgp_reply_pkt;
+	  bgp_reply_pkt_ptr += bgp_write_keepalive_msg(bgp_reply_pkt_ptr);
+	  ret = send(recv_fd, bgp_reply_pkt, bgp_reply_pkt_ptr - bgp_reply_pkt, 0);
+	  peer->last_keepalive = now;
+	} 
 
-      ret = bgp_parse_msg(peer, now, TRUE);
-      if (ret < 0) {
-        FD_CLR(peer->fd, &bkp_read_descs);
-        bgp_peer_close(peer, FUNC_TYPE_BGP);
-        recalc_fds = TRUE;
-        goto select_again;
+	ret = bgp_parse_msg(peer, now, TRUE);
+	if (ret) {
+	  FD_CLR(recv_fd, &bkp_read_descs);
+
+	  if (ret < 0) bgp_peer_close(peer, FUNC_TYPE_BGP, FALSE, FALSE, FALSE, FALSE, NULL);
+	  else bgp_peer_close(peer, FUNC_TYPE_BGP, FALSE, TRUE, ret, BGP_NOTIFY_SUBCODE_UNSPECIFIC, NULL);
+
+	  recalc_fds = TRUE;
+	  goto select_again;
+	}
+      }
+      else {
+	ret = send(send_fd, &peer->buf.base[peer->buf.truncated_len], peer->msglen, 0);
+	if (ret <= 0) {
+	  bgp_peer_xconnect_print(peer, bgp_xconnect_peer_str, BGP_XCONNECT_STRLEN);
+
+	  if (send_fd == peer->fd)
+	    Log(LOG_INFO, "INFO ( %s/%s ): [%s] send(): BGP xconnect reset by src peer (%d).\n",
+		config.name, bgp_misc_db->log_str, bgp_xconnect_peer_str, errno);
+	  else if (send_fd == peer->xconnect_fd)
+	    Log(LOG_INFO, "INFO ( %s/%s ): [%s] send(): BGP xconnect reset by dst peer (%d).\n",
+		config.name, bgp_misc_db->log_str, bgp_xconnect_peer_str, errno);
+
+	  FD_CLR(peer->fd, &bkp_read_descs);
+	  FD_CLR(peer->xconnect_fd, &bkp_read_descs);
+
+	  bgp_peer_close(peer, FUNC_TYPE_BGP, FALSE, FALSE, FALSE, FALSE, NULL);
+
+	  recalc_fds = TRUE;
+	  goto select_again;
+	}
       }
     }
   }
+}
+
+void bgp_prepare_thread()
+{
+  bgp_misc_db = &inter_domain_misc_dbs[FUNC_TYPE_BGP];
+  memset(bgp_misc_db, 0, sizeof(struct bgp_misc_structs));
+
+  bgp_misc_db->is_thread = TRUE;
+  bgp_misc_db->has_lglass = FALSE;
+
+  bgp_misc_db->log_str = malloc(strlen("core/BGP") + 1);
+  strcpy(bgp_misc_db->log_str, "core/BGP");
+}
+
+void bgp_prepare_daemon()
+{
+  bgp_misc_db = &inter_domain_misc_dbs[FUNC_TYPE_BGP];
+  memset(bgp_misc_db, 0, sizeof(struct bgp_misc_structs));
+
+  bgp_misc_db->is_thread = FALSE;
+  if (config.bgp_lg) bgp_misc_db->has_lglass = TRUE;
+
+  bgp_misc_db->log_str = malloc(strlen("core") + 1);
+  strcpy(bgp_misc_db->log_str, "core");
 }

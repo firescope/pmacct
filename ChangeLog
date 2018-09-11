@@ -1,17 +1,624 @@
-pmacct (Promiscuous mode IP Accounting package) v1.6.0
-pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+pmacct [IP traffic accounting : BGP : BMP : IGP : Streaming Telemetry]
+pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+
+The keys used are:
+  !: fixed/modified feature, -: deleted feature, +: new feature
+
+1.7.1 -- 06-05-2018
+  + pmbgpd: introduced a BGP connect feature meant to map BGP peers
+    (ie. PE routers) to BGP collectors (ie. nfacctd, sfacctd) via a
+    standalone BGP daemon (pmbgpd). The aim is to facilitate operations
+    when re-sizing/re-balancing the collection infrastructure without
+    impacting (ie. re-configuring) BGP peers. bgp_daemon_xconnect_map
+    expects full pathname to a file where cross-connects are defined;
+    mapping works only against the IP source address and not the BGP
+    Router ID, only 1:1 relationships can be formed (ie. this is about
+    cross-connecting, not replication) and only one session per BGP
+    peer is supported (ie. multiple BGP agents are running on the same
+    IP address or NAT traversal scenarios are not supported [yet]).
+    A sample map is provided in 'examples/bgp_xconnects.map.example'.
+  + pmbgpd: introduced a BGP Looking Glass server allowing to perform
+    queries, ie. lookup of IP addresses/prefixes or get the list of BGP
+    peers, against available BGP RIBs. The server is asyncronous and
+    uses ZeroMQ as transport layer to serve incoming queries. Sample
+    C/Python LG clients are available in 'examples/lg'. A sample LG
+    server config is available in QUICKSTART. Request/Reply Looking
+    Glass formats are documented in 'docs/LOOKING_GLASS_FORMAT'.
+  + pmacctd: a single daemon can now listen for traffic on multiple
+    interfaces via a polling mechanism. This can be configured via a
+    pcap_interfaces_map feature (interface/pcap_interface can still be
+    used for backward compatiblity to listen on a single interface). The
+    map allows to define also ifindex mapping and capturing direction on
+    a per-interface basis. The map can be reloaded at runtime via a USR2
+    signal and a sample map is in examples/pcap_interfaces.map.example.
+  + Kafka plugin: dynamic partitioning via kafka_partition_dynamic and
+    kafka_partition_key knobs is introduced. The Kafka topic can contain
+    variables, ie. $peer_src_ip, $src_host, $dst_port, $tag, etc., which
+    are all computed when data is purged to the backend. This feature is
+    in addition to the existing kafka_partition feature which allows to
+    rely on the built-in Kafka partitioning to assign data statically to
+    one partition or rely dynamically on the default partitioner. The
+    feature is courtesy by Corentin Neau / Codethink ( @weyfonk ).
+  + Introduced rfc3339 formatted timestamps: in logs, ie. UTC timezone
+    represented as yyyy-MM-ddTHH:mm:ss(.ss)Z; for aggregation primitives
+    the timestamps_rfc3339 knob can be used to enable this feature (left
+    disabled by default for backward compatibility).
+  + timestamps_utc: new knob to decode timestamps to UTC timezone even
+    if the Operating System is set to a different timezone. On the goods
+    of running a system set to UTC please read Q18 of FAQS.
+  + sfacctd: implemented mpls_label_top, mpls_label_bottom and
+    mpls_stack_depth primitives decoded from sFlow flow sample headers.
+    Thanks to David Barroso ( @dbarrosop ) for his support.
+  + nfacctd: added support for IEs 130 (exporterIPv4Address) and 131
+    (exporterIPv6Address) when passed as part of NetFlow v9/IPFIX
+    option packets (these IEs were already supported when passed in flow
+    data). Also added support for IE 351 (dataLinkFrameSection) which
+    carries the initial portion of a sampled raw packet headers (a-la
+    sFlow). This was tested working against a Cisco NCS 5k platform.
+  + nfprobe plugin: added a new nfprobe_dont_cache knob allowing to
+    disable caching and summarisation of flows (essentially letting the
+    NetFlow/IPFIX probe behave like a sFlow probe).
+  + nfprobe plugin: added support for MPLS_LABEL_1, NetFlow v9/IPFIX IE
+    70; improved support for BGP next-hop IE 18 and 63. Also support for
+    IE 130/131 vi NetFlow v9/IPFIX Options was added.
+  + sfprobe plugin: added sfprobe_source_ip knob to define the local IP
+    address from which sFlow datagrams are exported; improved support
+    for BGP next-hop.
+  + nfacctd, sfacctd, BGP, BMP, Streaming Telemetry daemons: on Linux,
+    if supported, use SO_REUSEPORT for the listening socket (added to
+    existing SO_REUSEADDR option).
+  + nfacctd, sfacctd: introduced new 'export_proto_sysid' primitive to
+    give visibility to NetFlow v5/v8 engine_id / NetFlow v9 source ID /
+    IPFIX Obs Domain ID / sFlow agentSubID.
+  + nfacctd, sfacctd: extended nDPI support to NetFlow v9/IPFIX packets
+    with IE 315 (dataLinkFrameSection) and sFlow v5 packets with header
+    section.
+  + nfacctd, sfacctd: extended custom primitives definition framework,
+    aggregate_primitives, to NetFlow v9/IPFIX packets with IE 315
+    (dataLinkFrameSection) and sFlow v5 sampled headers section.
+  + nfacctd, sfacctd: added per-collector packets and bytes counts to
+    stats emitted via SIGUSR1. Also the output was made more formal (so
+    to be more easily parsed) and is documented in the UPGRADE notes. 
+  + nfacctd, pmacctd, sfacctd: pcap_savefile_delay feature introduced
+    to sleep for the supplied amount of seconds before playing a given
+    pcap_savefile. Useful, for example, to let BGP/BMP sessions come up
+    so that routing data is available for correlation when processing
+    data in the trace.
+  + Kafka plugin: configuring statistics.interval.ms to a positive value
+    in a kafka_config_file makes now librdkafka log plenty of internal
+    metrics.
+  + BGP daemon: added support for Extended BGP Administrative Shutdown
+    Communication (draft-snijders-idr-rfc8203bis-00).
+  + BMP daemon: added support for draft-ietf-grow-bmp-adj-rib-out-01 and
+    draft-ietf-grow-bmp-loc-rib-01. As a result of that, Route Monitor
+    log messages now contain indication of is_out and is_filtered.
+  + BMP daemon: added support for stats reports 9, 10, 11, 12 and 13 and 
+    descriptions for the different Peer Types and and Peer Down reasons.
+    Finally, indication of is_post is now making to Route Monitor log
+    messages. 
+  + plugin_pipe_zmq: introduced plugin_pipe_zmq_hwm (high water mark)
+    knob to control the maximum amount of messages than can be stored in
+    the ZeroMQ queue.
+  + [ns]facctd_allow_file: the map is now made reloadable at runtime via
+    SIGUSR2 and accepts IPv4/IPv6 prefixes increasing its scale (before
+    it was only accepting individual IP addresses).
+  + pmacctd: added support for IPv6, MPLS for DLT_LINUX_SLL captures.
+    Thanks to David Barroso ( @dbarrosop ) for his support.
+  + uacctd: added a global 'direction' knob to give visibility of data
+    capturing direction, ie. in/out. Useful for pre_tag_map use.
+  + MySQL plugin: added sql_port knob in order to specify non-default
+    ports for connecting to the database. Patch is courtesy by Vadim
+    Tkachenko ( @vadimtk ).
+  ! fix, plugins: getppid() parent process health check improved so
+    to work in Docker environments not assuming anymore parent PID is
+    1. Patch is courtesy by Hidde van der Heide ( @hvanderheide ). 
+  ! fix, plugins: imposing a budget for received messages (100) so to
+    preserve fairness of other operations (ie. time keeping, bucketing,
+    reloading maps, etc.) and prevent starvations.
+  ! fix, zmq_common.c: retry if zmq_getsockopt() for ZMQ_EVENTS returns
+    EINTR. Thanks to Wouter de Jong for his support solving the issue.
+  ! fix, plugins: when executing triggers, the first argument passed to
+    execv() should be the path to the invoked executable to prevent
+    execv(3) to fail and return EFAULT on OpenBSD. Patch is courtesy
+    by @higgsd.
+  ! fix, BGP daemon: improved support of multiple capabilities per
+    optional parameter in the OPEN message. Also add-path capability is
+    now advertised if neighbor supports send/receive (previously it was
+    sent back on send only) of such capability. Thanks to Radu Anghel
+    ( @cozonac ) for his support.
+  ! fix, BGP daemon: upon route lookup, don't perform ADD-PATH logics if
+    no PATH-ID (even if ADD-PATH capability is announced by the peer).
+    Thanks to Camilo Cardona ( @jccardonar ) for his support solving the
+    issue.
+  ! fix, BGP daemon: wrong type 2 32-bit ASN Route Distinguisher was
+    defined in network.h. Thanks to Thomas Graf for reporting the issue.
+  ! fix, BGP, BMP daemons: lookup of BGP-LU entries is now performed
+    against the correct RIB.
+  ! fix, BMP daemon: the BMP thread is now made mutually exclusive with
+    the BGP one (until an use-case needs to run them both). This is to
+    potentially prevent BGP and BMP information to interfere with each
+    other when correlated. Also the 'bmp' keyword was added for *_as and
+    *_net config directives (ie. nfacctd_as, nfacctd_net). Thanks to
+    Juan Camilo Cardona ( @jccardonar ) for his support.
+  ! fix, BMP daemon: improved correlation of BMP data with traffic data
+    by supporting a replication use-case (the BMP exporter is a route
+    -server rather than an actual Edge Router) upon lookup. Thanks to
+    Juan Camilo Cardona ( @jccardonar ) for his support.
+  ! fix, BMP daemon: in bgp_peer_cmp() and bgp_peer_host_addr_cmp() the
+    comparison function has been changed from generic memcmp() to a more
+    specific host_addr_cmp() as paddings were giving issues. Thanks to
+    Juan Camilo Cardona ( @jccardonar ) for reporting the issue.
+  ! fix, BMP daemon: a pm_tdestroy call in bmp_peer_close() was leading
+    to SEGV under certain conditions by not NULL'ing all pointers. Thanks
+    to Juan Camilo Cardona ( @jccardonar ) for reporting the issue.
+  ! fix, nfacctd: prevent time calculations to underflow in cases in
+    which sysUptime < first or last flow switched timestamps in NetFlow
+    v5. Patch is courtesy by David Steinn Geirsson ( @dsgwork ). 
+  ! fix, nfacctd: in the context of aggregate_primitives, now enforcing
+    terminating the zero when decoding variable-length IEs when applying
+    string semantics.
+  ! fix, nfprobe: changed ifIndex fields from u_int16_t to u_int32_t in
+    order to prevent overflows and aligning to the rest of structs.
+  ! fix, MySQL plugin: minor code revisions to restore compiling against
+    MariaDB 10.2. 
+  ! fix, sql_common.c: increased read_SQLquery_from_file() buffer size
+    so that sql_table_schema can be fed with longer CREATE TABLE
+    statements.
+  ! fix, print, SQL plugins: post_tag, post_tag2 support was added to
+    sql_table and print_output_file. Also for Kafka, RabbitMQ plugins
+    kafka_topic and amqp_routing_key variables support was harmonized
+    with print and SQL plugins (ie. $pre_tag renamed to $tag), see
+    UPGRADE notes.
+  ! fix, SQL plugins: sql_startup_delay was not being honored when
+    sql_trigger_exec was defined without a sql_trigger_time resulting
+    in empty environment variables being passed to the triggered script.
+    Thanks to Johannes Maybaum for his support resolving the issue.
+  ! fix, pkt_handlers.c: tmp_asa_bi_flow value was ignored when applied
+    to a specific plugin.
+  ! fix, util.c: when data timestamp is not available, dynamic file and
+    table names variables were populated with a 1-Jan-1970 date. Now the
+    current timestamp is used instead as last resort. Patch is courtesy
+    by Ivan F. Martinez ( @ivanfmartinez ).
+  ! fix, addr.c: host_addr_mask_sa_cmp() and str_to_addr_mask() network
+    mask computation for IPv6 addresses was wrong. allow_file feature
+    was affected.
+  ! fix, build system: several patches committed to the build system to
+    simplify libraries probing, make sure to bail out upon error. Also
+    now a minimum required version is imposed to almost all libraries.
+  - --enable-threads / --disable-threads: removed the configure switch
+    that was allowing to compile pmacct even when no pthreads library was
+    available on a system. From now on support for threads is mandatory.
+  - BGP daemon: offline code, ie. bgp_daemon_offline_* config directives,
+    has been deprecated in favor of other approaches, ie. BGP Looking
+    Glass and BGP Xconnects.
+  - pkt_len_distrib: the primitive, which was meant to bucket packet /
+    flow / sample lengths in a distribution has been obsoleted. 
+
+1.7.0 -- 21-10-2017
+  + ZeroMQ integration: by defining plugin_pipe_zmq to 'true', ZeroMQ is
+    used for queueing between the Core Process and plugins. This is in
+    alternative to the home-grown circular queue implementation (ie.
+    plugin_pipe_size). plugin_pipe_zmq_profile can be set to one value
+    of { micro, small, medium, large, xlarge } and allows to select
+    among a few standard buffering profiles without having to fiddle
+    with plugin_buffer_size. How to compile, install and operate ZeroMQ
+    is documented in the "Internal buffering and queueing" section of
+    the QUICKSTART document. 
+  + nDPI integration: enables packet classification, replacing existing
+    L7-layer project integration, and is available for pmacctd and
+    uacctd. The feature, once nDPI is compiled in, is simply enabled by
+    specifying 'class' as part of the aggregation method. How to compile
+    install and operate nDPI is documented in the "Quickstart guide to
+    packet classification" section of the QUICKSTART document.
+  + nfacctd: introduced nfacctd_templates_file so that NetFlow v9/IPFIX
+    templates can be cached to disk to limit the amount of lost packets
+    due to unknown templates when nfacctd (re)starts. The implementation
+    is courtesy by Codethink Ltd. 
+  + nfacctd: introduced support for PEN on IPFIX option templates. This
+    is in addition to already supported PEN for data templates. Thanks
+    to Gilad Zamoshinski ( @zamog ) for his support. 
+  + sfacctd: introduced new aggregation primitives (tunnel_src_host,
+    tunnel_dst_host, tunnel_proto, tunnel_tos) to support inner L3
+    layers. Thanks to Kaname Nishizuka ( @__kaname__ ) for his support.
+  + nfacctd, sfacctd: pcap_savefile and pcap_savefile_wait were ported
+    from pmacctd. They allow to process NetFlow/IPFIX and sFlow data
+    from previously captured packets; these also ease some debugging by
+    not having to resort anymore to tcpreplay for most cases.
+  + pmacctd, sfacctd: nfacctd_time_new feature has been ported so, when
+    historical accounting is enabled, to allow to choose among capture
+    time and time of receipt at the collector for time-binning.
+  + nfacctd: added support for NetFlow v9/IPFIX field types #130/#131,
+    respectively the IPv4/IPv6 address of the element exporter.
+  + nfacctd: introduced nfacctd_disable_opt_scope_check: mainly a work
+    around to implementations not encoding NetFlow v9/IPIFX option scope
+    correctly, this knob allows to disable option scope checking. Thanks
+    to Gilad Zamoshinski ( @zamog ) for his support.
+  + pre_tag_map: added 'source_id' key for tagging on NetFlow v9/IPFIX
+    source_id field. Added also 'fwdstatus' for tagging on NetFlow v9/
+    IPFIX information element #89: this implementation is courtesy by
+    Emil Palm ( @mrevilme ).
+  + tee plugin: tagging is now possible on NetFlow v5-v8 engine_type/
+    engine_id, NetFlow v9/IPFIX source_id and sFlow AgentId.
+  + tee plugin: added support for 'src_port' in tee_receivers map. When
+    in non-transparent replication mode, use the specified UDP port to
+    send data to receiver(s). This is in addition to tee_source_ip,
+    which allows to set a configured IP address as source.
+  + networks_no_mask_if_zero: a new knob so that IP prefixes with zero
+    mask - that is, unknown ones or those hitting a default route - are
+    not masked. The feature applies to *_net aggregation primitives and
+    makes sure individual IP addresses belonging to unknown IP prefixes
+    are not zeroed out.
+  + networks_file: hooked up networks_file_no_lpm feature to peer and
+    origin ASNs and (BGP) next-hop fields.
+  + pmacctd: added support for calling pcap_set_protocol() if supported
+    by libpcap. Patch is courtesy by Lennert Buytenhek ( @buytenh ).
+  + pmbgpd, pmbmpd, pmtelemetryd: added a few CL options to ease output
+    of BGP, BMP and Streaming Telemetry data, for example: -o supplies
+    a b[gm]p_daemon_msglog_file, -O supplies a b[gm]p_dump_file and -i
+    supplies b[gm]p_dump_refresh_time.
+  + kafka plugin: in the examples section, added a Kafka consumer script
+    using the performing confluent-kafka-python module. 
+  ! fix, BGP daemon: segfault with add-path enabled peers as per issue
+    #128. Patch is courtesy by Markus Weber ( @FvDxxx ).
+  ! fix, print plugin: do not update link to latest file if cause of
+    purging is a safe action (ie. cache space is finished. Thanks to
+    Camilo Cardona ( @jccardonar ) for reporting the issue. Also, for
+    the same reason, do not execute triggers (ie. print_trigger_exec). 
+  ! fix, nfacctd: improved IP protocol check in NF_evaluate_flow_type()
+    A missing length check was causing, under certain conditions, some
+    flows to be marked as IPv6. Many thanks to Yann Belin for his
+    support resolving the issue.
+  ! fix, print and SQL plugins: optimized the cases when the dynamic
+    filename/table has to be re-evaluated. This results in purge speed
+    gains when the dynamic part is time-related and nfacctd_time_new is
+    set to true.
+  ! fix, bgp_daemon_md5_file: if the server socket is AF_INET and the
+    compared peer address in MD5 file is AF_INET6 (v4-mapped v6), pass
+    it through ipv4_mapped_to_ipv4(). Also if the server socket is
+    AF_INET6 and the compared peer addess in MD5 file is AF_INET, pass
+    it through ipv4_to_ipv4_mapped(). Thanks to Paul Mabey for reporting
+    the issue.
+  ! fix, nfacctd: improved length checks in resolve_vlen_template() to
+    prevent SEGVs. Thanks to Josh Suhr and Levi Mason for their support.
+  ! fix, nfacctd: flow stitching, improved flow end time checks. Thanks
+    to Fabio Bindi ( @FabioLiv ) for his support resolving the issue.
+  ! fix, amqp_common.c: amqp_persistent_msg now declares the RabbitMQ
+    exchange as durable in addition to marking messages as persistent;
+    this is related to issue #148.
+  ! fix, nfacctd: added flowset count check to existing length checks 
+    for NetFlow v9/IPFIX datagrams. This is to avoid logs flooding in
+    case of padding. Thanks to Steffen Plotner for reporting the issue.
+  ! fix, BGP daemon: when dumping BGP data at regular time intervals,
+    dump_close message contained wrongly formatted timestamp. Thanks to
+    Yuri Lachin for reporting the issue.
+  ! fix, MySQL plugin: if --enable-ipv6 and sql_num_hosts set to true,
+    use INET6_ATON for both v4 and v6 addresses. Thanks to Guy Lowe
+    ( @gunkaaa ) for reporting the issue and his support resolving it.
+  ! fix, 'flows' primitive: it has been wired to sFlow so to count Flow
+    Samples received. This is to support Q21 in FAQS document.
+  ! fix, BGP daemon: Extended Communities value was printed with %d
+    (signed) format string instead of %u (unsigned), causing issue on
+    large values.
+  ! fix, aggregate_primitives: improved support of 'u_int' semantics for
+    8 bytes integers. This is in addition to already supported 1, 2 and
+    4 bytes integers.
+  ! fix, pidfile: pidfile created by plugin processes was not removed.
+    Thanks to Yuri Lachin for reporting the issue.
+  ! fix, print plugin: checking non-null file descriptor before setvbuf
+    in order to prevent SEGV. Similar checks were added to prevent nulls
+    be input to libavro calls when Apache Avro output is selected.
+  ! fix, SQL plugins: MPLS aggregation primitives were not correctly
+    activated in case sql_optimize_clauses was set to false.
+  ! fix, building system: reviewed minimum requirement for libraries,
+    removed unused m4 macros, split features in plugins (ie. MySQL) and
+    supports (ie. JSON).
+  ! fix, sql_history: it now correctly honors periods expressed is 's'
+    seconds.
+  ! fix, BGP daemon: rewritten bgp_peer_print() to be thread safe.
+  ! fix, pretag.h: addressed compiler warning on 32-bit architectures,
+    integer constant is too large for "long" type. Thanks to Stephen
+    Clark ( @sclark46 ) for reporting the issue.
+  - MongoDB plugin: it is being discontinued since the old Mongo API is
+    not supported anymore and there has never been enough push from the
+    community to transition to the new/current API (which would require
+    a rewrite of most of the plugin). In this phase-1 the existing
+    MongoDB plugin is still available using 'plugins: mongodb_legacy'
+    in the configuration.
+  - Packet classification basing on the L7-filter project is being
+    discontinued (ie. 'classifiers' directive). This is being replaced
+    by an implementation basing on the nDPI project. As part of this
+    also the sql_aggressive_classification knob has been discontinued.
+  - tee_receiver was part of the original implementation of the tee
+    plugin, allowing to forward to a single target and hence requiring
+    multiple plugins instantiated, one per target. Since 0.14.3 this
+    directive was effectively outdated by tee_receivers.
+  - tmp_net_own_field: the knob has been discontinued and was allowing
+    to revert to backward compatible behaviour of IP prefixes (ie.
+    src_net) being written in the same field as IP addresses (ie.
+    src_host).
+  - tmp_comms_same_field: the knob has been discontinued and was
+    allowing to revert to backward compatible behaviour of BGP
+    communities (standard and extended) being writeen all in the same
+    field.
+  - plugin_pipe_amqp and plugin_pipe_kafka features were meant as an
+    alternative to the homegrown queue solution for internal messaging,
+    ie. passing data from the Core Process to Plugins, and are being
+    discontinued. They are being replaced by a new implementation,
+    plugin_pipe_zmq, basing on ZeroMQ.
+  - plugin_pipe_backlog was allowing to keep an artificial backlog of
+    data in the Core Process so to maximise bypass poll() syscalls in
+    plugins. If home-grown queueing is found limiting, instead of
+    falling back to such strategies, ZeroMQ queueing should be used.
+  - pmacctd: deprecated support for legacy link layers: FDDI, Token Ring
+    and HDLC.
+
+1.6.2 -- 21-04-2017
+  + BGP, BMP daemons: introduced support for BGP Large Communities IETF
+    draft (draft-ietf-idr-large-community). Large Communities are stored
+    in a variable-length field. Thanks to Job Snijders ( @job ) for his
+    support.
+  + BGP daemon: implemented draft-ietf-idr-shutdown. The draft defines a
+    mechanism to transmit a short freeform UTF-8 message as part of a
+    Cease NOTIFICATION message to inform the peer why the BGP session is
+    being shutdown or reset. Thanks to Job Snijders ( @job ) for his
+    support. 
+  + tee plugin, pre_tag_map: introduced support for inspetion of specific
+    flow primitives and selective replication over them. The primitives
+    supported are: input and output interfaces, source and destination
+    MAC addresses, VLAN ID. The feature is now limited to sFlow v5 only. 
+    Thanks to Nick Hilliard and Barry O'Donovan for their support.
+  + Added src_host_pocode and dst_host_pocode primitives, pocode being a
+    compact and (de-)aggregatable (easy to identify districts, cities,
+    metro areas, etc.) geographical representation, based on the Maxmind
+    v2 City Database. Thanks to Jerred Horsman for his support.
+  + Kafka support: introduced support for user-defined (librdkafka) config
+    file via the new *_kafka_config_file config directives. Full pathname
+    to a file containing directives to configure librdkafka is expected.
+    All knobs whose values are string, integer, boolean are supported.
+  + AMQP, Kafka plugins: introduced new directives kafka_avro_schema_topic,
+    amqp_avro_schema_routing_key to transmit Apache Avro schemas at regular
+    time intervals. The routing key/topic can overlap with the one used to
+    send actual data.
+  + AMQP, Kafka plugins: introduced support for start/stop markers when
+    encoding is set to Avro (ie. 'kafka_output: avro'); also Avro schema
+    is now embedded in a JSON envelope when sending it via a topic/routing
+    key (ie. kafka_avro_schema_topic).
+  + print plugin: introduced new config directive avro_schema_output_file
+    to save the Apache Avro schema in a separate file (it was only possible
+    to have it combined at the beginning of the data file).  
+  + BGP daemon: introduced a new bgp_daemon_as config directive to set a
+    LocalAS which could be different from the remote peer one. This is to
+    establish an eBGP session instead of a iBGP one (default).
+  + flow_to_rd_map: introduced support for mpls_vpn_id. In NetFlow/IPFIX
+    this is compared against Field Types #234 and #235.
+  + sfacctd: introduced support for sFlow v2/v4 counter samples (generic,
+    ethernet, vlan). This is in addition to existing support for sFlow v5
+    counters.
+  + BGP, BMP and Streming Telemetry daemons: added writer_id field when
+    writing to Kafka and/or RabbitMQ. The field reports the configured
+    core_proc_name and the actual PID of the writer process (so, while
+    being able to correlate writes to the same daemon, it's also possible
+    to distinguish among overlapping writes).
+  + amqp, kafka, print plugins: harmonized JSON output to the above: added
+    event_type field, writer_id field with plugin name and PID.
+  + BGP, BMP daemons: added AFI, SAFI information to log and dump outputs;
+    also show VPN Label if SAFI is MPLS VPN.
+  + pmbgpd, pmbmpd: added logics to bypass building RIBs if only logging
+    BGP/BMP data real-time.
+  + BMP daemon: added BMP peer TCP port to log and dump outputs (for NAT
+    traversal scenarios). Contextually, multiple TCP sessions per IP are
+    now supported for the same reason.
+  + SQL plugins: ported (from print, etc. plugins) the 1.6.1 re-working of
+    the max_writers feature.
+  + uacctd: use current time when we don't have a timestamp from netlink.
+    We only get a timestamp when there is a timestamp in the skb. Notably,
+    locally generated packets don't get a timestamp. The patch is courtesy
+    by Vincent Bernat ( @vincentbernat ).
+  + build system: added configure options for partial linking of binaries
+    with any selection/combination of IPv4/IPv6 accounting daemons, BGP
+    daemon, BMP daemon and Streaming Telemetry daemon possible. By default
+    all are compiled in.
+  + BMP daemon: internal code changes to pass additional info from BMP
+    per-peer header to bgp_parse_update_msg(). Goal is to expose further
+    info, ie. pre- vs post- policy, when logging or dumping BMP info.
+  ! fix, BGP daemon: introduced parsing of IPv6 MPLS VPN (vpnv6) NLRIs.
+    Thanks to Alberto Santos ( @m4ccbr ) for reporting the issue.
+  ! fix, BGP daemon: upon doing routes lookup, now correctly honouring
+    the case of BGP-LU (SAFI_MPLS_LABEL). 
+  ! fix, BGP daemon: send BGP NOTIFICATION out in case of known failures
+    in bgp_parse_msg().
+  ! fix, kafka_partition, *_kafka_partition: default value changed from 0
+    (partition zero) to -1 (RD_KAFKA_PARTITION_UA, partition unassigned).
+    Thanks to Johan van den Dorpe ( @johanek ) for his support.
+  ! fix, pre_tag_map: removed constraint for 'ip' keyword for nfacctd and
+    sfacctd maps. While this is equivalent syntax to specifying rules with
+    'ip=0.0.0.0/0', it allows for map indexing (maps_index: true).
+  ! fix, bgp_agent_map: improved sanity check against bgp_ip for IPv6
+    addresses (ie. an issue appeared for the case of '::1' where the first
+    64 bits are zeroed out). Thanks to Charlie Smurthwaite ( @catphish )
+    for reporting the issue.
+  ! fix, maps_index: indexing now correctly works for IPv6 pre_tag_map
+    entries. That is, those where 'ip', the IP address of the NetFlow/
+    IPFIX/sFlow exporter, is an IPv6 address.
+  ! fix, pre_tag_map: if mpls_vpn_rd matching condition is specified and
+    maps_index is enabled, PT_map_index_fdata_mpls_vpn_rd_handler() now
+    picks the right (and expected) info.
+  ! fix, pkt_handlers.c: improved definition and condition to free() in
+    bgp_ext_handler() in order to prevent SEGVs. Thanks to Paul Mabey for
+    his support.
+  ! fix, kafka_common.c: removed waiting time from p_kafka_set_topic().
+    Added docs advicing to create in advance Kafka topics.
+  ! fix, sfacctd, sfprobe: tag and tag2 are now correctly re-defined as
+    64 bits long.
+  ! fix, sfprobe plugin, sfacctd: tags and class primitives are now being
+    encoded/decoded using enterprise #43874, legit, instead of #8800, that
+    was squatted back in the times. See issue #71 on GiHub for more info.
+  ! fix, sfacctd: lengthCheck() + skipBytes() were producing an incorrect
+    jump in case of unknown flow samples. Replaced by skipBytesAndCheck().
+    Thanks to Elisa Jasinska ( @fooelisa ) for her support.
+  ! fix, pretag_handlers.c: in bgp_agent_map added case for 'vlan and ...'
+    filter values.
+  ! fix, BGP daemon: multiple issues of partial visibility of the stored
+    RIBs and SEGVs when bgp_table_per_peer_buckets was not left default:
+    don't mess with bms->table_per_peer_buckets given the multi-threaded
+    scenario. Thanks to Dan Berger ( @dfberger ) for his support.
+  ! fix, BGP, BMP daemons: bgp_process_withdraw() function init aligned to
+    bgp_process_update() in order to prevent SEGVs. Thanks to Yuri Lachin
+    for his support.
+  ! fix, bgp_msg.c: Route Distinguisher was stored and printed incorrectly
+    when of type RD_TYPE_IP. Thanks to Alberto Santos ( @m4ccbr ) for
+    reporting the issue.
+  ! fix, bgp_logdump.c: p_kafka_set_topic() was being wrongly applied to
+    an amqp_host structure (instead of a kafka_host structure). Thanks to
+    Corentin Neau ( @weyfonk ) for reporting the issue.
+  ! fix, BGP daemon: improved BGP next-hop setting and comparison in cases
+    of MP_REACH_NLRI and MPLS VPNs. Many thanks to both Catalin Petrescu
+    ( @cpmarvin ) and Alberto Santos ( @m4ccbr ) for their support.
+  ! fix, pmbgpd, pmbmpd: pidfile was not written even if configured. Thanks
+    to Aaron Glenn ( @aaglenn ) for reporting the issue.
+  ! fix, tee plugin: tee_max_receiver_pools is now correctly honoured and
+    debug message shows the replicatd protocol, ie. NetFlow/IPFIX vs sFlow.
+  ! AMQP, Kafka plugins: separate JSON objects, newline separated, are
+    preferred to JSON arrays when buffering of output is enabled (ie.
+    kafka_multi_values) and output is set to JSON. This is due to quicker
+    serialisation performance shown by the Jansson library.
+  ! build system: switched to enable IPv6 support by default (while the
+    --disable-ipv6 knob can be used to reverse the behaviour). Patch is
+    courtesy by Elisa Jasinska ( @fooelisa ).
+  ! build system: given visibility, ie. via -V CL option, into compile
+    options enabled by default (ie. IPv6, threads, 64bit counters, etc.).
+  ! fix, nfprobe: free expired records when exporting to an unavailable
+    collector in order to prevent a memory leak. Patch is courtersy by
+    Vladimir Kunschikov ( @kunschikov ).
+  ! fix, AMQP plugin: set content type to binary in case of Apache Avro
+    output.
+  ! fix, AMQP, Kafka plugins: optimized amqp_avro_schema_routing_key and
+    kafka_avro_schema_topic. Avro schema is built only once at startup.
+  ! fix, cfg.c: improved parsing of config key-values where squared brakets
+    appear in the value part. Thanks to Brad Hein ( @regulatre ) for
+    reporting the issue. Also, detection of duplicates among plugin and
+    core process names was improved. 
+  ! fix, misc: compiler warnings: fix up missing includes and prototypes;
+    the patch is courtesy by Tim LaBerge ( @tlaberge ).
+  ! kafka_consumer.py, amqp_receiver.py: Kafka, RabbitMQ consumer example
+    scripts have been greatly expanded to support posting to a REST API or
+    to a new Kafka topic, including some stats. Also conversion of multiple
+    newline-separated JSON objects to a JSON array has been added. Misc
+    bugs were fixed.
+
+1.6.1 -- 31-10-2016
+  + Introduced pmbgpd daemon: a stand-alone BGP collector daemon; acts as a
+    passive neighbor and maintains per-peer RIBs; can log real-time and/or
+    dump at regular time-intervals BGP data to configured backends.
+  + Introduced pmbmpd daemon: a stand-alone BMP collector daemon; can log
+    real-time and/or dump at regular time-intervals BMP and BGP data to
+    configured backends.
+  + Introduced Apache Avro as part of print, AMQP and Kafka output: Apache
+    Avro is a data serialization system providing rich data structures, a
+    compact, fast, binary data format, a container file to store persistent
+    data, remote procedure call (RPC) and simple integration with dynamic
+    languages. The implementation is courtesy by Codethink Ltd.
+  + as_path, std_comm and ext_comm primitives: along with their src counter
+    parts, ie. src_as_path etc., have been re-worked to a variagle-length
+    internal representation which will lead, when using BGP primitives, to
+    memory savings of up to 50% compared to previous releases. 
+  + std_comm, ext_comm primitives: primitives are de-coupled so that they
+    are not multiplexed anymore in the same field, on output. Added a
+    tmp_comms_same_field config directive for backward compatibility.
+  + nfacctd: added support for repeated NetFlow v9/IPFIX field types. Also
+    flowStartDeltaMicroseconds (IE #158) and flowEndDeltaMicroseconds (#159)
+    are now supported for timestamping. 
+  + kafka plugin: it is now possible to specify -1 (RD_KAFKA_RTITION_UA) as
+    part of the kafka_partition config directive. Also, introduced support
+    for Kafka partition keys via kafka_partition_key and equivalent config
+    directives.
+  + kafka plugin: kafka_broker_host directive now allows to specify multiple
+    brokers, ie. "broker1:10000,broker2". The feature relies on capabilities
+    of underlying rd_kafka_brokers_add().
+  + tee, nfprobe, sfprobe plugins: introduced Kafka support for internal
+    pipe and buffering, ie. plugin_pipe_kafka. This is in addition to the
+    existing support for homegrown internal buffering and RabbitMQ.
+  + tee plugin: introduced support for variable-length buffers which reduces
+    CPU utilization.
+  + print, MongoDB, AMQP and Kafka plugins: re-worked max_writers feature to
+    not rely anymore on waitpid() inside signal handlers as it was failing on
+    some OS versions (and could not be reproduced on others). Thanks to
+    Janet Sullivan for her support.
+  + bgp_follow_nexthop_external: introduced feature to return, when true, the
+    next-hop from the routing table of the last node part of the supplied IP
+    prefix(es) as value for the 'peer_ip_dst' primitive. When false, default,
+    it returns the IP address of the last node part of the bgp_follow_nexthop 
+    config key.
+  + pmtelemetryd: added initial support for GPB. Input GPB data is currently
+    base64'd in the telemetry_data field of the daemon output JSON object. 
+  + pmtelemetryd: Added telemetry statistics. For each peer, track the number
+    of packets received, how many bytes are pulled off the wire, and the
+    resulting message payload. Dump these counts in logdump. Patch is courtesy
+    by Tim LaBerge.
+  + amqp_markers, kafka_markers: added start/end markers feature to AMQP and
+    Kafka plugins output same as for the print plugin (print_markers).
+  + pre_tag_map: 'direction' keyword now applies to sFlow too: it does expect
+    values 0 (ingress direction) or 1 (egress direction), just like before.
+    In sFlow v2/v4/v5 this returns a positive match if: 1) source_id equals
+    to input interface and this 'direction' key is set to '0' or 2) source_id
+    equals to output interface and this 'direction' key is set to '1'.
+  + bgp_agent_map: introduced support for input and output interfaces. This
+    is relevant to VPN scenarios.
+  + tmp_asa_bi_flow hack: bi-flows use two counters to report counters, ie.
+    bytes and packets, in forward and reverse directions. This hack (ab)uses
+    the packets field in order to store the extra bytes counter.
+  ! fix, nfacctd: debugging NetFlow v9/IPFIX templates, added original field
+    type number to the output when the field is known and its description is
+    presented.
+  ! fix, Jansson: added JSON_PRESERVE_ORDER flag to json_dumps() to give
+    output consistency across runs.
+  ! fix, kafka_common.c: added rd_kafka_message_destroy() to p_kafka_consume_
+    _data() to prevent memory leaks. Thanks to Paul Mabey for his support
+    solving the issue.
+  ! fix, kafka_common.c: p_kafka_set_topic() now gives it some time for the
+    topic to get (auto) created, if needed.
+  ! fix, print plugin: improved check for when to print table title (csv,
+    formatted). Either 1) print_output_file_append is set to false or 2)
+    print_output_file_append is set to true and file is to be created.
+  ! fix, print_markers: start marker is now printed also in the case where
+    print_output_file_append is set to true. Also, markers are now printed as
+    a JSON object, if output is set to JSON.
+  ! fix, pkt_handlers.c: removed l3_proto checks from NF_peer_dst_ip_handler()
+    for cases where a v6 flows has a v4 BGP next-hop (ie. vpnv6)
+  ! fix, pre_tag_map: removed 32 chars length limit from set_label statement.
+  ! fix, custom primitives: names are now interpreted as case-insensitive.
+    Patch is courtesy by Corentin Neau.
+  ! fix, BGP, BMP and Streaming Telemetry: if reopening [bgp, bmp, telemetry]_
+    daemon_msglog_file via SIGHUP, reset reload flag.
+  ! fix, BGP, BMP and Streaming Telemetry: removed gettimeofday() from bgp_
+    peer_dump_init() and bgp_peer_dump_close() in order to maintain a single
+    timestamp for a full dump event. Thanks to Tim LaBerge for his support.
+  ! fix, BGP, BMP and Streaming Telemetry: output log and dump messages went
+    through a general review to improve information consistency and usability.
+    Message formats are now documented in docs/MSGLOG_DUMP_FORMATS so to more
+    easily track future changes. 
+  ! fix, pmtelemetryd: avoiding un-necessary spawn of a default plugin if none
+    is defined.
+  ! fix, pmtelemetryd: Mask SIGCHLD during socket IO. If we happen to be
+    blocked in recv() while a log dump happens, recv() will fail with EINTR.
+    This is to mask SIGCHLD during socket IO and restores the original mask
+    after the IO completes. Patch is courtesy by Tim LaBerge.
+  ! fix, build system: misc improvements made to the build system introduced
+    in 1.6.0. Thanks to Vincent Bernat for his support in this area.
+  ! fix, compiler warnings: ongoing effort to suppress warning messages when
+    compiling. Thanks to Tim LaBerge, Matin Mitchell for their contributions.
 
 1.6.0 -- 07-06-2016
-  + Streamed telemetry daemon: quoting Cisco IOS-XR Telemetry Configuration
+  + Streaming telemetry daemon: quoting Cisco IOS-XR Telemetry Configuration
     Guide at the time of this writing: "Streaming telemetry [ .. ] data
     can be used for analysis and troubleshooting purposes to maintain the
     health of the network. This is achieved by leveraging the capabilities of
-    machine-to-machine communication. [ .. ]" Streamed telemetry support comes
+    machine-to-machine communication. [ .. ]" Streming telemetry support comes
     in two flavours: 1) a telemetry thread can be started in existing daemons,
     ie. sFlow, NetFlow/IPFIX, etc. for the purpose of data correlation and 2)
-    a new daemon pmtelemetryd for standalone consumpton of data. Streamed
-    telemetry data can be logged real-time and/or dumped at regular time
-    intervals to flat-files, RabbitMQ or Kafka brokers.
+    a new daemon pmtelemetryd for standalone consumpton of data. Streaming
+    network telemetry data can be logged real-time and/or dumped at regular
+    time intervals to flat-files, RabbitMQ or Kafka brokers.
   + BMP daemon: introduced support for Route Monitoring messages. RM messages
     "provide an initial dump of all routes received from a peer as well as an
     ongoing mechanism that sends the incremental routes advertised and

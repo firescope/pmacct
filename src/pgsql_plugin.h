@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -33,7 +33,7 @@ int PG_cache_dbop_copy(struct DBdesc *, struct db_cache *, struct insert_data *)
 void PG_cache_purge(struct db_cache *[], int, struct insert_data *);
 int PG_evaluate_history(int);
 int PG_compose_static_queries();
-void PG_compose_conn_string(struct DBdesc *, char *);
+void PG_compose_conn_string(struct DBdesc *, char *, int);
 void PG_Lock(struct DBdesc *);
 void PG_DB_Connect(struct DBdesc *, char *);
 void PG_DB_Close(struct BE_descs *);
@@ -42,6 +42,7 @@ static int PG_affected_rows(PGresult *);
 void PG_create_backend(struct DBdesc *);
 void PG_set_callbacks(struct sqlfunc_cb_registry *);
 void PG_init_default_values(struct insert_data *);
+void PG_postgresql_get_version();
 
 /* global vars */
 int typed = TRUE;

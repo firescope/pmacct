@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -51,6 +51,7 @@
  */
 
 #include "common.h"
+#include "addr.h"
 #include "sys-tree.h"
 #include "convtime.h"
 #include "../nfacctd.h"
@@ -82,8 +83,8 @@ struct CB_CTXT {
 };
 
 /* Netflow send functions */
-typedef int (netflow_send_func_t)(struct FLOW **, int, int, u_int64_t *,
-    struct timeval *, int, u_int8_t, u_int8_t);
+typedef int (netflow_send_func_t)(struct FLOW **, int, int, u_int64_t *, struct timeval *, int, u_int8_t, u_int32_t);
+
 struct NETFLOW_SENDER {
 	int version;
 	netflow_send_func_t *func;
@@ -183,14 +184,11 @@ EXPIRY_GENERATE(EXPIRIES, EXPIRY, trp, expiry_compare);
 static const char *
 format_time(time_t t)
 {
-	struct tm *tm;
-	static char buf[20];
+	static char buf[32];
 
-	tm = localtime(&t);
-	strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", tm);
+	pm_strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S$tzone", &t, config.timestamps_utc);
 
 	return (buf);
-
 }
 
 /* Format a flow in a verbose and ugly way */
@@ -286,8 +284,11 @@ transport_to_flowrec(struct FLOW *flow, struct pkt_data *data, struct pkt_extras
 }
 
 static int
-l2_to_flowrec(struct FLOW *flow, struct pkt_data *data, struct pkt_extras *extras, int ndx)
+l2_to_flowrec(struct FLOW *flow, struct primitives_ptrs *prim_ptrs, int ndx)
 {
+  struct pkt_data *data = prim_ptrs->data;
+  struct pkt_mpls_primitives *pmpls = prim_ptrs->pmpls;
+  struct pkt_extras *extras = prim_ptrs->pextras;
   struct pkt_primitives *p = &data->primitives;
   int direction = 0;
 
@@ -321,41 +322,56 @@ l2_to_flowrec(struct FLOW *flow, struct pkt_data *data, struct pkt_extras *extra
   memcpy(&flow->mac[ndx][0], &p->eth_shost, 6);
   memcpy(&flow->mac[ndx ^ 1][0], &p->eth_dhost, 6);
   flow->vlan = p->vlan_id;
-  flow->mpls_label[ndx] = extras->mpls_top_label;
 #endif
 
-  if (!p->ifindex_in && !p->ifindex_out) {
-    if (config.nfprobe_ifindex_type) {
-      switch (config.nfprobe_ifindex_type) {
-      case IFINDEX_STATIC:
-        flow->ifindex[ndx] = (direction == DIRECTION_IN) ? config.nfprobe_ifindex : 0;
-        flow->ifindex[ndx ^ 1] = (direction == DIRECTION_OUT) ? config.nfprobe_ifindex : 0;
-        break;
-      case IFINDEX_TAG:
-        flow->ifindex[ndx] = (direction == DIRECTION_IN) ? p->tag : 0;
-	flow->ifindex[ndx ^ 1] = (direction == DIRECTION_OUT) ? p->tag : 0;
-	break;
-      case IFINDEX_TAG2:
-        flow->ifindex[ndx] = (direction == DIRECTION_IN) ? p->tag2 : 0;
-	flow->ifindex[ndx ^ 1] = (direction == DIRECTION_OUT) ? p->tag2 : 0;
-        break;
-      default:
-        flow->ifindex[ndx] = 0;
-	flow->ifindex[ndx ^ 1] = 0;
-      }
+  if (pmpls) flow->mpls_label[ndx] = pmpls->mpls_label_top;
+
+  if (p->ifindex_in) flow->ifindex[ndx] = p->ifindex_in;
+  else if (config.nfprobe_ifindex_type && direction == DIRECTION_IN) {
+    switch (config.nfprobe_ifindex_type) {
+    case IFINDEX_STATIC:
+      flow->ifindex[ndx] = config.nfprobe_ifindex;
+      break;
+    case IFINDEX_TAG:
+      flow->ifindex[ndx] = p->tag;
+      break;
+    case IFINDEX_TAG2:
+      flow->ifindex[ndx] = p->tag2;
+      break;
+    default:
+      flow->ifindex[ndx] = 0;
+      break;
     }
   }
-  else {
-    flow->ifindex[ndx] = p->ifindex_in;
-    flow->ifindex[ndx ^ 1] = p->ifindex_out;
+  else flow->ifindex[ndx] = 0;
+
+  if (p->ifindex_out) flow->ifindex[ndx ^ 1] = p->ifindex_out;
+  else if (config.nfprobe_ifindex_type && direction == DIRECTION_OUT) {
+    switch (config.nfprobe_ifindex_type) {
+    case IFINDEX_STATIC:
+      flow->ifindex[ndx ^ 1] = config.nfprobe_ifindex; 
+      break;
+    case IFINDEX_TAG:
+      flow->ifindex[ndx ^ 1] = p->tag;
+      break;
+    case IFINDEX_TAG2:
+      flow->ifindex[ndx ^ 1] = p->tag2;
+      break;
+    default:
+      flow->ifindex[ndx ^ 1] = 0;
+      break;
+    }
   }
+  else flow->ifindex[ndx ^ 1] = 0;
 
   return (0);
 }
 
 static int
-l2_to_flowrec_update(struct FLOW *flow, struct pkt_data *data, struct pkt_extras *extras, int ndx)
+l2_to_flowrec_update(struct FLOW *flow, struct primitives_ptrs *prim_ptrs, int ndx)
 {
+  struct pkt_data *data = prim_ptrs->data;
+  struct pkt_extras *extras = prim_ptrs->pextras;
   struct pkt_primitives *p = &data->primitives;
   int direction = 0;
 
@@ -433,6 +449,7 @@ static int
 ipv4_to_flowrec(struct FLOW *flow, struct primitives_ptrs *prim_ptrs, int *isfrag, int af)
 {
   struct pkt_data *data = prim_ptrs->data;
+  struct pkt_bgp_primitives *pbgp = prim_ptrs->pbgp;
   struct pkt_extras *extras = prim_ptrs->pextras;
   char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
@@ -445,7 +462,7 @@ ipv4_to_flowrec(struct FLOW *flow, struct primitives_ptrs *prim_ptrs, int *isfra
   flow->af = af;
   flow->addr[ndx].v4 = p->src_ip.address.ipv4;
   flow->addr[ndx ^ 1].v4 = p->dst_ip.address.ipv4;
-  flow->bgp_next_hop[ndx].v4 = extras->bgp_next_hop.address.ipv4;
+  if (pbgp) flow->bgp_next_hop[ndx].v4 = pbgp->peer_dst_ip.address.ipv4;
   flow->mask[ndx] = p->src_nmask;
   flow->mask[ndx ^ 1] = p->dst_nmask;
   flow->tos[ndx] = p->tos;
@@ -454,12 +471,15 @@ ipv4_to_flowrec(struct FLOW *flow, struct primitives_ptrs *prim_ptrs, int *isfra
   flow->packets[ndx] = data->pkt_num;
   flow->flows[ndx] = data->flo_num;
   flow->class = p->class;
+#if defined (WITH_NDPI)
+  memcpy(&flow->ndpi_class, &p->ndpi_class, sizeof(pm_class2_t));
+#endif
   flow->tag[ndx] = p->tag;
   flow->tag2[ndx] = p->tag2;
 
   *isfrag = 0;
 
-  l2_to_flowrec(flow, data, extras, ndx);
+  l2_to_flowrec(flow, prim_ptrs, ndx);
   ASN_to_flowrec(flow, data, ndx);
   cust_to_flowrec(flow, pcust, ndx);
   vlen_to_flowrec(flow, pvlen, ndx);
@@ -471,6 +491,7 @@ static int
 ipv4_to_flowrec_update(struct FLOW *flow, struct primitives_ptrs *prim_ptrs, int *isfrag, int af)
 {
   struct pkt_data *data = prim_ptrs->data;
+  struct pkt_bgp_primitives *pbgp = prim_ptrs->pbgp;
   struct pkt_extras *extras = prim_ptrs->pextras;
   char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
@@ -480,9 +501,10 @@ ipv4_to_flowrec_update(struct FLOW *flow, struct primitives_ptrs *prim_ptrs, int
   /* Prepare to store flow in canonical format */
   ndx = memcmp(&p->src_ip.address.ipv4, &p->dst_ip.address.ipv4, sizeof(p->src_ip.address.ipv4)) > 0 ? 1 : 0;
 
-  if (!flow->bgp_next_hop[ndx].v4.s_addr) flow->bgp_next_hop[ndx].v4 = extras->bgp_next_hop.address.ipv4;
+  if (pbgp && !flow->bgp_next_hop[ndx].v4.s_addr)
+    flow->bgp_next_hop[ndx].v4 = pbgp->peer_dst_ip.address.ipv4;
 
-  l2_to_flowrec_update(flow, data, extras, ndx);
+  l2_to_flowrec_update(flow, prim_ptrs, ndx);
   cust_to_flowrec(flow, pcust, ndx);
   vlen_to_flowrec(flow, pvlen, ndx);
 
@@ -495,6 +517,7 @@ static int
 ipv6_to_flowrec(struct FLOW *flow, struct primitives_ptrs *prim_ptrs, int *isfrag, int af)
 {
   struct pkt_data *data = prim_ptrs->data;
+  struct pkt_bgp_primitives *pbgp = prim_ptrs->pbgp;
   struct pkt_extras *extras = prim_ptrs->pextras;
   char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
@@ -509,7 +532,7 @@ ipv6_to_flowrec(struct FLOW *flow, struct primitives_ptrs *prim_ptrs, int *isfra
   flow->ip6_flowlabel[ndx] = 0;
   flow->addr[ndx].v6 = p->src_ip.address.ipv6; 
   flow->addr[ndx ^ 1].v6 = p->dst_ip.address.ipv6; 
-  flow->bgp_next_hop[ndx].v6 = extras->bgp_next_hop.address.ipv6;
+  if (pbgp) flow->bgp_next_hop[ndx].v6 = pbgp->peer_dst_ip.address.ipv6;
   flow->mask[ndx] = p->src_nmask;
   flow->mask[ndx ^ 1] = p->dst_nmask;
   flow->protocol = p->proto;
@@ -517,12 +540,15 @@ ipv6_to_flowrec(struct FLOW *flow, struct primitives_ptrs *prim_ptrs, int *isfra
   flow->packets[ndx] = data->pkt_num; 
   flow->flows[ndx] = data->flo_num;
   flow->class = p->class;
+#if defined (WITH_NDPI)
+  memcpy(&flow->ndpi_class, &p->ndpi_class, sizeof(pm_class2_t));
+#endif
   flow->tag[ndx] = p->tag;
   flow->tag2[ndx] = p->tag2;
 
   *isfrag = 0;
 
-  l2_to_flowrec(flow, data, extras, ndx);
+  l2_to_flowrec(flow, prim_ptrs, ndx);
   ASN_to_flowrec(flow, data, ndx);
   cust_to_flowrec(flow, pcust, ndx);
   vlen_to_flowrec(flow, pvlen, ndx);
@@ -534,6 +560,7 @@ static int
 ipv6_to_flowrec_update(struct FLOW *flow, struct primitives_ptrs *prim_ptrs, int *isfrag, int af)
 {
   struct pkt_data *data = prim_ptrs->data;
+  struct pkt_bgp_primitives *pbgp = prim_ptrs->pbgp;
   struct pkt_extras *extras = prim_ptrs->pextras;
   char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
@@ -545,10 +572,10 @@ ipv6_to_flowrec_update(struct FLOW *flow, struct primitives_ptrs *prim_ptrs, int
   memset(&dummy_ipv6, 0, sizeof(dummy_ipv6));
   ndx = memcmp(&p->src_ip.address.ipv6, &p->dst_ip.address.ipv6, sizeof(p->src_ip.address.ipv6)) > 0 ? 1 : 0;
 
-  if (!memcmp(&dummy_ipv6, &flow->bgp_next_hop[ndx].v6, sizeof(dummy_ipv6)))
-    flow->bgp_next_hop[ndx].v6 = extras->bgp_next_hop.address.ipv6;
+  if (pbgp && !memcmp(&dummy_ipv6, &flow->bgp_next_hop[ndx].v6, sizeof(dummy_ipv6)))
+    flow->bgp_next_hop[ndx].v6 = pbgp->peer_dst_ip.address.ipv6;
 
-  l2_to_flowrec_update(flow, data, extras, ndx);
+  l2_to_flowrec_update(flow, prim_ptrs, ndx);
   cust_to_flowrec(flow, pcust, ndx);
   vlen_to_flowrec(flow, pvlen, ndx);
 
@@ -675,7 +702,7 @@ process_packet(struct FLOWTRACK *ft, struct primitives_ptrs *prim_ptrs, const st
   struct pkt_data *data = prim_ptrs->data;
 
   struct FLOW tmp, *flow;
-  int frag, af, dont_summarize = (config.acct_type == ACCT_NF ? 1 : 0);
+  int frag, af;
 
   ft->total_packets += data->pkt_num;
   af = (data->primitives.src_ip.family == 0 ? AF_INET : data->primitives.src_ip.family);
@@ -706,7 +733,7 @@ process_packet(struct FLOWTRACK *ft, struct primitives_ptrs *prim_ptrs, const st
     ft->frag_packets += data->pkt_num;
 
   /* If a matching flow does not exist, create and insert one */
-  if (dont_summarize || ((flow = FLOW_FIND(FLOWS, &ft->flows, &tmp)) == NULL)) {
+  if (config.nfprobe_dont_cache || ((flow = FLOW_FIND(FLOWS, &ft->flows, &tmp)) == NULL)) {
     /* Allocate and fill in the flow */
     if ((flow = malloc(sizeof(*flow))) == NULL) return (PP_MALLOC_FAIL);
     memcpy(flow, &tmp, sizeof(*flow));
@@ -718,9 +745,8 @@ process_packet(struct FLOWTRACK *ft, struct primitives_ptrs *prim_ptrs, const st
     if ((flow->expiry = malloc(sizeof(*flow->expiry))) == NULL)
       return (PP_MALLOC_FAIL);
     flow->expiry->flow = flow;
-    /* Expiration note: 0 means expire immediately; we prefer this to happen 
-       when attaching to nfacctd - ie. dont_summarize is TRUE */
-    if (!dont_summarize) flow->expiry->expires_at = 1;
+    /* Expiration note: 0 means expire immediately */
+    if (!config.nfprobe_dont_cache) flow->expiry->expires_at = 1;
     else flow->expiry->expires_at = 0;
     flow->expiry->reason = R_GENERAL;
     EXPIRY_INSERT(EXPIRIES, &ft->expiries, flow->expiry);
@@ -755,6 +781,10 @@ process_packet(struct FLOWTRACK *ft, struct primitives_ptrs *prim_ptrs, const st
 #endif
     }
     if (!flow->class) flow->class = tmp.class;
+#if defined (WITH_NDPI)
+    if (!flow->ndpi_class.app_protocol)
+      memcpy(&flow->ndpi_class, &tmp.ndpi_class, sizeof(pm_class2_t));
+#endif
     if (!flow->tag[0]) flow->tag[0] = tmp.tag[0];
     if (!flow->tag[1]) flow->tag[1] = tmp.tag[1];
     if (!flow->tag2[0]) flow->tag2[0] = tmp.tag2[0];
@@ -911,7 +941,7 @@ next_expire(struct FLOWTRACK *ft)
 #define CE_EXPIRE_ALL		-1 /* Expire all flows immediately */
 #define CE_EXPIRE_FORCED	1  /* Only expire force-expired flows */
 static int
-check_expired(struct FLOWTRACK *ft, struct NETFLOW_TARGET *target, int ex, u_int8_t engine_type, u_int8_t engine_id)
+check_expired(struct FLOWTRACK *ft, struct NETFLOW_TARGET *target, int ex, u_int8_t engine_type, u_int32_t engine_id)
 {
 	struct FLOW **expired_flows, **oldexp;
 	int num_expired, i, r;
@@ -975,6 +1005,11 @@ check_expired(struct FLOWTRACK *ft, struct NETFLOW_TARGET *target, int ex, u_int
 		if (target != NULL) {
 			if (target->fd == -1) {
 			  Log(LOG_WARNING, "WARN ( %s/%s ): No connection to collector, discarding flows\n", config.name, config.type);
+			  for (i = 0; i < num_expired; i++) {
+				  free_flow_allocs(expired_flows[i]);
+				  free(expired_flows[i]);
+			  }
+			  free(expired_flows);
 			  return -1;
                         }
 			else {
@@ -1344,23 +1379,44 @@ parse_hostport(const char *s, struct sockaddr *addr, socklen_t *len)
 }
 
 static void
-parse_engine(char *s, u_int8_t *engine_type, u_int8_t *engine_id)
+parse_engine(char *s, u_int8_t *engine_type, u_int32_t *engine_id)
 {
   char *delim, *ptr;
 
+  if (config.nfprobe_version == 1) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): parse_engine(): NetFlow v1 export does not support nfprobe_engine.\n", config.name, config.type);
+    exit_plugin(1);
+  }
+
   trim_spaces(s);
   delim = strchr(s, ':');
+  
+  /* NetFlow v5 case */
   if (delim) {
+    if (config.nfprobe_version != 5) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): parse_engine(): engine_type:engine_id is only supported on NetFlow v5 export.\n", config.name, config.type);
+      exit_plugin(1);
+    }
+
     *delim = '\0';
     ptr = delim+1;
     *engine_type = atoi(s);
     *engine_id = atoi(ptr);
     *delim = ':';
+
+    if ((*engine_type) > 255) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): parse_engine(): NetFlow v5 engine_type values are limited to 0-255.\n", config.name, config.type);
+      exit_plugin(1);
+    }
   }
+  /* NetFlow v9 / IPFIX case */
   else {
-    *engine_type = 0;
-    *engine_id = 0;
-    Log(LOG_WARNING, "WARN ( %s/%s ): Engine Type/ID '%s' is not valid. Ignoring.\n", config.name, config.type, s);
+    if (config.nfprobe_version != 9 && config.nfprobe_version != 10) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): parse_engine(): source_id is only supported on NetFlow v9/IPFIX exports.\n", config.name, config.type);
+      exit_plugin(1);
+    }
+
+    *engine_id = strtoul(s, &delim, 10);
   }
 }
 
@@ -1373,9 +1429,9 @@ void nfprobe_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   struct timezone tz;
   unsigned char *pipebuf;
   time_t now, refresh_deadline;
-  int refresh_timeout, amqp_timeout, ret, num;
+  int refresh_timeout, ret, num, recv_budget, poll_bypass;
   char default_receiver[] = "127.0.0.1:2100";
-  char default_engine[] = "0:0";
+  char default_engine_v5[] = "0:0", default_engine_v9[] = "0";
   struct ring *rg = &((struct channels_list_entry *)ptr)->rg;
   struct ch_status *status = ((struct channels_list_entry *)ptr)->status;
   struct plugins_list_entry *plugin_data = ((struct channels_list_entry *)ptr)->plugin;
@@ -1396,16 +1452,18 @@ void nfprobe_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   socklen_t dest_len;
   struct NETFLOW_TARGET target;
   struct CB_CTXT cb_ctxt;
-  u_int8_t engine_type, engine_id;
+  u_int8_t engine_type;
+  u_int32_t engine_id;
 
   struct extra_primitives extras;
   struct primitives_ptrs prim_ptrs;
 
-#ifdef WITH_RABBITMQ
-  struct p_amqp_host *amqp_host = &((struct channels_list_entry *)ptr)->amqp_host;
+#ifdef WITH_ZMQ
+  struct p_zmq_host *zmq_host = &((struct channels_list_entry *)ptr)->zmq_host;
+#else
+  void *zmq_host;
 #endif
 
-  /* XXX: glue */
   memcpy(&config, cfgptr, sizeof(struct configuration));
   memcpy(&extras, &((struct channels_list_entry *)ptr)->extras, sizeof(struct extra_primitives));
   recollect_pipe_memory(ptr);
@@ -1462,9 +1520,7 @@ void nfprobe_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 
   dest_len = sizeof(dest);
   if (!config.nfprobe_receiver) config.nfprobe_receiver = default_receiver;
-  if (!config.nfprobe_engine) config.nfprobe_engine = default_engine;
   parse_hostport(config.nfprobe_receiver, (struct sockaddr *)&dest, &dest_len);
-  parse_engine(config.nfprobe_engine, &engine_type, &engine_id);
 
 sort_version:
   for (i = 0, r = config.nfprobe_version; nf[i].version != -1; i++) {
@@ -1476,6 +1532,14 @@ sort_version:
     goto sort_version;
   }
   target.dialect = &nf[i];
+
+  if (!config.nfprobe_engine) {
+    if (config.nfprobe_version == 5)
+      config.nfprobe_engine = default_engine_v5;
+    else if (config.nfprobe_version == 9 || config.nfprobe_version == 10)
+      config.nfprobe_engine = default_engine_v9;
+  }
+  parse_engine(config.nfprobe_engine, &engine_type, &engine_id);
 
   /* Netflow send socket */
   if (dest.ss_family != 0) {
@@ -1513,13 +1577,7 @@ sort_version:
   pipebuf = (unsigned char *) pm_malloc(config.buffer_size);
   memset(pipebuf, 0, config.buffer_size);
 
-  if (config.pipe_amqp) {
-    plugin_pipe_amqp_compile_check();
-#ifdef WITH_RABBITMQ
-    pipe_fd = plugin_pipe_amqp_connect_to_consume(amqp_host, plugin_data);
-    amqp_timeout = plugin_pipe_set_retry_timeout(&amqp_host->btimers, pipe_fd);
-#endif
-  }
+  if (config.pipe_zmq) P_zmq_pipe_init(zmq_host, &pipe_fd, &seq);
   else setnonblocking(pipe_fd);
 
   memset(&prim_ptrs, 0, sizeof(prim_ptrs));
@@ -1541,23 +1599,22 @@ sort_version:
   }
 
   for(;;) {
-poll_again:
     status->wakeup = TRUE;
+    poll_bypass = FALSE;
 
     pfd.fd = pipe_fd;
     pfd.events = POLLIN;
 
-    if (config.pipe_homegrown || config.pipe_amqp) {
-      timeout = MIN(refresh_timeout, (amqp_timeout ? amqp_timeout : INT_MAX));
-      ret = poll(&pfd, (pfd.fd == ERR ? 0 : 1), timeout);
-    }
-    else {
-      /* Preps for Kafka support */
-      Log(LOG_ERR, "ERROR ( %s/%s ): plugin_pipe method not supported. Exiting ..\n", config.name, config.type);
-      exit_plugin(1);
+    ret = poll(&pfd, (pfd.fd == ERR ? 0 : 1), refresh_timeout);
+
+    /* Flags set by signal handlers or control socket */
+    if (graceful_shutdown_request) {
+      Log(LOG_WARNING, "WARN ( %s/%s ): Shutting down on user request.\n", config.name, config.type);
+      check_expired(&flowtrack, &target, CE_EXPIRE_ALL, engine_type, engine_id);
+      goto exit_lane;
     }
 
-    if (ret < 0) goto poll_again;
+    if (ret < 0) continue;
 
     /* Fatal error from per-packet functions */
     if (cb_ctxt.fatal) {
@@ -1565,6 +1622,7 @@ poll_again:
       break;
     }
 
+    poll_ops:
     if (reload_map) {
       load_networks(config.networks_file, &nt, &nc);
       load_ports(config.ports_file, &pt);
@@ -1573,18 +1631,19 @@ poll_again:
 
     now = time(NULL);
 
-#ifdef WITH_RABBITMQ
-    if (config.pipe_amqp && pipe_fd == ERR) {
-      if (timeout == amqp_timeout) {
-        pipe_fd = plugin_pipe_amqp_connect_to_consume(amqp_host, plugin_data);
-        amqp_timeout = plugin_pipe_set_retry_timeout(&amqp_host->btimers, pipe_fd);
-      }
-      else amqp_timeout = plugin_pipe_calc_retry_timeout_diff(&amqp_host->btimers, now);
+    recv_budget = 0;
+    if (poll_bypass) {
+      poll_bypass = FALSE;
+      goto read_data;
     }
-#endif
 
     if (ret > 0) { /* we received data */
-read_data:
+      read_data:
+      if (recv_budget == DEFAULT_PLUGIN_COMMON_RECV_BUDGET) {
+	poll_bypass = TRUE;
+	goto poll_ops;
+      }
+
       if (config.pipe_homegrown) {
         if (!pollagain) {
           seq++;
@@ -1611,6 +1670,8 @@ read_data:
               Log(LOG_WARNING, "WARN ( %s/%s ): Increase values or look for plugin_buffer_size, plugin_pipe_size in CONFIG-KEYS document.\n\n",
                         config.name, config.type);
   	    }
+
+	    rg->ptr = (rg->base + status->last_buf_off);
   	    seq = ((struct ch_buf_hdr *)rg->ptr)->seq;
   	  }
         }
@@ -1619,21 +1680,27 @@ read_data:
         memcpy(pipebuf, rg->ptr, bufsz);
         rg->ptr += bufsz;
       }
-#ifdef WITH_RABBITMQ
-      else if (config.pipe_amqp) {
-        ret = p_amqp_consume_binary(amqp_host, pipebuf, config.buffer_size);
-        if (ret) pipe_fd = ERR;
+#ifdef WITH_ZMQ
+      else if (config.pipe_zmq) {
+	ret = p_zmq_plugin_pipe_recv(zmq_host, pipebuf, config.buffer_size);
+	if (ret > 0) {
+	  if (seq && (((struct ch_buf_hdr *)pipebuf)->seq != ((seq + 1) % MAX_SEQNUM))) {
+	    Log(LOG_WARNING, "WARN ( %s/%s ): Missing data detected. Sequence received=%u expected=%u\n",
+		config.name, config.type, ((struct ch_buf_hdr *)pipebuf)->seq, ((seq + 1) % MAX_SEQNUM));
+	  }
 
-        seq = ((struct ch_buf_hdr *)pipebuf)->seq;
-        amqp_timeout = plugin_pipe_set_retry_timeout(&amqp_host->btimers, pipe_fd);
+	  seq = ((struct ch_buf_hdr *)pipebuf)->seq;
+	}
+	else goto handle_flow_expiration;
       }
 #endif
 
       data = (struct pkt_data *) (pipebuf+sizeof(struct ch_buf_hdr));
 
       if (config.debug_internal_msg) 
-        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received cpid=%u seq=%u num_entries=%u\n",
-                config.name, config.type, core_pid, seq, ((struct ch_buf_hdr *)pipebuf)->num);
+        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received cpid=%u len=%llu seq=%u num_entries=%u\n",
+                config.name, config.type, core_pid, ((struct ch_buf_hdr *)pipebuf)->len,
+                seq, ((struct ch_buf_hdr *)pipebuf)->num);
 
       if (!config.pipe_check_core_pid || ((struct ch_buf_hdr *)pipebuf)->core_pid == core_pid) {
       while (((struct ch_buf_hdr *)pipebuf)->num > 0) {
@@ -1641,13 +1708,7 @@ read_data:
           (*primptrs_funcs[num])((u_char *)data, &extras, &prim_ptrs);
 
         for (num = 0; net_funcs[num]; num++)
-	  (*net_funcs[num])(&nt, &nc, &data->primitives, &dummy_pbgp, &nfd);
-
-	/* hacky: bgp next-hop */
-        if (config.nfacctd_net & NF_NET_NEW && dummy_pbgp.peer_dst_ip.family) {
-          memcpy(&prim_ptrs.pextras->bgp_next_hop, &dummy_pbgp.peer_dst_ip, sizeof(struct host_addr));
-          memset(&dummy_pbgp, 0, sizeof(dummy_pbgp));
-        }
+	  (*net_funcs[num])(&nt, &nc, &data->primitives, prim_ptrs.pbgp, &nfd);
 
 	if (config.ports_file) {
 	  if (!pt.table[data->primitives.src_port]) data->primitives.src_port = 0;
@@ -1668,7 +1729,8 @@ read_data:
       }
       }
 
-      if (config.pipe_homegrown) goto read_data;
+      recv_budget++;
+      goto read_data;
     }
 
 handle_flow_expiration:
@@ -1707,13 +1769,6 @@ expiry_check:
 	force_expire(&flowtrack, flowtrack.num_flows - max_flows);
 	goto expiry_check;
       }
-    }
-    
-    /* Flags set by signal handlers or control socket */
-    if (graceful_shutdown_request) {
-      Log(LOG_WARNING, "WARN ( %s/%s ): Shutting down on user request.\n", config.name, config.type);
-      check_expired(&flowtrack, &target, CE_EXPIRE_ALL, engine_type, engine_id);
-      goto exit_lane;
     }
   }
 		

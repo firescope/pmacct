@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -25,6 +25,7 @@
 /* includes */
 #include "pmacct.h"
 #include "pmacct-dlt.h"
+#include "addr.h"
 #include "isis.h"
 #include "thread_pool.h"
 
@@ -59,7 +60,6 @@
 thread_pool_t *isis_pool;
 
 /* Functions */
-#if defined ENABLE_THREADS
 void nfacctd_isis_wrapper()
 {
   /* initialize threads pool */
@@ -70,7 +70,6 @@ void nfacctd_isis_wrapper()
   /* giving a kick to the BGP thread */
   send_to_pool(isis_pool, skinny_isis_daemon, NULL);
 }
-#endif
 
 void skinny_isis_daemon()
 {
@@ -370,7 +369,7 @@ void isis_srcdst_lookup(struct packet_ptrs *pptrs)
 
     if (pptrs->l3_proto == ETHERTYPE_IP) {
       if (!pptrs->igp_src) {
-	memcpy(&pref4, &((struct my_iphdr *)pptrs->iph_ptr)->ip_src, sizeof(struct in_addr));
+	memcpy(&pref4, &((struct pm_iphdr *)pptrs->iph_ptr)->ip_src, sizeof(struct in_addr));
 	result = route_node_match_ipv4(area->route_table[level-1], &pref4);
 
 	if (result) {
@@ -384,7 +383,7 @@ void isis_srcdst_lookup(struct packet_ptrs *pptrs)
       }
 
       if (!pptrs->igp_dst) {
-	memcpy(&pref4, &((struct my_iphdr *)pptrs->iph_ptr)->ip_dst, sizeof(struct in_addr));
+	memcpy(&pref4, &((struct pm_iphdr *)pptrs->iph_ptr)->ip_dst, sizeof(struct in_addr));
 	result = route_node_match_ipv4(area->route_table[level-1], &pref4);
 
 	if (result) {

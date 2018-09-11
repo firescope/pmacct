@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -26,6 +26,7 @@
 #include "pmacct.h"
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
+#include "bgp/bgp.h"
 
 /* extern */
 extern struct plugins_list_entry *plugin_list;
@@ -101,7 +102,7 @@ void ignore_falling_child()
 
   while ((cpid = waitpid(-1, &status, WNOHANG)) > 0) {
     if (!WIFEXITED(status)) Log(LOG_WARNING, "WARN ( %s/%s ): Abnormal exit status detected for child PID %u\n", config.name, config.type, cpid);
-    sql_writers.retired++;
+    // sql_writers.retired++;
   }
 
   signal(SIGCHLD, ignore_falling_child);
@@ -110,6 +111,16 @@ void ignore_falling_child()
 void my_sigint_handler(int signum)
 {
   struct plugins_list_entry *list = plugins_list;
+  char shutdown_msg[] = "pmacct received SIGINT - shutting down";
+
+  if (config.acct_type == ACCT_PMBGP || config.nfacctd_bgp == BGP_DAEMON_ONLINE) {
+    int idx;
+
+    for (idx = 0; idx < config.nfacctd_bgp_max_peers; idx++) {
+      if (peers[idx].fd)
+	bgp_peer_close(&peers[idx], FUNC_TYPE_BGP, TRUE, TRUE, BGP_NOTIFY_CEASE, BGP_NOTIFY_CEASE_ADMIN_SHUTDOWN, shutdown_msg);
+    }
+  }
 
   if (config.syslog) closelog();
 
@@ -141,11 +152,18 @@ void my_sigint_handler(int signum)
   Log(LOG_INFO, "INFO ( %s/%s ): OK, Exiting ...\n", config.name, config.type);
 
   if (config.acct_type == ACCT_PM && !config.uacctd_group /* XXX */) {
-    if (config.dev) {
-      if (pcap_stats(glob_pcapt, &ps) < 0) printf("\npcap_stats: %s\n", pcap_geterr(glob_pcapt));
-      printf("\n");
-      printf("%u packets received by filter\n", ps.ps_recv);
-      printf("%u packets dropped by kernel\n", ps.ps_drop);
+    int device_idx;
+
+    if (config.pcap_if) {
+      for (device_idx = 0; device_idx < device.num; device_idx++) {
+        if (pcap_stats(device.list[device_idx].dev_desc, &ps) < 0) {
+	  printf("INFO: [%s,%u] error='pcap_stats(): %s'\n", device.list[device_idx].str,
+		device.list[device_idx].id, pcap_geterr(device.list[device_idx].dev_desc));
+	}
+        printf("NOTICE: [%s,%u] received_packets=%u dropped_packets=%u\n",
+		device.list[device_idx].str, device.list[device_idx].id,
+		ps.ps_recv, ps.ps_drop);
+      }
     }
   }
 
@@ -186,13 +204,19 @@ void push_stats()
   time_t now = time(NULL);
 
   if (config.acct_type == ACCT_PM) {
-    if (config.dev) {
-      if (pcap_stats(glob_pcapt, &ps) < 0) Log(LOG_INFO, "INFO ( %s/%s ): pcap_stats: %s\n",
-						config.name, config.type, pcap_geterr(glob_pcapt));
-      Log(LOG_NOTICE, "NOTICE ( %s/%s ): %s: (%u) %u packets received by filter\n",
-		config.name, config.type, config.dev, now, ps.ps_recv);
-      Log(LOG_NOTICE, "NOTICE ( %s/%s ): %s: (%u) %u packets dropped by kernel\n",
-		config.name, config.type, config.dev, now, ps.ps_drop);
+    int device_idx;
+
+    if (config.pcap_if) {
+      for (device_idx = 0; device_idx < device.num; device_idx++) {
+	if (pcap_stats(device.list[device_idx].dev_desc, &ps) < 0) {
+	  Log(LOG_INFO, "INFO ( %s/%s ): [%s,%u] time=%u error='pcap_stats(): %s'\n",
+		config.name, config.type, device.list[device_idx].str, device.list[device_idx].id,
+		now, pcap_geterr(device.list[device_idx].dev_desc));
+	}
+	Log(LOG_NOTICE, "NOTICE ( %s/%s ): [%s,%u] time=%u received_packets=%u dropped_packets=%u\n",
+		config.name, config.type, device.list[device_idx].str, device.list[device_idx].id,
+		now, ps.ps_recv, ps.ps_drop);
+      }
     }
   }
   else if (config.acct_type == ACCT_NF || config.acct_type == ACCT_SF)
@@ -213,6 +237,8 @@ void reload_maps()
     reload_map_bgp_thread = TRUE;
     reload_map_exec_plugins = TRUE;
     reload_geoipv2_file = TRUE;
+
+    if (config.acct_type == ACCT_PM) reload_map_pmacctd = TRUE;
   }
   
   signal(SIGUSR2, reload_maps);

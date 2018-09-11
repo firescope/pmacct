@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
 */
 
 /*
@@ -43,7 +43,10 @@ struct p_kafka_host {
   rd_kafka_conf_t *cfg;
   rd_kafka_topic_t *topic;
   rd_kafka_topic_conf_t *topic_cfg;
+  char *config_file;
   int partition;
+  char *key;
+  int key_len;
   struct p_table_rr topic_rr;
 
   struct p_broker_timers btimers;
@@ -55,7 +58,7 @@ struct p_kafka_host {
 #else
 #define EXT
 #endif
-EXT void p_kafka_init_host(struct p_kafka_host *);
+EXT void p_kafka_init_host(struct p_kafka_host *, char *);
 EXT void p_kafka_init_topic_rr(struct p_kafka_host *);
 
 EXT void p_kafka_set_broker(struct p_kafka_host *, char *, int);
@@ -63,24 +66,35 @@ EXT void p_kafka_set_topic(struct p_kafka_host *, char *);
 EXT void p_kafka_set_topic_rr(struct p_kafka_host *, int);
 EXT void p_kafka_set_content_type(struct p_kafka_host *, int);
 EXT void p_kafka_set_partition(struct p_kafka_host *, int);
+EXT void p_kafka_set_key(struct p_kafka_host *, char *, int);
+EXT void p_kafka_set_config_file(struct p_kafka_host *, char *);
 
 EXT char *p_kafka_get_topic(struct p_kafka_host *);
 EXT int p_kafka_get_topic_rr(struct p_kafka_host *);
 EXT int p_kafka_get_content_type(struct p_kafka_host *);
 EXT int p_kafka_get_partition(struct p_kafka_host *);
+EXT void p_kafka_set_dynamic_partitioner(struct p_kafka_host *);
+EXT char *p_kafka_get_key(struct p_kafka_host *);
+EXT void p_kafka_get_version();
 
 EXT void p_kafka_unset_topic(struct p_kafka_host *);
+
+EXT int p_kafka_parse_config_entry(char *, char *, char **, char **);
+EXT void p_kafka_apply_global_config(struct p_kafka_host *);
+EXT void p_kafka_apply_topic_config(struct p_kafka_host *);
 
 EXT void p_kafka_logger(const rd_kafka_t *, int, const char *, const char *);
 EXT void p_kafka_msg_delivered(rd_kafka_t *, void *, size_t, int, void *, void *);
 EXT void p_kafka_msg_error(rd_kafka_t *, int, const char *, void *);
+EXT int p_kafka_stats(rd_kafka_t *, char *, size_t, void *);
+
 EXT int p_kafka_connect_to_produce(struct p_kafka_host *);
-EXT int p_kafka_connect_to_consume(struct p_kafka_host *);
 EXT int p_kafka_produce_data(struct p_kafka_host *, void *, u_int32_t);
-EXT int p_kafka_consume_poller(struct p_kafka_host *, void **, int);
-EXT int p_kafka_consume_data(struct p_kafka_host *, void *, char *, u_int32_t);
+EXT int p_kafka_produce_data_to_part(struct p_kafka_host *, void *, u_int32_t, int);
 EXT void p_kafka_close(struct p_kafka_host *, int);
 EXT int p_kafka_check_outq_len(struct p_kafka_host *);
+
+EXT int write_and_free_json_kafka(void *, void *);
 
 /* global vars */
 EXT struct p_kafka_host kafkap_kafka_host;
@@ -93,6 +107,7 @@ EXT struct p_kafka_host telemetry_daemon_msglog_kafka_host;
 EXT struct p_kafka_host telemetry_dump_kafka_host;
 
 EXT int kafkap_ret_err_cb;
+EXT int dyn_partition_key;
 
 static char default_kafka_broker_host[] = "127.0.0.1";
 static int default_kafka_broker_port = 9092;

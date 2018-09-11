@@ -208,7 +208,7 @@ int publish_url_entry(struct flow_url_entry *entry) {
   struct timeval tv;
   tv.tv_sec = time(NULL);
   tv.tv_usec = 0;
-  compose_timestamp(tstamp_str, SRVBUFLEN, &tv, FALSE, config.timestamps_since_epoch);
+  compose_timestamp(tstamp_str, SRVBUFLEN, &tv, FALSE, FALSE, FALSE, TRUE);
 
   add_element(json_obj, json_pack("{ss}", "ts", tstamp_str));
   char *json_str = compose_json_str(json_obj);

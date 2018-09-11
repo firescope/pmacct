@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -45,6 +45,10 @@
 #include <malloc.h>
 #endif
 
+#if defined (HAVE_ZLIB)
+#include <zlib.h>
+#endif
+
 #include <ctype.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -52,6 +56,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <netinet/in.h>
+#include <net/if.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -60,7 +65,9 @@
 #include <signal.h>
 #include <syslog.h>
 #include <sys/resource.h>
-#include <search.h>
+#include <dirent.h>
+#include <limits.h>
+#include "pmsearch.h"
 
 #include <sys/mman.h>
 #if !defined (MAP_ANONYMOUS)
@@ -80,6 +87,14 @@
 #endif
 #if defined (WITH_GEOIPV2)
 #include <maxminddb.h>
+#endif
+
+#if defined (WITH_NDPI)
+#include <ndpi_main.h>
+#endif
+
+#if defined (WITH_ZMQ)
+#include <zmq.h>
 #endif
 
 #include "pmacct-build.h"
@@ -175,6 +190,14 @@
 
 /* structure to pass requests: probably plugin_requests
    name outdated at this point .. */
+
+struct ptm_complex {
+  int load_ptm_plugin;		/* load_pre_tag_map(): input plugin type ID */
+  int load_ptm_res;		/* load_pre_tag_map(): result */
+  int exec_ptm_dissect;		/* exec_plugins(): TRUE if at least one plugin returned load_ptm_res == TRUE */
+  int exec_ptm_res;		/* exec_plugins(): input to be matched against list->cfg.ptm_complex */ 
+};
+
 struct plugin_requests {
   u_int8_t bpf_filter;		/* On-request packet copy for BPF purposes */
 
@@ -183,6 +206,7 @@ struct plugin_requests {
   int line_num;			/* line number being processed */
   int map_entries;		/* number of map entries: wins over global setting */
   int map_row_len;		/* map row length: wins over global setting */
+  struct ptm_complex ptm_c;	/* flags a map that requires parsing of the records (ie. tee plugin) */
 };
 
 typedef struct {
@@ -194,6 +218,14 @@ typedef struct {
   pm_hash_key_t key;
   u_int16_t off;
 } pm_hash_serial_t;
+
+#if (defined WITH_JANSSON)
+#include <jansson.h>
+#endif
+
+#if (defined WITH_AVRO)
+#include <avro.h>
+#endif
 
 #include "pmacct-defines.h"
 #include "network.h"
@@ -223,11 +255,32 @@ typedef struct {
 #endif
 
 /* structures */
+struct pcap_interface {
+  u_int32_t ifindex;
+  char ifname[IFNAMSIZ];
+  int direction;
+};
+
+struct pcap_interfaces {
+  struct pcap_interface *list;
+  int num;
+};
+
 struct pcap_device {
+  char str[IFNAMSIZ];
+  u_int32_t id;
   pcap_t *dev_desc;
   int link_type;
   int active;
+  int errors; /* error count when reading from a savefile */
+  int fd;
   struct _devices_struct *data; 
+  struct pcap_interface *pcap_if;
+};
+
+struct pcap_devices {
+  struct pcap_device list[PCAP_MAX_INTERFACES];
+  int num;
 };
 
 struct pcap_callback_data {
@@ -259,6 +312,8 @@ struct _primitives_matrix_struct {
   u_int8_t nfacctd;
   u_int8_t sfacctd;
   u_int8_t pmtelemetryd;
+  u_int8_t pmbgpd;
+  u_int8_t pmbmpd;
   char desc[PRIMITIVE_DESC_LEN];
 };
 
@@ -274,9 +329,10 @@ struct largebuf {
   u_char *ptr;
 };
 
-struct child_ctl {
+struct child_ctl2 {
+  pid_t *list;
   u_int16_t active;
-  u_int16_t retired;
+  u_int16_t max;
   u_int32_t flags;
 };
 
@@ -293,6 +349,18 @@ void my_sigint_handler();
 void reload();
 void push_stats();
 void reload_maps();
+#if (!defined __PMACCTD_C)
+#define EXT extern
+#else
+#define EXT
+#endif
+EXT void pm_pcap_device_initialize(struct pcap_devices *);
+EXT void pm_pcap_device_copy_all(struct pcap_devices *, struct pcap_devices *);
+EXT void pm_pcap_device_copy_entry(struct pcap_devices *, struct pcap_devices *, int);
+EXT int pm_pcap_device_getindex_byifname(struct pcap_devices *, char *);
+EXT pcap_t *pm_pcap_open(const char *, int, int, int, int, int, char *);
+EXT int pm_pcap_add_interface(struct pcap_device *, char *, struct pcap_interface *, int);
+#undef EXT
 
 #if (!defined __LL_C)
 #define EXT extern
@@ -327,7 +395,9 @@ EXT void tunnel_registry_init();
 EXT void pcap_cb(u_char *, const struct pcap_pkthdr *, const u_char *);
 EXT int PM_find_id(struct id_table *, struct packet_ptrs *, pm_id_t *, pm_id_t *);
 EXT void compute_once();
+EXT void reset_index_pkt_ptrs(struct packet_ptrs *);
 EXT void set_index_pkt_ptrs(struct packet_ptrs *);
+EXT ssize_t recvfrom_savefile(struct pcap_device *, void **, struct sockaddr *, struct timeval **);
 #undef EXT
 
 #ifndef HAVE_STRLCPY
@@ -335,31 +405,45 @@ size_t strlcpy(char *, const char *, size_t);
 #endif
 
 #if (defined WITH_JANSSON)
-#include <jansson.h>
 #if (!defined HAVE_JSON_OBJECT_UPDATE_MISSING)
 int json_object_update_missing(json_t *, json_t *);
 #endif
 #endif
 
+void
+#ifdef __STDC__
+pm_setproctitle(const char *fmt, ...);
+#else /* __STDC__ */
+#error
+pm_setproctitle(fmt, va_alist);
+#endif /* __STDC__ */
+
+void
+initsetproctitle(int, char**, char**);
+
 /* global variables */
-#if (!defined __PMACCTD_C) && (!defined __NFACCTD_C) && (!defined __SFACCTD_C) && (!defined __UACCTD_C) && (!defined __PMTELEMETRYD_C)
+#if (!defined __PMACCTD_C) && (!defined __NFACCTD_C) && (!defined __SFACCTD_C) && (!defined __UACCTD_C) && (!defined __PMTELEMETRYD_C) && (!defined __PMBGPD_C) && (!defined __PMBMPD_C)
 #define EXT extern
 #else
 #define EXT
 #endif
 EXT struct host_addr mcast_groups[MAX_MCAST_GROUPS];
 EXT int reload_map, reload_map_exec_plugins, reload_geoipv2_file;
-EXT int reload_map_bgp_thread, reload_log_bgp_thread, reload_log_bmp_thread;
-EXT int reload_log_sf_cnt, reload_log_telemetry_thread;
+EXT int reload_map_bgp_thread, reload_log_bgp_thread;
+EXT int reload_map_bmp_thread, reload_log_bmp_thread;
+EXT int reload_map_telemetry_thread, reload_log_telemetry_thread;
+EXT int reload_map_pmacctd;
+EXT int reload_log_sf_cnt;
 EXT int data_plugins, tee_plugins;
 EXT struct timeval reload_map_tstamp;
-EXT struct child_ctl sql_writers;
+EXT struct child_ctl2 dump_writers;
 EXT int debug;
 EXT struct configuration config; /* global configuration structure */
 EXT struct plugins_list_entry *plugins_list; /* linked list of each plugin configuration */
 EXT pid_t failed_plugins[MAX_N_PLUGINS]; /* plugins failed during startup phase */
 EXT u_char dummy_tlhdr[16];
-EXT pcap_t *glob_pcapt;
+EXT struct pcap_devices device, bkp_device;
+EXT struct pcap_interfaces pcap_if_map, bkp_pcap_if_map;
 EXT struct pcap_stat ps;
 #undef EXT
 #endif /* _PMACCT_H_ */

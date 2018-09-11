@@ -33,3 +33,6 @@ Makefile
 /src/sfacctd
 /src/uacctd
 /src/pmtelemetryd
+/src/pmbgpd
+/src/pmbmpd
+/examples/lg/pmbgp
