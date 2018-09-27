@@ -16,7 +16,7 @@ typedef struct flow_url_client {
 struct flow_url_entry {
   struct flow_url_key key;
   char ip_text[INET6_ADDRSTRLEN];
-  char hostname[NI_MAXHOST];
+  char hostname[FQDN_MAXHOST];
   flow_url_client *clients;
   char method[HTTP_METHOD_LEN];
   u_int16_t invocations;

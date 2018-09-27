@@ -50,8 +50,8 @@ struct port_bucket_entry {
 
 struct flow_entry {
   struct flow_key key;
-  char host1[NI_MAXHOST];
-  char host2[NI_MAXHOST];
+  char host1[FQDN_MAXHOST];
+  char host2[FQDN_MAXHOST];
   struct port_bucket_entry *port_bucket_list;
   UT_hash_handle hh;
 };
@@ -118,14 +118,14 @@ void get_ordered_key(struct pkt_primitives *srcdst, struct flow_entry *flow_entr
   // order addresses ascendingly for consistent hash values
   if (srcdst->src_ip.address.ipv4.s_addr < srcdst->dst_ip.address.ipv4.s_addr) {
     memcpy(&flow_entry->key.ip1, &srcdst->src_ip, HostAddrSz);   
-    strncpy(flow_entry->host1, srcdst->src_fqdn, NI_MAXHOST);   
+    strncpy(flow_entry->host1, srcdst->src_fqdn, FQDN_MAXHOST);   
     memcpy(&flow_entry->key.ip2, &srcdst->dst_ip, HostAddrSz);   
-    strncpy(flow_entry->host2, srcdst->dst_fqdn, NI_MAXHOST);   
+    strncpy(flow_entry->host2, srcdst->dst_fqdn, FQDN_MAXHOST);   
   } else {
     memcpy(&flow_entry->key.ip1, &srcdst->dst_ip, HostAddrSz);   
-    strncpy(flow_entry->host1, srcdst->dst_fqdn, NI_MAXHOST);   
+    strncpy(flow_entry->host1, srcdst->dst_fqdn, FQDN_MAXHOST);   
     memcpy(&flow_entry->key.ip2, &srcdst->src_ip, HostAddrSz);   
-    strncpy(flow_entry->host2, srcdst->src_fqdn, NI_MAXHOST);   
+    strncpy(flow_entry->host2, srcdst->src_fqdn, FQDN_MAXHOST);   
   }
 }
 
@@ -589,7 +589,7 @@ void publish(u_int64_t wtc, struct flow_entry *flow_entry)
 	      if (find_registered_port(candidate_port->dst_port, candidate_port->proto) != NULL) {
 	        publish_port_entry(wtc, port_bucket_entry, candidate_port, "one-way known port");
 	      } else {
-	        // skip unknown one-way port
+	        // allow unknown one-way port
 	        publish_port_entry(wtc, port_bucket_entry, candidate_port, "one-way unknown port");
 	      }
 	    /*

@@ -11,6 +11,10 @@
 #define PROTOCOL_LEN 8
 #define PATH_MAX_LEN 256
 
+#ifndef FQDN_MAXHOST
+#define FQDN_MAXHOST 254
+#endif
+
 struct flow_url_key {
   struct in_addr client_ip;
   struct in_addr ip;
@@ -23,7 +27,7 @@ struct flow_url_data {
   struct flow_url_key key;
   char client_ip_text[INET6_ADDRSTRLEN];
   char ip_text[INET6_ADDRSTRLEN];
-  char hostname[NI_MAXHOST];
+  char hostname[FQDN_MAXHOST];
   char method[HTTP_METHOD_LEN];
   u_int16_t invocations;
   time_t ts;

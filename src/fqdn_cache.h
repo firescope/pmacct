@@ -8,7 +8,7 @@
 
 struct ip_host_entry {
     struct in_addr ip_address; /* key */
-    char host[NI_MAXHOST];
+    char host[FQDN_MAXHOST];
     UT_hash_handle hh;         /* makes this structure hashable */
 };
 
