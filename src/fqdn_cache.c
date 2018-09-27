@@ -44,7 +44,7 @@ struct ip_host_entry *add_to_cache(struct in_addr *key, char *value)
 {
     struct ip_host_entry *entry = malloc(SZ_IP_HOST_ENTRY);
     memcpy(&entry->ip_address, key, SZ_IN_ADDR);
-    strlcpy(entry->host, value, NI_MAXHOST);
+    strlcpy(entry->host, value, FQDN_MAXHOST);
     HASH_ADD(hh, ip_host_cache, ip_address, SZ_IN_ADDR, entry);
     enforce_cache_size();
     return entry;
@@ -114,12 +114,12 @@ int lookup_fqdn(struct in_addr *ip_address, char *host)
 
     gettimeofday(&t0, 0);
 
-    int res = getnameinfo((struct sockaddr*)&sa, SZ_SOCKADDR, host, NI_MAXHOST, 0, 0, NI_NAMEREQD);
+    int res = getnameinfo((struct sockaddr*)&sa, SZ_SOCKADDR, host, FQDN_MAXHOST, 0, 0, NI_NAMEREQD);
     /*
     struct hostent *he;
     he = gethostbyaddr(ip_address, sizeof(ip_address), AF_INET);
     if (he) {
-      strncpy(host, he->h_name, NI_MAXHOST);
+      strncpy(host, he->h_name, FQDN_MAXHOST);
       res = 0;
     } else {
       res = h_errno;
@@ -143,7 +143,7 @@ char *reverse_lookup_ia(struct in_addr *ip_address) {
   if (entry) {
     return entry->host;
   } else {
-    char host[NI_MAXHOST];
+    char host[FQDN_MAXHOST];
     int res = lookup_fqdn(ip_address, host);
     if (res == 0) {
       entry = add_to_cache(ip_address, host);

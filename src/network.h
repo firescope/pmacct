@@ -396,6 +396,8 @@ struct host_mask {
   } mask;
 };
 
+#define FQDN_MAXHOST 254
+
 struct pkt_primitives {
 #if defined (HAVE_L2)
   u_int8_t eth_dhost[ETH_ADDR_LEN];
@@ -419,8 +421,8 @@ struct pkt_primitives {
   u_int32_t ifindex_in;
   u_int32_t ifindex_out;
 
-  char src_fqdn[NI_MAXHOST];
-  char dst_fqdn[NI_MAXHOST];
+  char src_fqdn[FQDN_MAXHOST];
+  char dst_fqdn[FQDN_MAXHOST];
 
 #if defined (WITH_GEOIP) || defined (WITH_GEOIPV2)
   pm_country_t src_ip_country;
