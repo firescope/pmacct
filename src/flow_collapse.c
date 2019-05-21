@@ -299,6 +299,15 @@ void upsert_port(struct flow_entry *flow_entry, struct port_bucket_entry *port_b
   */
 }
 
+void cleanup_inclusion(struct inclusion_entry *inclusions)
+{
+  struct inclusion_entry *inclusion, *inclusion_tmp;
+  LL_FOREACH_SAFE(inclusions, inclusion, inclusion_tmp) {
+    LL_DELETE(inclusions, inclusion);
+    free(inclusion);
+  }
+}
+
 void cleanup(struct flow_entry *flow_entry)
 {
   struct port_bucket_entry *port_bucket_entry, *port_bucket_entry_tmp;
@@ -377,71 +386,69 @@ void publish_port_entry(u_int64_t wtc, struct port_bucket_entry *port_bucket_ent
     }
   }
  
-  if (in_range)
-  { 
-    ha_to_ip_text(port_entry->src_ip, ip1);
-    ha_to_ip_text(port_entry->dst_ip, ip2);
+  if (!in_range) return;
 
-    if (!reason) {
-      Log(LOG_INFO, "DEBUG ( %s/%s ):    SKIPPED %s->%s(%u) protocol:%d weight:%u packet_counter:%u bytes_counter:%u\n", MODULE_NAME, "publish", 
-	ip1, ip2, port_entry->dst_port, port_entry->proto, port_entry->weight, port_entry->packet_counter, port_entry->bytes_counter);
-      return;
-    }
+  ha_to_ip_text(port_entry->src_ip, ip1);
+  ha_to_ip_text(port_entry->dst_ip, ip2);
 
-    Log(LOG_INFO, "DEBUG ( %s/%s ):    PUBLISHED %s %s->%s(%u) protocol:%d weight:%u packet_counter:%u bytes_counter:%u\n", MODULE_NAME, "publish", 
-      reason, ip1, ip2, port_entry->dst_port, port_entry->proto, port_entry->weight, port_entry->packet_counter, port_entry->bytes_counter);
-    json_t *json_obj = json_object();
-    add_element(json_obj, json_pack("{ss}", "label", edge_device_id));
-
-    if (wtc & (COUNT_SRC_HOST|COUNT_SUM_HOST)) {
-      ha_to_ip_text(port_entry->src_ip, ip_text);
-      add_element(json_obj, json_pack("{ss}", "ip_src", ip_text));
-      add_element(json_obj, json_pack("{ss}", "host_src", port_entry->src_fqdn));
-    }
-    if (wtc & COUNT_DST_HOST) {
-      ha_to_ip_text(port_entry->dst_ip, ip_text);
-      add_element(json_obj, json_pack("{ss}", "ip_dst", ip_text));
-      add_element(json_obj, json_pack("{ss}", "host_dst", port_entry->dst_fqdn));
-    }
-    if (wtc & COUNT_DST_PORT) {
-      add_element(json_obj, json_pack("{sI}", "port_dst", port_entry->dst_port));
-      struct registered_port_entry *registered_port = find_registered_port(port_entry->dst_port, port_entry->proto);
-      if (registered_port) {
-	add_element(json_obj, json_pack("{ss}", "protocol_name", registered_port->name));
-      } else {
-	add_element(json_obj, json_pack("{ss}", "protocol_name", ""));
-      }
-    }
-    if (wtc & COUNT_IP_PROTO) {
-      if (!config.num_protos && (port_entry->proto < protocols_number))
-	add_element(json_obj, json_pack("{ss}", "ip_proto", _protocols[port_entry->proto].name));
-      else
-	add_element(json_obj, json_pack("{sI}", "ip_proto", (json_int_t)port_entry->proto));
-    }
-    if (wtc & COUNT_TCPFLAGS) {
-      //add_element(json_obj, json_pack("{sI}", "tcp_flags", port_entry->tcp_flags));
-    }
-
-    add_element(json_obj, json_pack("{ss}", "collector_name", collector_name));
-    add_element(json_obj, json_pack("{ss}", "collector_ip", collector_ip));
-    add_element(json_obj, json_pack("{ss}", "collapse_method", reason));
-    add_element(json_obj, json_pack("{sI}", "packets", port_bucket_entry->total_packets));
-    add_element(json_obj, json_pack("{sI}", "bytes", port_bucket_entry->total_bytes));
-
-    if (!stamp_updated) {
-      struct timeval tv;
-      tv.tv_sec = time(NULL);
-      tv.tv_usec = 0;
-      stamp_updated = malloc(SRVBUFLEN);
-      compose_timestamp(stamp_updated, SRVBUFLEN, &tv, FALSE, FALSE, FALSE, TRUE);
-    }
-    add_element(json_obj, json_pack("{ss}", "stamp_updated", stamp_updated));
-
-    char *json_str = compose_json_str(json_obj);
-    int ret = p_amqp_publish_string(&amqpp_amqp_host, json_str);
-    free(json_str);
-    json_str = NULL;
+  if (!reason) {
+    Log(LOG_INFO, "INFO ( %s/%s ):    SKIPPED %s->%s(%u) protocol:%d weight:%u packet_counter:%u bytes_counter:%u\n", MODULE_NAME, "publish", 
+      ip1, ip2, port_entry->dst_port, port_entry->proto, port_entry->weight, port_entry->packet_counter, port_entry->bytes_counter);
+    return;
   }
+
+  Log(LOG_INFO, "INFO ( %s/%s ):    PUBLISHED %s %s->%s(%u) protocol:%d weight:%u packet_counter:%u bytes_counter:%u\n", MODULE_NAME, "publish", 
+    reason, ip1, ip2, port_entry->dst_port, port_entry->proto, port_entry->weight, port_entry->packet_counter, port_entry->bytes_counter);
+  json_t *json_obj = json_object();
+  add_element(json_obj, json_pack("{ss}", "label", edge_device_id));
+
+  if (wtc & (COUNT_SRC_HOST|COUNT_SUM_HOST)) {
+    ha_to_ip_text(port_entry->src_ip, ip_text);
+    add_element(json_obj, json_pack("{ss}", "ip_src", ip_text));
+    add_element(json_obj, json_pack("{ss}", "host_src", port_entry->src_fqdn));
+  }
+  if (wtc & COUNT_DST_HOST) {
+    ha_to_ip_text(port_entry->dst_ip, ip_text);
+    add_element(json_obj, json_pack("{ss}", "ip_dst", ip_text));
+    add_element(json_obj, json_pack("{ss}", "host_dst", port_entry->dst_fqdn));
+  }
+  if (wtc & COUNT_DST_PORT) {
+    add_element(json_obj, json_pack("{sI}", "port_dst", port_entry->dst_port));
+    struct registered_port_entry *registered_port = find_registered_port(port_entry->dst_port, port_entry->proto);
+    if (registered_port) {
+      add_element(json_obj, json_pack("{ss}", "protocol_name", registered_port->name));
+    } else {
+      add_element(json_obj, json_pack("{ss}", "protocol_name", ""));
+    }
+  }
+  if (wtc & COUNT_IP_PROTO) {
+    if (!config.num_protos && (port_entry->proto < protocols_number))
+      add_element(json_obj, json_pack("{ss}", "ip_proto", _protocols[port_entry->proto].name));
+    else
+      add_element(json_obj, json_pack("{sI}", "ip_proto", (json_int_t)port_entry->proto));
+  }
+  if (wtc & COUNT_TCPFLAGS) {
+    //add_element(json_obj, json_pack("{sI}", "tcp_flags", port_entry->tcp_flags));
+  }
+
+  add_element(json_obj, json_pack("{ss}", "collector_name", collector_name));
+  add_element(json_obj, json_pack("{ss}", "collector_ip", collector_ip));
+  add_element(json_obj, json_pack("{ss}", "collapse_method", reason));
+  add_element(json_obj, json_pack("{sI}", "packets", port_bucket_entry->total_packets));
+  add_element(json_obj, json_pack("{sI}", "bytes", port_bucket_entry->total_bytes));
+
+  if (!stamp_updated) {
+    struct timeval tv;
+    tv.tv_sec = time(NULL);
+    tv.tv_usec = 0;
+    stamp_updated = malloc(SRVBUFLEN);
+    compose_timestamp(stamp_updated, SRVBUFLEN, &tv, FALSE, FALSE, FALSE, TRUE);
+  }
+  add_element(json_obj, json_pack("{ss}", "stamp_updated", stamp_updated));
+
+  char *json_str = compose_json_str(json_obj);
+  int ret = p_amqp_publish_string(&amqpp_amqp_host, json_str);
+  free(json_str);
 }
 
 void log_candidates(struct port_bucket_entry *port_bucket_entry)
@@ -451,7 +458,7 @@ void log_candidates(struct port_bucket_entry *port_bucket_entry)
   char ports_text[200];
   int index = 0;
 
-  Log(LOG_INFO, "DEBUG ( %s/%s ):      Candidates:\n", MODULE_NAME, "publish");
+  Log(LOG_INFO, "INFO ( %s/%s ):      Candidates:\n", MODULE_NAME, "publish");
   LL_FOREACH(port_bucket_entry->port_list, port_entry) {
     if (port_entry && (index < 10 || (index % 10 == 0))) {
       char ip1[INET6_ADDRSTRLEN], ip2[INET6_ADDRSTRLEN];
@@ -468,7 +475,7 @@ void log_candidates(struct port_bucket_entry *port_bucket_entry)
       }
       int count = 0;
       LL_COUNT(port_entry->src_ports, src_port, count);
-      Log(LOG_INFO, "DEBUG ( %s/%s ):      %d:%s->%s(%u) protocol:%d weight:%u packet_counter:%u bytes_counter:%u src_ports[%d]: %s\n", MODULE_NAME, "publish", 
+      Log(LOG_INFO, "INFO ( %s/%s ):      %d:%s->%s(%u) protocol:%d weight:%u packet_counter:%u bytes_counter:%u src_ports[%d]: %s\n", MODULE_NAME, "publish", 
 	index, ip1, ip2, port_entry->dst_port, port_entry->proto, port_entry->weight, port_entry->packet_counter, port_entry->bytes_counter, count, ports_text);
     }
     index++;
@@ -564,7 +571,7 @@ void publish(u_int64_t wtc, struct flow_entry *flow_entry)
   char ip_text[INET6_ADDRSTRLEN];
   ha_to_ip_text(&flow_entry->key.ip1, ip1);
   ha_to_ip_text(&flow_entry->key.ip2, ip2);
-  Log(LOG_INFO, "DEBUG ( %s/%s ): flow bucket for ip1[%s] ip2[%s]:\n", MODULE_NAME, "publish", ip1, ip2);
+  Log(LOG_INFO, "INFO ( %s/%s ): flow bucket for ip1[%s] ip2[%s]:\n", MODULE_NAME, "publish", ip1, ip2);
   struct chained_port *src_port = NULL;
   struct port_bucket_entry *port_bucket_entry = NULL;
   LL_FOREACH(flow_entry->port_bucket_list, port_bucket_entry) {
@@ -779,7 +786,7 @@ void load_configurations()
     entry->low = lowerBound;
     entry->high = upperBound;
     LL_APPEND(target_inclusion_ip, entry);
-    Log(LOG_ERR, "index:%d low:%u high:%u\n", index, lowerBound, upperBound);
+    Log(LOG_DEBUG, "index:%d low:%u high:%u\n", index, lowerBound, upperBound);
   }
 
   json_t *ports = json_object_get(json, "target_inclusion_port");
@@ -790,7 +797,7 @@ void load_configurations()
     entry->low = lowerBound;
     entry->high = upperBound;
     LL_APPEND(target_inclusion_port, entry);
-    Log(LOG_ERR, "index:%d low:%u high:%u\n", index, lowerBound, upperBound);
+    Log(LOG_DEBUG, "index:%d low:%u high:%u\n", index, lowerBound, upperBound);
   }
 
   json_decref(json);
@@ -811,6 +818,7 @@ void purge_flows()
     }
   }
 
+  // Tear down section
   struct registered_port_entry *registered_port_entry, *registered_port_entry_tmp;
   HASH_ITER(hh2, registered_port_cache, registered_port_entry, registered_port_entry_tmp) {
     if (registered_port_entry) {
@@ -819,5 +827,7 @@ void purge_flows()
     }
   }
   free(stamp_updated);
+  cleanup_inclusion(target_inclusion_ip);
+  cleanup_inclusion(target_inclusion_port);
 }
 
