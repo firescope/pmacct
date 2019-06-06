@@ -810,7 +810,7 @@ void purge_flows()
 {
   struct flow_entry *flow_entry, *flow_entry_tmp;
 
-  Log(LOG_INFO, "load_configurations\n");
+  Log(LOG_INFO, "load_configurations1\n");
   load_configurations();
 
   Log(LOG_INFO, "read_registered_ports\n");
