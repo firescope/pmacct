@@ -769,6 +769,7 @@ void load_configurations()
   json_t *json;
   json_error_t error;
 
+  Log(LOG_INFO, "json_load_file %s\n", PMACCT_CONFIG_FILENAME);
   json = json_load_file(PMACCT_CONFIG_FILENAME, 0, &error);
   if(!json) {
     Log(LOG_ERR, "ERROR ( %s/core ): Unable to load %s: %s\n", config.name, PMACCT_CONFIG_FILENAME, error.text);
@@ -778,6 +779,7 @@ void load_configurations()
   size_t index;
   json_t *value;
 
+  Log(LOG_INFO, "reading target_inclusion_ip\n");
   json_t *ips = json_object_get(json, "target_inclusion_ip");
   json_array_foreach(ips, index, value) {
     uint32_t lowerBound = json_integer_value(json_object_get(value, "lowerBound"));
@@ -789,6 +791,7 @@ void load_configurations()
     Log(LOG_DEBUG, "index:%d low:%u high:%u\n", index, lowerBound, upperBound);
   }
 
+  Log(LOG_INFO, "reading target_inclusion_port\n");
   json_t *ports = json_object_get(json, "target_inclusion_port");
   json_array_foreach(ports, index, value) {
     uint32_t lowerBound = json_integer_value(json_object_get(value, "lowerBound"));
@@ -807,10 +810,13 @@ void purge_flows()
 {
   struct flow_entry *flow_entry, *flow_entry_tmp;
 
+  Log(LOG_INFO, "load_configurations\n");
   load_configurations();
 
+  Log(LOG_INFO, "read_registered_ports\n");
   if (flow_cache != NULL) read_registered_ports();
   pre_publish();
+  Log(LOG_INFO, "publish\n");
   HASH_ITER(hh, flow_cache, flow_entry, flow_entry_tmp) {
     if (flow_entry) {
       publish(config.what_to_count, flow_entry);
