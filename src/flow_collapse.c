@@ -91,6 +91,7 @@ struct flow_entry *flow_cache = NULL;
 struct registered_port_entry *registered_port_cache = NULL;
 char collector_ip[16];
 char *collector_name;
+struct inclusion_entry *source_inclusion_ip = NULL;
 struct inclusion_entry *target_inclusion_ip = NULL;
 struct inclusion_entry *target_inclusion_port = NULL;
 
@@ -357,20 +358,36 @@ void publish_port_entry(u_int64_t wtc, struct port_bucket_entry *port_bucket_ent
 {
   char ip1[INET6_ADDRSTRLEN], ip2[INET6_ADDRSTRLEN];
   char ip_text[INET6_ADDRSTRLEN];
-  int in_range = 0;
   struct inclusion_entry *range = NULL;
-  uint32_t dst_ip = ntohl(port_entry->dst_ip->address.ipv4.s_addr);
 
-  if (target_inclusion_ip == NULL) {
+  int in_range = 0;
+  uint32_t src_ip = ntohl(port_entry->src_ip->address.ipv4.s_addr);
+  if (source_inclusion_ip == NULL) {
     in_range = 1;
   } else {
-    LL_FOREACH(target_inclusion_ip, range) {
-      if (range->low <= dst_ip && dst_ip <= range->high) {
+    LL_FOREACH(source_inclusion_ip, range) {
+      if (range->low <= src_ip && src_ip <= range->high) {
 	in_range = 1;
 	break;
       }
     }
   }
+
+  if (in_range) {
+    in_range = 0;
+    uint32_t dst_ip = ntohl(port_entry->dst_ip->address.ipv4.s_addr);
+    if (target_inclusion_ip == NULL) {
+      in_range = 1;
+    } else {
+      LL_FOREACH(target_inclusion_ip, range) {
+	if (range->low <= dst_ip && dst_ip <= range->high) {
+	  in_range = 1;
+	  break;
+	}
+      }
+    }
+  }
+
   if (in_range) {
     in_range = 0;
     if (target_inclusion_port == NULL) {
@@ -769,35 +786,49 @@ void load_configurations()
   json_t *json;
   json_error_t error;
 
+  Log(LOG_DEBUG, "DEBUG ( %s/%s ): Loading from %s.\n", config.name, "load_configurations", PMACCT_CONFIG_FILENAME);
   json = json_load_file(PMACCT_CONFIG_FILENAME, 0, &error);
   if(!json) {
-    Log(LOG_ERR, "ERROR ( %s/core ): Unable to load %s: %s\n", config.name, PMACCT_CONFIG_FILENAME, error.text);
+    Log(LOG_ERR, "ERROR ( %s/%s ): Unable to load %s - defaulting to no filtering: %s\n", config.name, "load_configurations", PMACCT_CONFIG_FILENAME, error.text);
       return;
   }
 
   size_t index;
   json_t *value;
+  uint32_t lowerBound, upperBound;
+  struct inclusion_entry *entry;
 
-  json_t *ips = json_object_get(json, "target_inclusion_ip");
+  json_t *ips = json_object_get(json, "source_inclusion_ip");
   json_array_foreach(ips, index, value) {
-    uint32_t lowerBound = json_integer_value(json_object_get(value, "lowerBound"));
-    uint32_t upperBound = json_integer_value(json_object_get(value, "upperBound"));
-    struct inclusion_entry *entry = malloc(SZ_INCLUSION_ENTRY);
+    lowerBound = json_integer_value(json_object_get(value, "lowerBound"));
+    upperBound = json_integer_value(json_object_get(value, "upperBound"));
+    entry = malloc(SZ_INCLUSION_ENTRY);
+    entry->low = lowerBound;
+    entry->high = upperBound;
+    LL_APPEND(source_inclusion_ip, entry);
+    Log(LOG_DEBUG, "DEBUG ( %s/%s ): inclusion source ip range %u-%u\n", config.name, "load_configurations", lowerBound, upperBound);
+  }
+
+  ips = json_object_get(json, "target_inclusion_ip");
+  json_array_foreach(ips, index, value) {
+    lowerBound = json_integer_value(json_object_get(value, "lowerBound"));
+    upperBound = json_integer_value(json_object_get(value, "upperBound"));
+    entry = malloc(SZ_INCLUSION_ENTRY);
     entry->low = lowerBound;
     entry->high = upperBound;
     LL_APPEND(target_inclusion_ip, entry);
-    Log(LOG_DEBUG, "index:%d low:%u high:%u\n", index, lowerBound, upperBound);
+    Log(LOG_DEBUG, "DEBUG ( %s/%s ): inclusion target ip range %u-%u\n", config.name, "load_configurations", lowerBound, upperBound);
   }
 
   json_t *ports = json_object_get(json, "target_inclusion_port");
   json_array_foreach(ports, index, value) {
-    uint32_t lowerBound = json_integer_value(json_object_get(value, "lowerBound"));
-    uint32_t upperBound = json_integer_value(json_object_get(value, "upperBound"));
-    struct inclusion_entry *entry = malloc(SZ_INCLUSION_ENTRY);
+    lowerBound = json_integer_value(json_object_get(value, "lowerBound"));
+    upperBound = json_integer_value(json_object_get(value, "upperBound"));
+    entry = malloc(SZ_INCLUSION_ENTRY);
     entry->low = lowerBound;
     entry->high = upperBound;
     LL_APPEND(target_inclusion_port, entry);
-    Log(LOG_DEBUG, "index:%d low:%u high:%u\n", index, lowerBound, upperBound);
+    Log(LOG_DEBUG, "DEBUG ( %s/%s ): inclusion port range %u-%u\n", config.name, "load_configurations", lowerBound, upperBound);
   }
 
   json_decref(json);
@@ -827,6 +858,7 @@ void purge_flows()
     }
   }
   free(stamp_updated);
+  cleanup_inclusion(source_inclusion_ip);
   cleanup_inclusion(target_inclusion_ip);
   cleanup_inclusion(target_inclusion_port);
 }
